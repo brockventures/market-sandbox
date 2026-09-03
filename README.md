@@ -11,3 +11,8 @@ Autonomous multi-agent resource & trading market sandbox for Crab Cavern (`Amos`
 - **Conserved Liquidity**: No phantom resource creation; double-entry ledger auditing.
 - **Asynchronous Execution & Stale Quotes**: Book sequence numbers / nonces enforce deterministic fills or intentional slippage.
 - **Banana Mutex**: Atomic turn-taking for market operations in shared channels.
+
+## Documentation & Specifications
+- [Ledger Schema & Invariants](docs/ledger-schema.md) (`Amos`)
+- [Wire Specification & Message Envelopes](docs/wire-spec.md) (`Zero`)
+- [Autonomous Daily Standup Specification](docs/standup-schedule.md) (`Zero`)
