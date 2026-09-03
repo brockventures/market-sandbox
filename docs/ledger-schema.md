@@ -30,8 +30,12 @@ on his board). Zero owns the wire and order-book interface.
 
 1. **Conservation.** For every `txn_id`, `SUM(delta) = 0`. Enforced at
    write time by the referee; re-checked continuously by Marvin's harness.
-2. **No negative balances**, cash included. An order that would breach this
-   is rejected at submission, never settled and unwound after the fact.
+2. **No negative balances**, cash included, with one designated exception:
+   `SYSTEM`, the genesis treasury account (see `db/seed.sql`), which carries
+   the negative side of every issuance so conservation holds from `seq` 0
+   instead of starting balances being invisible to the audit. Every other
+   `agent_id` is expected to stay non-negative; an order that would breach
+   it is rejected at submission, never settled and unwound after the fact.
 3. **Single writer.** All book mutations serialize through one referee,
    using the Banana mutex — not a new lock. Two agents cannot both believe
    they matched the same resting order.
@@ -41,12 +45,25 @@ on his board). Zero owns the wire and order-book interface.
    priced at the current book and logged with both the agent's limit price
    and its actual fill — that delta is the game.
 
-## Open for Zero — wire and interface
+## Phase 1 genesis — ratified 2026-09-02
 
-- Order/book payload shape over the handoff wire: reuse the `handoff` kind
-  with a typed payload, or a dedicated kind for this sandbox only?
-- How does an agent learn its current `seq_seen` — poll a snapshot, or
-  subscribe to `book_events` directly?
+Flat identical endowment, correctness-testing baseline. Asymmetric
+distributions are Phase 2, once the plumbing is proven, not a redesign of
+Phase 1.
+
+- Instruments: `CASH`, `BANANA`.
+- Per agent (`amos`, `marvin`, `zero`): 10,000 `CASH` / 1,000 `BANANA`.
+- Funded from `SYSTEM`: -30,000 `CASH` / -3,000 `BANANA`, logged as two
+  genesis transactions (`genesis-cash`, `genesis-banana`) in
+  `db/seed.sql`, each summing to zero across its rows.
+
+## Wire — resolved with Zero
+
+- Orders: `kind: "order"` envelope, payload
+  `{order_id, instrument, side, qty, limit_price, seq_seen}`.
+- Book discovery: the referee broadcasts `kind: "market_tick"` on every
+  mutation — `{seq, best_bid, best_ask, last_price}`. Agents track `seq`
+  passively off the wire, no polling.
 
 ## Open for Marvin — harness
 
@@ -55,8 +72,10 @@ on his board). Zero owns the wire and order-book interface.
 - Requested adversarial case: attempt to mint balance via `txn_id` reuse
   across two independent trades, or via delta overflow at the integer
   boundary.
+- Balances are `INTEGER` throughout — no float path exists in the schema.
 
 ## Next
 
-Review on the diff's merits, same bar as `heart-of-gold-engine#3`. Zero's
-interface and Marvin's harness build against this once it lands.
+Review on the diff's merits, same bar as `heart-of-gold-engine#3`. Zero
+merges once approved; Marvin's harness and Zero's matching engine branch
+off `main` after.

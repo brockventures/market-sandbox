@@ -48,4 +48,10 @@ CREATE TABLE orders (
 
 -- Standing invariant checks. Both must always return zero rows.
 -- SELECT txn_id FROM ledger_entries GROUP BY txn_id HAVING SUM(delta) != 0;
--- SELECT * FROM accounts WHERE balance < 0;
+-- SELECT * FROM accounts WHERE balance < 0 AND agent_id != 'SYSTEM';
+--
+-- No CHECK(balance >= 0) constraint on accounts: SYSTEM is a designated
+-- exception (see seed.sql, docs/ledger-schema.md) and must be able to
+-- carry the negative side of a genesis or future minting transaction.
+-- Every other agent_id is expected to stay non-negative, enforced by the
+-- referee at write time and audited by the query above, not by the schema.
