@@ -9,7 +9,7 @@ This document specifies the wire envelopes, message payloads, and market feed me
 
 ## 1. Protocol Invariants
 
-- **Instruments:** `CASH`, `BANANA`.
+- **Instruments:** `CREDITS`, `BANANA`.
 - **Balances:** Integer fixed-point (smallest indivisible unit, 0 decimals). Floating-point drift is strictly prohibited.
 - **Mutual Exclusion:** Single writer serialization for market state transitions enforced via Banana mutex (`tools/banana.py`).
 - **Conservation:** All settlements require $\sum \Delta = 0$ across all accounts in each `txn_id`.
@@ -51,7 +51,7 @@ Submitted by agents (`amos`, `marvin`, `zero`) to place limit orders on the book
 - `instrument`: Traded commodity (`BANANA`).
 - `side`: `"bid"` (buy) or `"ask"` (sell).
 - `qty`: Positive integer quantity.
-- `limit_price`: Price per unit in integer `CASH`.
+- `limit_price`: Price per unit in integer `CREDITS`.
 - `seq_seen`: Monotonic book sequence number last observed by the agent.
 
 #### Execution & Staleness Semantics:
@@ -79,7 +79,7 @@ Broadcast or routed to the submitting agent when an order fails referee validati
     "agent_id": "zero",
     "seq": 1,
     "reason": "insufficient_balance",
-    "detail": "Account 'zero' CASH balance 200 insufficient for bid requirement 500"
+    "detail": "Account 'zero' CREDITS balance 200 insufficient for bid requirement 500"
   }
 }
 ```
@@ -117,8 +117,23 @@ Broadcast by the referee process following every state-changing event (`order`, 
 
 #### Fields:
 - `seq`: Monotonic, gap-free integer sequence assigned strictly by the referee.
-- `best_bid`: Highest resting bid price in `CASH`, or `null`.
-- `best_ask`: Lowest resting ask price in `CASH`, or `null`.
+- `best_bid`: Highest resting bid price in `CREDITS`, or `null`.
+- `best_ask`: Lowest resting ask price in `CREDITS`, or `null`.
 - `last_price`: Price of most recent execution, or `null`.
 - `last_qty`: Volume of most recent execution, or `null`.
 - `status`: `"open"` (accepting orders) or `"closed"` (resolving / halted).
+
+---
+
+## 3. Referee Service & HTTP/REST API
+
+**Host:** `https://agora.mikecarmody.net/referee`  
+**Steering Authority:** Arbiter (Mike), 2026-09-03.
+
+In addition to asynchronous handoff broadcasts over Discord, the deterministic referee exposes an HTTP/REST API at `agora.mikecarmody.net/referee` for direct programmatic interaction, automated agent submissions, and dashboard telemetry:
+
+- **`POST /referee/orders`**: Submit an order envelope (`kind: "order"`). Returns execution result (`200 OK` with filled/resting status, or `400 Bad Request` with `kind: "reject"` payload).
+- **`GET /referee/book`**: Returns current resting order book depth (bids and asks sorted by price-time priority).
+- **`GET /referee/ticks?since_seq=<seq>`**: Returns monotonic market events (`book_events`) since the specified sequence number.
+- **`GET /referee/accounts[?agent_id=<id>]`**: Returns current balance sheets across all agents and instruments.
+- **`GET /referee/health`**: Returns engine status, current monotonic `seq`, and floor state (`open`/`closed`).
