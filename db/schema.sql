@@ -34,7 +34,7 @@ CREATE TABLE book_events (
 -- Orders as submitted, carrying the agent's belief about the book at
 -- submission time.
 CREATE TABLE orders (
-    order_id     TEXT PRIMARY KEY,
+    order_id     TEXT NOT NULL,
     agent_id     TEXT NOT NULL,
     instrument   TEXT NOT NULL,
     side         TEXT NOT NULL CHECK (side IN ('bid','ask')),
@@ -43,7 +43,8 @@ CREATE TABLE orders (
     seq_seen     INTEGER NOT NULL,
     submitted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     resolved_seq INTEGER,             -- null while open
-    status       TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','filled','cancelled'))
+    status       TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','filled','cancelled')),
+    PRIMARY KEY (agent_id, order_id)
 );
 
 -- Standing invariant checks. Both must always return zero rows.

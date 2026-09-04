@@ -105,12 +105,12 @@ class AgoraReferee:
         if not (isinstance(limit_price, int) and limit_price > 0):
             return self._reject_envelope(order_id, agent_id, 'invalid_format', 'Limit price must be positive integer')
 
-        # 2. Idempotency Check
+        # 2. Idempotency Check (composite key: agent_id, order_id)
         cur = self.conn.cursor()
-        cur.execute("SELECT agent_id, side, qty, limit_price FROM orders WHERE order_id = ?", (order_id,))
+        cur.execute("SELECT agent_id, side, qty, limit_price FROM orders WHERE agent_id = ? AND order_id = ?", (agent_id, order_id))
         existing = cur.fetchone()
         if existing:
-            if existing['agent_id'] == agent_id and existing['side'] == side and existing['qty'] == qty and existing['limit_price'] == limit_price:
+            if existing['side'] == side and existing['qty'] == qty and existing['limit_price'] == limit_price:
                 return {
                     'v': 1,
                     'kind': 'status',
@@ -120,24 +120,38 @@ class AgoraReferee:
                     'note': 'Order already processed identically (idempotent noop)'
                 }
             else:
-                return self._reject_envelope(order_id, agent_id, 'duplicate_order', 'Order ID already exists with conflicting parameters')
+                return self._reject_envelope(order_id, agent_id, 'duplicate_order', f"Order ID '{order_id}' already exists for agent '{agent_id}' with conflicting parameters")
 
-        # 3. Solvency Audit (No negative balances for non-SYSTEM agents)
+        # 3. Solvency & Committed Exposure Audit (No negative balances for non-SYSTEM agents)
         currency = self.get_currency_instrument(agent_id)
         if side == 'bid':
             max_cost = qty * limit_price
+            committed_funds = sum(
+                o.remaining_qty * o.limit_price
+                for o in self.book.bids
+                if o.agent_id == agent_id
+            )
             buyer_balance = self.get_balance(agent_id, currency)
-            if buyer_balance < max_cost:
+            available_funds = buyer_balance - committed_funds
+            if available_funds < max_cost:
                 return self._reject_envelope(
                     order_id, agent_id, 'insufficient_balance',
-                    f"Account '{agent_id}' {currency} balance {buyer_balance} insufficient for bid requirement {max_cost}"
+                    f"Account '{agent_id}' available {currency} balance {available_funds} "
+                    f"(balance {buyer_balance} - committed {committed_funds}) insufficient for bid requirement {max_cost}"
                 )
         elif side == 'ask':
+            committed_banana = sum(
+                o.remaining_qty
+                for o in self.book.asks
+                if o.agent_id == agent_id
+            )
             seller_balance = self.get_balance(agent_id, 'BANANA')
-            if seller_balance < qty:
+            available_banana = seller_balance - committed_banana
+            if available_banana < qty:
                 return self._reject_envelope(
                     order_id, agent_id, 'insufficient_balance',
-                    f"Account '{agent_id}' BANANA balance {seller_balance} insufficient for ask requirement {qty}"
+                    f"Account '{agent_id}' available BANANA balance {available_banana} "
+                    f"(balance {seller_balance} - committed {committed_banana}) insufficient for ask requirement {qty}"
                 )
 
         # 4. Matching & Atomic Ledger Settlement
@@ -174,7 +188,14 @@ class AgoraReferee:
             for trade in trades:
                 self.last_price = trade.price
                 self.last_qty = trade.qty
-                trade_currency = self.get_currency_instrument(trade.buyer_id)
+                buyer_currency = self.get_currency_instrument(trade.buyer_id)
+                seller_currency = self.get_currency_instrument(trade.seller_id)
+                if buyer_currency != seller_currency:
+                    raise RuntimeError(
+                        f"Currency mismatch during settlement: buyer '{trade.buyer_id}' uses {buyer_currency} "
+                        f"but seller '{trade.seller_id}' uses {seller_currency}"
+                    )
+                trade_currency = buyer_currency
                 cost = trade.price * trade.qty
                 txn_id = f'trade-{trade.trade_id}'
 
@@ -199,11 +220,34 @@ class AgoraReferee:
                     VALUES (?, ?, ?, ?, ?)
                 """, (txn_id, next_seq, trade.seller_id, 'BANANA', -trade.qty))
 
-                # Update accounts
-                self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = ? AND instrument = ?", (cost, trade.buyer_id, trade_currency))
-                self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?", (cost, trade.seller_id, trade_currency))
-                self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = 'BANANA'", (trade.qty, trade.buyer_id))
-                self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = ? AND instrument = 'BANANA'", (trade.qty, trade.seller_id))
+                # Update accounts with strict rowcount validation (must match exactly 1 row per update)
+                cur = self.conn.execute(
+                    "UPDATE accounts SET balance = balance - ? WHERE agent_id = ? AND instrument = ?",
+                    (cost, trade.buyer_id, trade_currency)
+                )
+                if cur.rowcount != 1:
+                    raise RuntimeError(f"Failed to debit {trade.buyer_id} {trade_currency}: rowcount {cur.rowcount} != 1")
+
+                cur = self.conn.execute(
+                    "UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?",
+                    (cost, trade.seller_id, trade_currency)
+                )
+                if cur.rowcount != 1:
+                    raise RuntimeError(f"Failed to credit {trade.seller_id} {trade_currency}: rowcount {cur.rowcount} != 1")
+
+                cur = self.conn.execute(
+                    "UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = 'BANANA'",
+                    (trade.qty, trade.buyer_id)
+                )
+                if cur.rowcount != 1:
+                    raise RuntimeError(f"Failed to credit {trade.buyer_id} BANANA: rowcount {cur.rowcount} != 1")
+
+                cur = self.conn.execute(
+                    "UPDATE accounts SET balance = balance - ? WHERE agent_id = ? AND instrument = 'BANANA'",
+                    (trade.qty, trade.seller_id)
+                )
+                if cur.rowcount != 1:
+                    raise RuntimeError(f"Failed to debit {trade.seller_id} BANANA: rowcount {cur.rowcount} != 1")
 
                 # Record trade event in book_events
                 trade_seq = self.current_seq + 1
@@ -260,6 +304,7 @@ class AgoraReferee:
         Verify standing invariants:
         1. Conservation: sum(delta) == 0 for every txn_id.
         2. Non-negativity: balance >= 0 for all agents except SYSTEM.
+        3. Account Reconciliation: accounts.balance == sum(ledger_entries.delta) per (agent_id, instrument).
         """
         errors = []
         cur = self.conn.cursor()
@@ -284,6 +329,24 @@ class AgoraReferee:
         deficits = cur.fetchall()
         for row in deficits:
             errors.append(f"Insolvency breach: {row['agent_id']} {row['instrument']} balance = {row['balance']}")
+
+        # Invariant 3: Account-Ledger Reconciliation
+        cur.execute("""
+            SELECT agent_id, instrument, SUM(delta) as ledger_sum, SUM(balance) as account_balance
+            FROM (
+                SELECT agent_id, instrument, delta, 0 as balance FROM ledger_entries
+                UNION ALL
+                SELECT agent_id, instrument, 0 as delta, balance FROM accounts
+            )
+            GROUP BY agent_id, instrument
+            HAVING SUM(delta) != SUM(balance)
+        """)
+        mismatches = cur.fetchall()
+        for row in mismatches:
+            errors.append(
+                f"Reconciliation breach: {row['agent_id']} {row['instrument']} "
+                f"account balance = {row['account_balance']} vs ledger delta sum = {row['ledger_sum']}"
+            )
 
         return len(errors) == 0, errors
 

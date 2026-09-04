@@ -159,6 +159,141 @@ class TestAgoraEngine(unittest.TestCase):
         for entry in board:
             self.assertEqual(entry['net_worth'], 20000)
 
+    def test_resting_order_escrow_committed_exposure(self):
+        referee = AgoraReferee()
+
+        # Buyer has 10,000 CASH. Posts bid for 60 BANANA @ 100 (6,000). Rests.
+        bid1 = {
+            'v': 1, 'kind': 'order',
+            'payload': {
+                'order_id': 'bid-1', 'agent_id': 'zero', 'instrument': 'BANANA',
+                'side': 'bid', 'qty': 60, 'limit_price': 100, 'seq_seen': referee.current_seq
+            }
+        }
+        res1 = referee.submit_envelope(bid1)
+        self.assertEqual(res1['kind'], 'market_tick')
+        self.assertEqual(res1['payload']['trades_count'], 0)
+
+        # Second bid for 60 BANANA @ 100 requires 6,000, but available is 10,000 - 6,000 = 4,000.
+        bid2 = {
+            'v': 1, 'kind': 'order',
+            'payload': {
+                'order_id': 'bid-2', 'agent_id': 'zero', 'instrument': 'BANANA',
+                'side': 'bid', 'qty': 60, 'limit_price': 100, 'seq_seen': referee.current_seq
+            }
+        }
+        res2 = referee.submit_envelope(bid2)
+        self.assertEqual(res2['kind'], 'reject')
+        self.assertEqual(res2['payload']['reason'], 'insufficient_balance')
+        self.assertIn('committed', res2['payload']['detail'])
+
+        # Third bid for 40 BANANA @ 100 requires 4,000 <= 4,000 available. Accepted!
+        bid3 = {
+            'v': 1, 'kind': 'order',
+            'payload': {
+                'order_id': 'bid-3', 'agent_id': 'zero', 'instrument': 'BANANA',
+                'side': 'bid', 'qty': 40, 'limit_price': 100, 'seq_seen': referee.current_seq
+            }
+        }
+        res3 = referee.submit_envelope(bid3)
+        self.assertEqual(res3['kind'], 'market_tick')
+
+        # Seller has 1,000 BANANA. Posts ask for 600 BANANA @ 100. Rests.
+        ask1 = {
+            'v': 1, 'kind': 'order',
+            'payload': {
+                'order_id': 'ask-1', 'agent_id': 'amos', 'instrument': 'BANANA',
+                'side': 'ask', 'qty': 600, 'limit_price': 100, 'seq_seen': referee.current_seq
+            }
+        }
+        res_ask1 = referee.submit_envelope(ask1)
+        # Note: ask1 crosses resting bid1 (60) and bid3 (40), executing 100 BANANA total!
+        # Remaining 500 BANANA rests on book.
+        self.assertEqual(res_ask1['payload']['trades_count'], 2)
+        self.assertEqual(referee.get_balance('zero', 'CASH'), 0)  # 10,000 - 6,000 - 4,000
+        self.assertEqual(referee.get_balance('zero', 'BANANA'), 1100)
+        self.assertEqual(referee.get_balance('amos', 'CASH'), 20000)
+        self.assertEqual(referee.get_balance('amos', 'BANANA'), 900)
+
+        # Amos now has 900 BANANA, with 500 committed in resting ask1. Available = 400.
+        ask2 = {
+            'v': 1, 'kind': 'order',
+            'payload': {
+                'order_id': 'ask-2', 'agent_id': 'amos', 'instrument': 'BANANA',
+                'side': 'ask', 'qty': 500, 'limit_price': 100, 'seq_seen': referee.current_seq
+            }
+        }
+        res_ask2 = referee.submit_envelope(ask2)
+        self.assertEqual(res_ask2['kind'], 'reject')
+        self.assertEqual(res_ask2['payload']['reason'], 'insufficient_balance')
+        self.assertIn('committed', res_ask2['payload']['detail'])
+
+        valid, errors = referee.verify_ledger_invariants()
+        self.assertTrue(valid, f"Invariants breached after fills: {errors}")
+
+    def test_composite_pk_order_id_across_agents(self):
+        referee = AgoraReferee()
+
+        # Amos submits order_id 'ord-common-001'
+        env_amos = {
+            'v': 1, 'kind': 'order',
+            'payload': {
+                'order_id': 'ord-common-001', 'agent_id': 'amos', 'instrument': 'BANANA',
+                'side': 'ask', 'qty': 10, 'limit_price': 20, 'seq_seen': referee.current_seq
+            }
+        }
+        res_amos = referee.submit_envelope(env_amos)
+        self.assertEqual(res_amos['kind'], 'market_tick')
+
+        # Marvin submits identical order_id 'ord-common-001' - must succeed because PK is (agent_id, order_id)
+        env_marvin = {
+            'v': 1, 'kind': 'order',
+            'payload': {
+                'order_id': 'ord-common-001', 'agent_id': 'marvin', 'instrument': 'BANANA',
+                'side': 'ask', 'qty': 15, 'limit_price': 25, 'seq_seen': referee.current_seq
+            }
+        }
+        res_marvin = referee.submit_envelope(env_marvin)
+        self.assertEqual(res_marvin['kind'], 'market_tick')
+
+        # Re-submission by Marvin with same params is idempotent no-op
+        res_marvin_dup = referee.submit_envelope(env_marvin)
+        self.assertEqual(res_marvin_dup['status'], 'noop_duplicate')
+
+    def test_cross_currency_mismatch_and_reconciliation_invariant(self):
+        referee = AgoraReferee()
+
+        # Simulate Amos's repro: rename zero's account to CREDITS while amos remains CASH
+        referee.conn.execute("UPDATE accounts SET instrument = 'CREDITS' WHERE agent_id = 'zero' AND instrument = 'CASH'")
+
+        # Invariant 3 immediately catches that zero's accounts row does not match ledger_entries sum!
+        valid, errors = referee.verify_ledger_invariants()
+        self.assertFalse(valid)
+        self.assertTrue(any("Reconciliation breach" in e for e in errors))
+
+        # Further, if zero attempts a cross trade against amos, settlement raises RuntimeError on currency mismatch
+        # Amos posts ask on CASH
+        ask_env = {
+            'v': 1, 'kind': 'order',
+            'payload': {
+                'order_id': 'ask-cross-curr', 'agent_id': 'amos', 'instrument': 'BANANA',
+                'side': 'ask', 'qty': 10, 'limit_price': 10, 'seq_seen': referee.current_seq
+            }
+        }
+        referee.submit_envelope(ask_env)
+
+        # Zero attempts to cross with CREDITS
+        bid_env = {
+            'v': 1, 'kind': 'order',
+            'payload': {
+                'order_id': 'bid-cross-curr', 'agent_id': 'zero', 'instrument': 'BANANA',
+                'side': 'bid', 'qty': 10, 'limit_price': 10, 'seq_seen': referee.current_seq
+            }
+        }
+        with self.assertRaises(RuntimeError) as cm:
+            referee.submit_envelope(bid_env)
+        self.assertIn("Currency mismatch", str(cm.exception))
+
 
 if __name__ == '__main__':
     unittest.main()
