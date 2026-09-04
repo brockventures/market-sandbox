@@ -214,12 +214,13 @@ def make_handler(referee: AgoraReferee, auth_tokens: Optional[Dict[str, str]] = 
 
 
 def run_server(host: Optional[str] = None, port: int = 8080, referee: Optional[AgoraReferee] = None, auth_tokens: Optional[Dict[str, str]] = None):
-    bind_host = host or os.environ.get('AGORA_HOST', '127.0.0.1')
-    ref = referee or AgoraReferee()
+    bind_host = host or os.environ.get('AGORA_HOST', '0.0.0.0' if 'PORT' in os.environ else '127.0.0.1')
+    db_path = os.environ.get('AGORA_DB_PATH', 'agora.db')
+    ref = referee or AgoraReferee(db_path=db_path)
     tokens = auth_tokens if auth_tokens is not None else get_configured_tokens()
     handler_class = make_handler(ref, auth_tokens=tokens)
     server = HTTPServer((bind_host, port), handler_class)
-    print(f"Agora Referee HTTP API listening on {bind_host}:{port}")
+    print(f"Agora Referee HTTP API listening on {bind_host}:{port} (db: {db_path})")
     if tokens:
         print(f"Configured auth tokens for agents: {list(tokens.keys())}")
     else:
@@ -234,6 +235,8 @@ def run_server(host: Optional[str] = None, port: int = 8080, referee: Optional[A
 
 if __name__ == '__main__':
     import sys
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
-    run_server(port=port)
+    raw_port = sys.argv[1] if len(sys.argv) > 1 else os.environ.get('PORT', '8080')
+    port = int(raw_port)
+    host = os.environ.get('AGORA_HOST', '0.0.0.0' if 'PORT' in os.environ else '127.0.0.1')
+    run_server(host=host, port=port)
 

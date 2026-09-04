@@ -26,7 +26,7 @@ class AgoraReferee:
         self._init_db()
 
     def _init_db(self):
-        """Load schema and genesis seed if database is uninitialized."""
+        """Load schema and genesis seed if database is uninitialized, and rehydrate book from open orders."""
         with self.conn:
             tables = [r[0] for r in self.conn.execute("""
                 SELECT name FROM sqlite_master WHERE type='table'
@@ -38,6 +38,39 @@ class AgoraReferee:
                     self.conn.executescript(schema_path.read_text())
                 if seed_path.exists():
                     self.conn.executescript(seed_path.read_text())
+            elif 'orders' in tables:
+                # Migration check: ensure filled_qty column exists if database pre-dated it
+                cols = [r[1] for r in self.conn.execute("PRAGMA table_info(orders)").fetchall()]
+                if 'filled_qty' not in cols:
+                    self.conn.execute("ALTER TABLE orders ADD COLUMN filled_qty INTEGER NOT NULL DEFAULT 0")
+
+            if 'orders' in tables or 'accounts' not in tables:
+                self._rehydrate_book()
+
+    def _rehydrate_book(self):
+        """Rehydrate resting orders from database into in-memory order book in price-time priority."""
+        cur = self.conn.cursor()
+        cur.execute("""
+            SELECT order_id, agent_id, instrument, side, qty, limit_price, seq_seen, filled_qty
+            FROM orders
+            WHERE status = 'open' AND (qty - filled_qty) > 0
+            ORDER BY submitted_at ASC
+        """)
+        for r in cur.fetchall():
+            order = Order(
+                order_id=r['order_id'],
+                agent_id=r['agent_id'],
+                instrument=r['instrument'],
+                side=r['side'],
+                qty=r['qty'],
+                limit_price=r['limit_price'],
+                seq_seen=r['seq_seen'],
+                filled_qty=r['filled_qty']
+            )
+            if order.side == 'bid':
+                self.book._insert_bid(order)
+            elif order.side == 'ask':
+                self.book._insert_ask(order)
 
     @property
     def current_seq(self) -> int:
@@ -258,9 +291,9 @@ class AgoraReferee:
                 # Record submission in orders table
                 status = 'filled' if order.is_filled else 'open'
                 self.conn.execute("""
-                    INSERT INTO orders (order_id, agent_id, instrument, side, qty, limit_price, seq_seen, status, resolved_seq)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (order_id, agent_id, instrument, side, qty, limit_price, seq_seen, status, next_seq if order.is_filled else None))
+                    INSERT INTO orders (order_id, agent_id, instrument, side, qty, limit_price, seq_seen, status, resolved_seq, filled_qty)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (order_id, agent_id, instrument, side, qty, limit_price, seq_seen, status, next_seq if order.is_filled else None, order.filled_qty))
 
                 # Record book event
                 self.conn.execute("""
@@ -346,6 +379,17 @@ class AgoraReferee:
                         'qty': trade.qty,
                         'cost': cost
                     })))
+
+                    # Update maker resting order in orders table
+                    maker_order_id = trade.ask_order_id if order.side == 'bid' else trade.bid_order_id
+                    maker_agent_id = trade.seller_id if order.side == 'bid' else trade.buyer_id
+                    self.conn.execute("""
+                        UPDATE orders
+                        SET filled_qty = filled_qty + ?,
+                            status = CASE WHEN filled_qty + ? >= qty THEN 'filled' ELSE status END,
+                            resolved_seq = CASE WHEN filled_qty + ? >= qty THEN ? ELSE resolved_seq END
+                        WHERE order_id = ? AND agent_id = ?
+                    """, (trade.qty, trade.qty, trade.qty, next_seq, maker_order_id, maker_agent_id))
         except Exception:
             self.book = book_snapshot
             raise
