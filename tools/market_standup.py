@@ -21,6 +21,7 @@ import json
 import time
 import argparse
 import subprocess
+import threading
 from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -29,31 +30,58 @@ TOOLS_DIR = Path(__file__).resolve().parent
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
-# Graceful fallback for external repo checkouts / test runs lacking local host tools
-try:
+# Explicit gating for test mode per Amos & Marvin review
+IS_TEST_MODE = bool(os.environ.get("AGORA_TEST_MODE") or "--test" in sys.argv)
+
+class BananaError(Exception):
+    pass
+
+class BananaBlockedError(BananaError):
+    def __init__(self, current_holder: str = "unknown", state: dict = None):
+        super().__init__(f"Floor is currently claimed by '{current_holder}'")
+        self.current_holder = current_holder
+        self.holder = current_holder
+        self.state = state or {}
+
+class InProcessTestMutex:
+    """Real in-process mutex simulating Banana mutex contention and state."""
+    def __init__(self):
+        self._holder = None
+        self._lock = threading.Lock()
+
+    def claim(self, holder: str = "zero-market-standup"):
+        with self._lock:
+            if self._holder is not None and self._holder != holder:
+                raise BananaBlockedError(self._holder, {"holder": self._holder, "claimed_at": time.time()})
+            self._holder = holder
+            return True
+
+    def release(self, holder: str = "zero-market-standup"):
+        with self._lock:
+            if self._holder == holder or self._holder is not None:
+                self._holder = None
+            return True
+
+if IS_TEST_MODE:
+    _test_mutex = InProcessTestMutex()
+    def claim(holder="zero-market-standup"):
+        return _test_mutex.claim(holder)
+    def release(holder="zero-market-standup"):
+        return _test_mutex.release(holder)
+    def queue_outbox_message(channel, message):
+        return {"id": "test-mock-outbox-id", "status": "mock-queued"}
+else:
+    # Live production dispatch: hard dependency requirement. No silent mock success.
     if "/workspace/tools" not in sys.path and Path("/workspace/tools").is_dir():
         sys.path.insert(0, "/workspace/tools")
-    from banana import claim, release, BananaError, BananaBlockedError
-except (ImportError, AttributeError):
-    class BananaError(Exception):
-        pass
-
-    class BananaBlockedError(BananaError):
-        def __init__(self, message="Banana lock is held", holder="unknown"):
-            super().__init__(message)
-            self.holder = holder
-
-    def claim(holder="zero"):
-        return True
-
-    def release():
-        return True
-
-try:
-    from outbox import queue_outbox_message
-except ImportError:
-    def queue_outbox_message(channel, message):
-        return {"id": "mock-outbox-id", "status": "queued-mock"}
+    try:
+        from banana import claim, release, BananaError, BananaBlockedError
+        from outbox import queue_outbox_message
+    except (ImportError, AttributeError) as e:
+        raise ImportError(
+            f"Production dependency error: {e}. Live dispatch requires host tools 'banana' and 'outbox'. "
+            "For offline testing or peer checkouts, run with '--test' or set AGORA_TEST_MODE=1."
+        ) from e
 
 PT = ZoneInfo("America/Los_Angeles")
 DATA_DIR = Path("/workspace/data")
@@ -187,8 +215,34 @@ def dispatch_market_standup(test_mode: bool = False, quiet: bool = False) -> dic
 
     if test_mode:
         if not quiet:
+            print("[TEST MODE] Exercising mutex contention and release lifecycle...")
+        # 1. Exercise contention test
+        claim("test-holder-a")
+        try:
+            claim("test-holder-b")
+            raise AssertionError("Test failed: Mutex allowed concurrent claim without contention error!")
+        except BananaBlockedError as e:
+            if not quiet:
+                print(f"[TEST MODE] Contention correctly rejected: {e}")
+        finally:
+            release("test-holder-a")
+
+        # 2. Exercise full standup claim, queue, and release flow
+        claim("zero-market-standup")
+        try:
+            res = queue_outbox_message(TARGET_CHANNEL, message)
+        finally:
+            release("zero-market-standup")
+
+        if not quiet:
             print("[TEST MODE] Constructed message:\n" + message)
-        return {"status": "ok", "test": True, "prs": len(state.get("open_prs", []))}
+        return {
+            "status": "ok",
+            "test": True,
+            "prs": len(state.get("open_prs", [])),
+            "contention_verified": True,
+            "mock_outbox_id": res.get("id")
+        }
 
     # Step 1: Claim Banana Mutex
     claimed = False
@@ -196,7 +250,8 @@ def dispatch_market_standup(test_mode: bool = False, quiet: bool = False) -> dic
         claim("zero-market-standup")
         claimed = True
     except BananaBlockedError as e:
-        return {"status": "error", "error": f"Banana blocked by {e.holder}"}
+        holder = getattr(e, "current_holder", getattr(e, "holder", "unknown"))
+        return {"status": "error", "error": f"Banana blocked by {holder}"}
     except Exception as e:
         return {"status": "error", "error": f"Banana claim failed: {e}"}
 
