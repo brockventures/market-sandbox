@@ -412,6 +412,87 @@ class TestAgoraEngine(unittest.TestCase):
         self.assertEqual(len(referee.book.asks), 1)
         self.assertEqual(referee.book.asks[0].order_id, 'ask-zero-10')
 
+    def test_restart_rehydration_and_oversell_prevention(self):
+        import tempfile
+        import os
+        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
+            db_path = f.name
+
+        try:
+            # Phase 1: Initialize referee with file-backed DB and place resting ask
+            ref1 = AgoraReferee(db_path=db_path)
+            # Amos has 1000 BANANA initially
+            ask_env = {
+                'v': 1, 'kind': 'order',
+                'payload': {
+                    'order_id': 'persist-1',
+                    'agent_id': 'amos',
+                    'instrument': 'BANANA',
+                    'side': 'ask',
+                    'qty': 1000,
+                    'limit_price': 10,
+                    'seq_seen': ref1.current_seq
+                }
+            }
+            res = ref1.submit_envelope(ask_env)
+            self.assertEqual(res['kind'], 'market_tick')
+            self.assertEqual(len(ref1.book.asks), 1)
+            ref1.conn.close()
+
+            # Phase 2: Simulate process restart (new instance against same db file)
+            ref2 = AgoraReferee(db_path=db_path)
+            # Verify book was rehydrated
+            self.assertEqual(len(ref2.book.asks), 1, "Resting asks must be rehydrated from orders table on startup")
+            self.assertEqual(ref2.book.asks[0].order_id, 'persist-1')
+            self.assertEqual(ref2.book.asks[0].remaining_qty, 1000)
+
+            # Verify oversell prevention: Amos attempts to sell another 10 BANANA, but all 1000 are committed
+            oversell_env = {
+                'v': 1, 'kind': 'order',
+                'payload': {
+                    'order_id': 'persist-2',
+                    'agent_id': 'amos',
+                    'instrument': 'BANANA',
+                    'side': 'ask',
+                    'qty': 10,
+                    'limit_price': 10,
+                    'seq_seen': ref2.current_seq
+                }
+            }
+            rej = ref2.submit_envelope(oversell_env)
+            self.assertEqual(rej['kind'], 'reject')
+            self.assertEqual(rej['payload']['reason'], 'insufficient_balance')
+
+            # Phase 3: Zero crosses 400 BANANA against the rehydrated ask (cost: 400 * 10 = 4,000 CREDITS <= 10,000)
+            bid_env = {
+                'v': 1, 'kind': 'order',
+                'payload': {
+                    'order_id': 'persist-3',
+                    'agent_id': 'zero',
+                    'instrument': 'BANANA',
+                    'side': 'bid',
+                    'qty': 400,
+                    'limit_price': 10,
+                    'seq_seen': ref2.current_seq
+                }
+            }
+            trade_res = ref2.submit_envelope(bid_env)
+            self.assertEqual(trade_res['kind'], 'market_tick')
+            self.assertEqual(trade_res['payload']['trades_count'], 1)
+            self.assertEqual(len(ref2.book.asks), 1)
+            self.assertEqual(ref2.book.asks[0].remaining_qty, 600)
+            ref2.conn.close()
+
+            # Phase 4: Second restart after partial fill
+            ref3 = AgoraReferee(db_path=db_path)
+            self.assertEqual(len(ref3.book.asks), 1)
+            self.assertEqual(ref3.book.asks[0].remaining_qty, 600)
+            self.assertEqual(ref3.book.asks[0].filled_qty, 400)
+            ref3.conn.close()
+        finally:
+            if os.path.exists(db_path):
+                os.remove(db_path)
+
 
 if __name__ == '__main__':
     unittest.main()
