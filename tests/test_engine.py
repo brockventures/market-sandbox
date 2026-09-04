@@ -263,8 +263,11 @@ class TestAgoraEngine(unittest.TestCase):
     def test_cross_currency_mismatch_and_reconciliation_invariant(self):
         referee = AgoraReferee()
 
-        # Simulate Amos's repro: rename zero's account to CREDITS while amos remains CASH
-        referee.conn.execute("UPDATE accounts SET instrument = 'CREDITS' WHERE agent_id = 'zero' AND instrument = 'CASH'")
+        curr = referee.get_currency_instrument('zero')
+        mismatched = 'CASH' if curr == 'CREDITS' else 'CREDITS'
+
+        # Simulate Amos's repro: rename zero's account to mismatched currency while amos remains on curr
+        referee.conn.execute("UPDATE accounts SET instrument = ? WHERE agent_id = 'zero' AND instrument = ?", (mismatched, curr))
 
         # Invariant 3 immediately catches that zero's accounts row does not match ledger_entries sum!
         valid, errors = referee.verify_ledger_invariants()
@@ -272,7 +275,7 @@ class TestAgoraEngine(unittest.TestCase):
         self.assertTrue(any("Reconciliation breach" in e for e in errors))
 
         # Further, if zero attempts a cross trade against amos, settlement raises RuntimeError on currency mismatch
-        # Amos posts ask on CASH (rests on book)
+        # Amos posts ask on curr (rests on book)
         ask_env = {
             'v': 1, 'kind': 'order',
             'payload': {
@@ -346,8 +349,10 @@ class TestAgoraEngine(unittest.TestCase):
 
     def test_pre_match_currency_gate_quantity_accounting(self):
         referee = AgoraReferee()
+        curr = referee.get_currency_instrument('marvin')
+        mismatched = 'CASH' if curr == 'CREDITS' else 'CREDITS'
 
-        # 1. Marvin (CASH) rests ask: 10 @ 10
+        # 1. Marvin rests ask: 10 @ 10
         ask_marvin = {
             'v': 1, 'kind': 'order',
             'payload': {
@@ -358,10 +363,10 @@ class TestAgoraEngine(unittest.TestCase):
         res_m = referee.submit_envelope(ask_marvin)
         self.assertEqual(res_m['kind'], 'market_tick')
 
-        # 2. Reassign Zero to CREDITS to simulate mixed book during migration
-        referee.conn.execute("UPDATE accounts SET instrument = 'CREDITS' WHERE agent_id = 'zero' AND instrument = 'CASH'")
+        # 2. Reassign Zero to mismatched currency to simulate mixed book during migration
+        referee.conn.execute("UPDATE accounts SET instrument = ? WHERE agent_id = 'zero' AND instrument = ?", (mismatched, curr))
 
-        # Zero (CREDITS) rests ask: 10 @ 10 right behind Marvin in time priority
+        # Zero rests ask: 10 @ 10 right behind Marvin in time priority
         ask_zero = {
             'v': 1, 'kind': 'order',
             'payload': {
@@ -373,8 +378,8 @@ class TestAgoraEngine(unittest.TestCase):
         self.assertEqual(res_z['kind'], 'market_tick')
         self.assertEqual(len(referee.book.asks), 2)
 
-        # 3. Amos (CASH) submits bid for 10 @ 10
-        # Fully satisfied by Marvin's resting ask; should NOT be poisoned by Zero's resting CREDITS ask behind it
+        # 3. Amos submits bid for 10 @ 10
+        # Fully satisfied by Marvin's resting ask; should NOT be poisoned by Zero's resting ask behind it
         bid_amos_1 = {
             'v': 1, 'kind': 'order',
             'payload': {
@@ -385,15 +390,15 @@ class TestAgoraEngine(unittest.TestCase):
         res_amos_1 = referee.submit_envelope(bid_amos_1)
         self.assertEqual(res_amos_1['kind'], 'market_tick')
         self.assertEqual(res_amos_1['payload']['trades_count'], 1)
-        self.assertEqual(referee.get_balance('marvin', 'CASH'), 10100)
-        self.assertEqual(referee.get_balance('amos', 'CASH'), 9900)
+        self.assertEqual(referee.get_balance('marvin', curr), 10100)
+        self.assertEqual(referee.get_balance('amos', curr), 9900)
 
         # Zero's ask remains on the book untouched
         self.assertEqual(len(referee.book.asks), 1)
         self.assertEqual(referee.book.asks[0].order_id, 'ask-zero-10')
 
         # 4. Amos submits second bid for 10 @ 10
-        # This one WOULD consume Zero's CREDITS ask -> cleanly rejected by pre-match gate
+        # This one WOULD consume Zero's mismatched ask -> cleanly rejected by pre-match gate
         bid_amos_2 = {
             'v': 1, 'kind': 'order',
             'payload': {
