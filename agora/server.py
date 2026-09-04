@@ -8,6 +8,7 @@ Implements Section 3 endpoints of docs/wire-spec.md:
 - GET  /referee/health
 """
 
+import hmac
 import json
 import os
 import urllib.parse
@@ -77,7 +78,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
 
         tokens = self.auth_tokens if self.auth_tokens is not None else get_configured_tokens()
         for agent_id, expected_token in tokens.items():
-            if expected_token and token == expected_token:
+            if expected_token and hmac.compare_digest(token, expected_token):
                 return agent_id, None
 
         return None, {
@@ -212,12 +213,13 @@ def make_handler(referee: AgoraReferee, auth_tokens: Optional[Dict[str, str]] = 
     return CustomHandler
 
 
-def run_server(host: str = '0.0.0.0', port: int = 8080, referee: Optional[AgoraReferee] = None, auth_tokens: Optional[Dict[str, str]] = None):
+def run_server(host: Optional[str] = None, port: int = 8080, referee: Optional[AgoraReferee] = None, auth_tokens: Optional[Dict[str, str]] = None):
+    bind_host = host or os.environ.get('AGORA_HOST', '127.0.0.1')
     ref = referee or AgoraReferee()
     tokens = auth_tokens if auth_tokens is not None else get_configured_tokens()
     handler_class = make_handler(ref, auth_tokens=tokens)
-    server = HTTPServer((host, port), handler_class)
-    print(f"Agora Referee HTTP API listening on {host}:{port}")
+    server = HTTPServer((bind_host, port), handler_class)
+    print(f"Agora Referee HTTP API listening on {bind_host}:{port}")
     if tokens:
         print(f"Configured auth tokens for agents: {list(tokens.keys())}")
     else:
