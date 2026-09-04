@@ -30,13 +30,7 @@ TOOLS_DIR = Path(__file__).resolve().parent
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
-# Explicit gating for test mode per Amos & Marvin review
-IS_TEST_MODE = bool(os.environ.get("AGORA_TEST_MODE") or "--test" in sys.argv)
-
-class BananaError(Exception):
-    pass
-
-class BananaBlockedError(BananaError):
+class BananaBlockedError(Exception):
     def __init__(self, current_holder: str = "unknown", state: dict = None):
         super().__init__(f"Floor is currently claimed by '{current_holder}'")
         self.current_holder = current_holder
@@ -44,7 +38,7 @@ class BananaBlockedError(BananaError):
         self.state = state or {}
 
 class InProcessTestMutex:
-    """Real in-process mutex simulating Banana mutex contention and state."""
+    """In-process test mutex simulating Banana mutex contention and state for --test."""
     def __init__(self):
         self._holder = None
         self._lock = threading.Lock()
@@ -61,27 +55,6 @@ class InProcessTestMutex:
             if self._holder == holder or self._holder is not None:
                 self._holder = None
             return True
-
-if IS_TEST_MODE:
-    _test_mutex = InProcessTestMutex()
-    def claim(holder="zero-market-standup"):
-        return _test_mutex.claim(holder)
-    def release(holder="zero-market-standup"):
-        return _test_mutex.release(holder)
-    def queue_outbox_message(channel, message):
-        return {"id": "test-mock-outbox-id", "status": "mock-queued"}
-else:
-    # Live production dispatch: hard dependency requirement. No silent mock success.
-    if "/workspace/tools" not in sys.path and Path("/workspace/tools").is_dir():
-        sys.path.insert(0, "/workspace/tools")
-    try:
-        from banana import claim, release, BananaError, BananaBlockedError
-        from outbox import queue_outbox_message
-    except (ImportError, AttributeError) as e:
-        raise ImportError(
-            f"Production dependency error: {e}. Live dispatch requires host tools 'banana' and 'outbox'. "
-            "For offline testing or peer checkouts, run with '--test' or set AGORA_TEST_MODE=1."
-        ) from e
 
 PT = ZoneInfo("America/Los_Angeles")
 DATA_DIR = Path("/workspace/data")
@@ -216,23 +189,23 @@ def dispatch_market_standup(test_mode: bool = False, quiet: bool = False) -> dic
     if test_mode:
         if not quiet:
             print("[TEST MODE] Exercising mutex contention and release lifecycle...")
+        test_mutex = InProcessTestMutex()
+
         # 1. Exercise contention test
-        claim("test-holder-a")
+        test_mutex.claim("test-holder-a")
         try:
-            claim("test-holder-b")
+            test_mutex.claim("test-holder-b")
             raise AssertionError("Test failed: Mutex allowed concurrent claim without contention error!")
         except BananaBlockedError as e:
             if not quiet:
                 print(f"[TEST MODE] Contention correctly rejected: {e}")
         finally:
-            release("test-holder-a")
+            test_mutex.release("test-holder-a")
 
-        # 2. Exercise full standup claim, queue, and release flow
-        claim("zero-market-standup")
-        try:
-            res = queue_outbox_message(TARGET_CHANNEL, message)
-        finally:
-            release("zero-market-standup")
+        # 2. Exercise simulated standup claim, mock queue, and release flow
+        test_mutex.claim("zero-market-standup")
+        mock_outbox_id = f"test-mock-{int(time.time())}"
+        test_mutex.release("zero-market-standup")
 
         if not quiet:
             print("[TEST MODE] Constructed message:\n" + message)
@@ -241,15 +214,36 @@ def dispatch_market_standup(test_mode: bool = False, quiet: bool = False) -> dic
             "test": True,
             "prs": len(state.get("open_prs", [])),
             "contention_verified": True,
-            "mock_outbox_id": res.get("id")
+            "mock_outbox_id": mock_outbox_id
         }
+
+    # Production / Live Dispatch Mode
+    # Invariant 3 Guard: Refuse live dispatch if test mode flag is active
+    if os.environ.get("AGORA_TEST_MODE"):
+        raise RuntimeError(
+            "Refusing live dispatch while AGORA_TEST_MODE is set. "
+            "Production dispatch requires live mode with real Banana mutex and outbox."
+        )
+
+    # Resolve production dependencies strictly - no silent mocks or stubs
+    if "/workspace/tools" not in sys.path and Path("/workspace/tools").is_dir():
+        sys.path.insert(0, "/workspace/tools")
+
+    try:
+        from banana import claim as live_claim, release as live_release, BananaBlockedError as LiveBananaBlockedError
+        from outbox import queue_outbox_message as live_queue_outbox
+    except (ImportError, AttributeError) as e:
+        raise ImportError(
+            f"Production dependency error: {e}. Live dispatch requires host tools 'banana' and 'outbox'. "
+            "For offline testing or peer checkouts, run with '--test'."
+        ) from e
 
     # Step 1: Claim Banana Mutex
     claimed = False
     try:
-        claim("zero-market-standup")
+        live_claim("zero-market-standup")
         claimed = True
-    except BananaBlockedError as e:
+    except LiveBananaBlockedError as e:
         holder = getattr(e, "current_holder", getattr(e, "holder", "unknown"))
         return {"status": "error", "error": f"Banana blocked by {holder}"}
     except Exception as e:
@@ -257,7 +251,7 @@ def dispatch_market_standup(test_mode: bool = False, quiet: bool = False) -> dic
 
     try:
         # Step 2: Queue to #the-banana-stand
-        res = queue_outbox_message(TARGET_CHANNEL, message)
+        res = live_queue_outbox(TARGET_CHANNEL, message)
         
         # Step 3: Record history
         record = {
@@ -281,7 +275,7 @@ def dispatch_market_standup(test_mode: bool = False, quiet: bool = False) -> dic
         # Step 4: Always release Banana Mutex
         if claimed:
             try:
-                release()
+                live_release()
             except Exception as e:
                 print(f"[WARN] Failed to release Banana token: {e}", file=sys.stderr)
 
@@ -298,12 +292,21 @@ def main():
         print(json.dumps(res, indent=2))
         sys.exit(0)
     elif args.dispatch:
+        if os.environ.get("AGORA_TEST_MODE"):
+            print(json.dumps({
+                "status": "error",
+                "error": "Cannot --dispatch while AGORA_TEST_MODE is set. Live dispatch requires real Banana mutex."
+            }, indent=2), file=sys.stderr)
+            sys.exit(1)
         res = dispatch_market_standup(test_mode=False, quiet=args.quiet)
         print(json.dumps(res, indent=2))
         sys.exit(0 if res.get("status") == "ok" else 1)
     else:
         # Default sidecar wrapper invocation
-        res = dispatch_market_standup(test_mode=False, quiet=args.quiet)
+        if os.environ.get("AGORA_TEST_MODE"):
+            res = dispatch_market_standup(test_mode=True, quiet=args.quiet)
+        else:
+            res = dispatch_market_standup(test_mode=False, quiet=args.quiet)
         print(json.dumps(res, indent=2))
         sys.exit(0 if res.get("status") == "ok" else 1)
 
