@@ -272,7 +272,7 @@ class TestAgoraEngine(unittest.TestCase):
         self.assertTrue(any("Reconciliation breach" in e for e in errors))
 
         # Further, if zero attempts a cross trade against amos, settlement raises RuntimeError on currency mismatch
-        # Amos posts ask on CASH
+        # Amos posts ask on CASH (rests on book)
         ask_env = {
             'v': 1, 'kind': 'order',
             'payload': {
@@ -281,8 +281,9 @@ class TestAgoraEngine(unittest.TestCase):
             }
         }
         referee.submit_envelope(ask_env)
+        self.assertEqual(len(referee.book.asks), 1)
 
-        # Zero attempts to cross with CREDITS
+        # Zero attempts to cross with CREDITS -> Pre-match currency audit cleanly rejects without touching book
         bid_env = {
             'v': 1, 'kind': 'order',
             'payload': {
@@ -290,9 +291,58 @@ class TestAgoraEngine(unittest.TestCase):
                 'side': 'bid', 'qty': 10, 'limit_price': 10, 'seq_seen': referee.current_seq
             }
         }
+        res_bid = referee.submit_envelope(bid_env)
+        self.assertEqual(res_bid['kind'], 'reject')
+        self.assertEqual(res_bid['payload']['reason'], 'currency_mismatch')
+
+        # Crucial Marvin bug check: Amos's resting ask must STILL be on book and escrowed
+        self.assertEqual(len(referee.book.asks), 1)
+        self.assertEqual(referee.book.asks[0].order_id, 'ask-cross-curr')
+        self.assertEqual(referee.book.asks[0].remaining_qty, 10)
+
+    def test_book_rollback_on_settlement_failure(self):
+        referee = AgoraReferee()
+
+        # Amos rests an ask: 100 BANANA @ 10
+        ask_env = {
+            'v': 1, 'kind': 'order',
+            'payload': {
+                'order_id': 'ask-rollback', 'agent_id': 'amos', 'instrument': 'BANANA',
+                'side': 'ask', 'qty': 100, 'limit_price': 10, 'seq_seen': referee.current_seq
+            }
+        }
+        referee.submit_envelope(ask_env)
+        self.assertEqual(referee.book.depth(), (0, 100))
+
+        # Monkeypatch get_currency_instrument during settlement to simulate unexpected error in settlement loop
+        orig_get_curr = referee.get_currency_instrument
+        def broken_get_curr(agent_id):
+            if agent_id == 'amos':
+                raise RuntimeError("Simulated transient failure during DB settlement")
+            return orig_get_curr(agent_id)
+
+        referee.get_currency_instrument = broken_get_curr
+
+        bid_env = {
+            'v': 1, 'kind': 'order',
+            'payload': {
+                'order_id': 'bid-fail', 'agent_id': 'zero', 'instrument': 'BANANA',
+                'side': 'bid', 'qty': 100, 'limit_price': 10, 'seq_seen': referee.current_seq
+            }
+        }
+
         with self.assertRaises(RuntimeError) as cm:
             referee.submit_envelope(bid_env)
-        self.assertIn("Currency mismatch", str(cm.exception))
+        self.assertIn("Simulated transient failure", str(cm.exception))
+
+        # Restore method
+        referee.get_currency_instrument = orig_get_curr
+
+        # Verify book was rolled back atomically: Amos's ask is preserved, depth is still (0, 100)
+        self.assertEqual(referee.book.depth(), (0, 100))
+        self.assertEqual(len(referee.book.asks), 1)
+        self.assertEqual(referee.book.asks[0].order_id, 'ask-rollback')
+        self.assertEqual(referee.book.asks[0].remaining_qty, 100)
 
 
 if __name__ == '__main__':

@@ -6,6 +6,7 @@ book matching, and atomic double-entry ledger settlement.
 import sqlite3
 import json
 import time
+import copy
 from typing import Optional, Dict, Any, Tuple, List
 from pathlib import Path
 
@@ -154,6 +155,28 @@ class AgoraReferee:
                     f"(balance {seller_balance} - committed {committed_banana}) insufficient for ask requirement {qty}"
                 )
 
+        # 3b. Currency Compatibility Audit for Crossing Orders (Pre-matching validation)
+        if side == 'bid':
+            for ask in self.book.asks:
+                if ask.limit_price > limit_price:
+                    break
+                ask_currency = self.get_currency_instrument(ask.agent_id)
+                if ask_currency != currency:
+                    return self._reject_envelope(
+                        order_id, agent_id, 'currency_mismatch',
+                        f"Order crosses resting ask from '{ask.agent_id}' with incompatible currency '{ask_currency}' vs '{currency}'"
+                    )
+        elif side == 'ask':
+            for bid in self.book.bids:
+                if bid.limit_price < limit_price:
+                    break
+                bid_currency = self.get_currency_instrument(bid.agent_id)
+                if bid_currency != currency:
+                    return self._reject_envelope(
+                        order_id, agent_id, 'currency_mismatch',
+                        f"Order crosses resting bid from '{bid.agent_id}' with incompatible currency '{bid_currency}' vs '{currency}'"
+                    )
+
         # 4. Matching & Atomic Ledger Settlement
         order = Order(
             order_id=order_id,
@@ -165,103 +188,108 @@ class AgoraReferee:
             seq_seen=seq_seen
         )
 
-        with self.conn:
-            next_seq = self.current_seq + 1
+        book_snapshot = copy.deepcopy(self.book)
+        try:
+            with self.conn:
+                next_seq = self.current_seq + 1
 
-            # Match against book
-            trades, resting = self.book.add_order(order, current_seq=next_seq)
+                # Match against book
+                trades, resting = self.book.add_order(order, current_seq=next_seq)
 
-            # Record submission in orders table
-            status = 'filled' if order.is_filled else 'open'
-            self.conn.execute("""
-                INSERT INTO orders (order_id, agent_id, instrument, side, qty, limit_price, seq_seen, status, resolved_seq)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (order_id, agent_id, instrument, side, qty, limit_price, seq_seen, status, next_seq if order.is_filled else None))
-
-            # Record book event
-            self.conn.execute("""
-                INSERT INTO book_events (seq, kind, payload)
-                VALUES (?, 'order', ?)
-            """, (next_seq, json.dumps(payload)))
-
-            # Settle each executed trade atomically in ledger_entries and accounts
-            for trade in trades:
-                self.last_price = trade.price
-                self.last_qty = trade.qty
-                buyer_currency = self.get_currency_instrument(trade.buyer_id)
-                seller_currency = self.get_currency_instrument(trade.seller_id)
-                if buyer_currency != seller_currency:
-                    raise RuntimeError(
-                        f"Currency mismatch during settlement: buyer '{trade.buyer_id}' uses {buyer_currency} "
-                        f"but seller '{trade.seller_id}' uses {seller_currency}"
-                    )
-                trade_currency = buyer_currency
-                cost = trade.price * trade.qty
-                txn_id = f'trade-{trade.trade_id}'
-
-                # Double-entry rows: sum(delta) == 0 per instrument
-                # Currency deltas
+                # Record submission in orders table
+                status = 'filled' if order.is_filled else 'open'
                 self.conn.execute("""
-                    INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (txn_id, next_seq, trade.buyer_id, trade_currency, -cost))
-                self.conn.execute("""
-                    INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (txn_id, next_seq, trade.seller_id, trade_currency, cost))
+                    INSERT INTO orders (order_id, agent_id, instrument, side, qty, limit_price, seq_seen, status, resolved_seq)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (order_id, agent_id, instrument, side, qty, limit_price, seq_seen, status, next_seq if order.is_filled else None))
 
-                # Commodity (BANANA) deltas
-                self.conn.execute("""
-                    INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (txn_id, next_seq, trade.buyer_id, 'BANANA', trade.qty))
-                self.conn.execute("""
-                    INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (txn_id, next_seq, trade.seller_id, 'BANANA', -trade.qty))
-
-                # Update accounts with strict rowcount validation (must match exactly 1 row per update)
-                cur = self.conn.execute(
-                    "UPDATE accounts SET balance = balance - ? WHERE agent_id = ? AND instrument = ?",
-                    (cost, trade.buyer_id, trade_currency)
-                )
-                if cur.rowcount != 1:
-                    raise RuntimeError(f"Failed to debit {trade.buyer_id} {trade_currency}: rowcount {cur.rowcount} != 1")
-
-                cur = self.conn.execute(
-                    "UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?",
-                    (cost, trade.seller_id, trade_currency)
-                )
-                if cur.rowcount != 1:
-                    raise RuntimeError(f"Failed to credit {trade.seller_id} {trade_currency}: rowcount {cur.rowcount} != 1")
-
-                cur = self.conn.execute(
-                    "UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = 'BANANA'",
-                    (trade.qty, trade.buyer_id)
-                )
-                if cur.rowcount != 1:
-                    raise RuntimeError(f"Failed to credit {trade.buyer_id} BANANA: rowcount {cur.rowcount} != 1")
-
-                cur = self.conn.execute(
-                    "UPDATE accounts SET balance = balance - ? WHERE agent_id = ? AND instrument = 'BANANA'",
-                    (trade.qty, trade.seller_id)
-                )
-                if cur.rowcount != 1:
-                    raise RuntimeError(f"Failed to debit {trade.seller_id} BANANA: rowcount {cur.rowcount} != 1")
-
-                # Record trade event in book_events
-                trade_seq = self.current_seq + 1
+                # Record book event
                 self.conn.execute("""
                     INSERT INTO book_events (seq, kind, payload)
-                    VALUES (?, 'trade', ?)
-                """, (trade_seq, json.dumps({
-                    'trade_id': trade.trade_id,
-                    'buyer_id': trade.buyer_id,
-                    'seller_id': trade.seller_id,
-                    'price': trade.price,
-                    'qty': trade.qty,
-                    'cost': cost
-                })))
+                    VALUES (?, 'order', ?)
+                """, (next_seq, json.dumps(payload)))
+
+                # Settle each executed trade atomically in ledger_entries and accounts
+                for trade in trades:
+                    self.last_price = trade.price
+                    self.last_qty = trade.qty
+                    buyer_currency = self.get_currency_instrument(trade.buyer_id)
+                    seller_currency = self.get_currency_instrument(trade.seller_id)
+                    if buyer_currency != seller_currency:
+                        raise RuntimeError(
+                            f"Currency mismatch during settlement: buyer '{trade.buyer_id}' uses {buyer_currency} "
+                            f"but seller '{trade.seller_id}' uses {seller_currency}"
+                        )
+                    trade_currency = buyer_currency
+                    cost = trade.price * trade.qty
+                    txn_id = f'trade-{trade.trade_id}'
+
+                    # Double-entry rows: sum(delta) == 0 per instrument
+                    # Currency deltas
+                    self.conn.execute("""
+                        INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (txn_id, next_seq, trade.buyer_id, trade_currency, -cost))
+                    self.conn.execute("""
+                        INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (txn_id, next_seq, trade.seller_id, trade_currency, cost))
+
+                    # Commodity (BANANA) deltas
+                    self.conn.execute("""
+                        INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (txn_id, next_seq, trade.buyer_id, 'BANANA', trade.qty))
+                    self.conn.execute("""
+                        INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (txn_id, next_seq, trade.seller_id, 'BANANA', -trade.qty))
+
+                    # Update accounts with strict rowcount validation (must match exactly 1 row per update)
+                    cur = self.conn.execute(
+                        "UPDATE accounts SET balance = balance - ? WHERE agent_id = ? AND instrument = ?",
+                        (cost, trade.buyer_id, trade_currency)
+                    )
+                    if cur.rowcount != 1:
+                        raise RuntimeError(f"Failed to debit {trade.buyer_id} {trade_currency}: rowcount {cur.rowcount} != 1")
+
+                    cur = self.conn.execute(
+                        "UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?",
+                        (cost, trade.seller_id, trade_currency)
+                    )
+                    if cur.rowcount != 1:
+                        raise RuntimeError(f"Failed to credit {trade.seller_id} {trade_currency}: rowcount {cur.rowcount} != 1")
+
+                    cur = self.conn.execute(
+                        "UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = 'BANANA'",
+                        (trade.qty, trade.buyer_id)
+                    )
+                    if cur.rowcount != 1:
+                        raise RuntimeError(f"Failed to credit {trade.buyer_id} BANANA: rowcount {cur.rowcount} != 1")
+
+                    cur = self.conn.execute(
+                        "UPDATE accounts SET balance = balance - ? WHERE agent_id = ? AND instrument = 'BANANA'",
+                        (trade.qty, trade.seller_id)
+                    )
+                    if cur.rowcount != 1:
+                        raise RuntimeError(f"Failed to debit {trade.seller_id} BANANA: rowcount {cur.rowcount} != 1")
+
+                    # Record trade event in book_events
+                    trade_seq = self.current_seq + 1
+                    self.conn.execute("""
+                        INSERT INTO book_events (seq, kind, payload)
+                        VALUES (?, 'trade', ?)
+                    """, (trade_seq, json.dumps({
+                        'trade_id': trade.trade_id,
+                        'buyer_id': trade.buyer_id,
+                        'seller_id': trade.seller_id,
+                        'price': trade.price,
+                        'qty': trade.qty,
+                        'cost': cost
+                    })))
+        except Exception:
+            self.book = book_snapshot
+            raise
 
         # 5. Emit Market Discovery Broadcast (kind: market_tick)
         return {
