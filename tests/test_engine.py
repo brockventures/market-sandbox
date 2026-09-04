@@ -14,9 +14,9 @@ class TestAgoraEngine(unittest.TestCase):
         referee = AgoraReferee()
         valid, errors = referee.verify_ledger_invariants()
         self.assertTrue(valid, f"Genesis invariants failed: {errors}")
-        self.assertEqual(referee.get_balance('amos', 'CASH'), 10000)
+        self.assertEqual(referee.get_balance('amos', 'CREDITS'), 10000)
         self.assertEqual(referee.get_balance('amos', 'BANANA'), 1000)
-        self.assertEqual(referee.get_balance('SYSTEM', 'CASH'), -30000)
+        self.assertEqual(referee.get_balance('SYSTEM', 'CREDITS'), -30000)
 
     def test_order_matching_and_double_entry_settlement(self):
         referee = AgoraReferee()
@@ -61,12 +61,12 @@ class TestAgoraEngine(unittest.TestCase):
         self.assertEqual(tick2['payload']['last_qty'], 60)
 
         # Verify Account Balances:
-        # Execution cost = 60 * 12 = 720 CASH
-        # Zero (buyer): CASH 10000 - 720 = 9280, BANANA 1000 + 60 = 1060
-        # Amos (seller): CASH 10000 + 720 = 10720, BANANA 1000 - 60 = 940
-        self.assertEqual(referee.get_balance('zero', 'CASH'), 9280)
+        # Execution cost = 60 * 12 = 720 CREDITS
+        # Zero (buyer): CREDITS 10000 - 720 = 9280, BANANA 1000 + 60 = 1060
+        # Amos (seller): CREDITS 10000 + 720 = 10720, BANANA 1000 - 60 = 940
+        self.assertEqual(referee.get_balance('zero', 'CREDITS'), 9280)
         self.assertEqual(referee.get_balance('zero', 'BANANA'), 1060)
-        self.assertEqual(referee.get_balance('amos', 'CASH'), 10720)
+        self.assertEqual(referee.get_balance('amos', 'CREDITS'), 10720)
         self.assertEqual(referee.get_balance('amos', 'BANANA'), 940)
 
         # Verify Ledger Invariants (sum delta == 0)
@@ -95,7 +95,7 @@ class TestAgoraEngine(unittest.TestCase):
         self.assertEqual(reject['payload']['reason'], 'insufficient_balance')
 
         # Ensure balances and invariants completely undisturbed
-        self.assertEqual(referee.get_balance('marvin', 'CASH'), 10000)
+        self.assertEqual(referee.get_balance('marvin', 'CREDITS'), 10000)
         valid, errors = referee.verify_ledger_invariants()
         self.assertTrue(valid, f"Invariants breached on reject: {errors}")
 
@@ -210,9 +210,9 @@ class TestAgoraEngine(unittest.TestCase):
         # Note: ask1 crosses resting bid1 (60) and bid3 (40), executing 100 BANANA total!
         # Remaining 500 BANANA rests on book.
         self.assertEqual(res_ask1['payload']['trades_count'], 2)
-        self.assertEqual(referee.get_balance('zero', 'CASH'), 0)  # 10,000 - 6,000 - 4,000
+        self.assertEqual(referee.get_balance('zero', 'CREDITS'), 0)  # 10,000 - 6,000 - 4,000
         self.assertEqual(referee.get_balance('zero', 'BANANA'), 1100)
-        self.assertEqual(referee.get_balance('amos', 'CASH'), 20000)
+        self.assertEqual(referee.get_balance('amos', 'CREDITS'), 20000)
         self.assertEqual(referee.get_balance('amos', 'BANANA'), 900)
 
         # Amos now has 900 BANANA, with 500 committed in resting ask1. Available = 400.

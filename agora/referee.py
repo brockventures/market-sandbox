@@ -7,6 +7,7 @@ import sqlite3
 import json
 import time
 import copy
+import threading
 from typing import Optional, Dict, Any, Tuple, List
 from pathlib import Path
 
@@ -16,8 +17,9 @@ from agora.order_book import OrderBook, Order, Trade
 class AgoraReferee:
     def __init__(self, db_path: str = ':memory:'):
         self.db_path = db_path
-        self.conn = sqlite3.connect(db_path)
+        self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        self.lock = threading.Lock()
         self.book = OrderBook(instrument='BANANA')
         self.last_price: Optional[int] = None
         self.last_qty: Optional[int] = None
@@ -65,9 +67,58 @@ class AgoraReferee:
         cur = self.conn.cursor()
         cur.execute("SELECT instrument FROM accounts WHERE agent_id = ? AND instrument IN ('CREDITS', 'CASH') LIMIT 1", (agent_id,))
         row = cur.fetchone()
-        return row[0] if row else 'CASH'
+        return row[0] if row else 'CREDITS'
+
+    def get_book_snapshot(self) -> Dict[str, Any]:
+        return self.book.to_dict()
+
+    def get_ticks(self, since_seq: int = 0) -> List[Dict[str, Any]]:
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT seq, kind, payload, created_at FROM book_events WHERE seq > ? ORDER BY seq ASC",
+            (since_seq,)
+        )
+        ticks = []
+        for r in cur.fetchall():
+            payload = r['payload']
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except Exception:
+                    pass
+            ticks.append({
+                'seq': r['seq'],
+                'kind': r['kind'],
+                'payload': payload,
+                'created_at': r['created_at']
+            })
+        return ticks
+
+    def get_accounts(self, agent_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        cur = self.conn.cursor()
+        if agent_id:
+            cur.execute(
+                "SELECT agent_id, instrument, balance FROM accounts WHERE agent_id = ? ORDER BY instrument ASC",
+                (agent_id,)
+            )
+        else:
+            cur.execute(
+                "SELECT agent_id, instrument, balance FROM accounts ORDER BY agent_id ASC, instrument ASC"
+            )
+        return [
+            {
+                'agent_id': r['agent_id'],
+                'instrument': r['instrument'],
+                'balance': r['balance']
+            }
+            for r in cur.fetchall()
+        ]
 
     def submit_envelope(self, envelope: Dict[str, Any]) -> Dict[str, Any]:
+        with self.lock:
+            return self._submit_envelope_locked(envelope)
+
+    def _submit_envelope_locked(self, envelope: Dict[str, Any]) -> Dict[str, Any]:
         """
         Process an inbound handoff envelope.
         Routes kind='order' through validation, book matching, and ledger settlement.
