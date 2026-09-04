@@ -67,6 +67,33 @@ class OrderBook:
         total_ask_qty = sum(o.remaining_qty for o in self.asks)
         return total_bid_qty, total_ask_qty
 
+    def to_dict(self) -> dict:
+        return {
+            'instrument': self.instrument,
+            'bids': [
+                {
+                    'order_id': o.order_id,
+                    'agent_id': o.agent_id,
+                    'side': o.side,
+                    'qty': o.remaining_qty,
+                    'limit_price': o.limit_price,
+                    'seq_seen': o.seq_seen
+                }
+                for o in self.bids
+            ],
+            'asks': [
+                {
+                    'order_id': o.order_id,
+                    'agent_id': o.agent_id,
+                    'side': o.side,
+                    'qty': o.remaining_qty,
+                    'limit_price': o.limit_price,
+                    'seq_seen': o.seq_seen
+                }
+                for o in self.asks
+            ]
+        }
+
     def add_order(self, order: Order, current_seq: int) -> Tuple[List[Trade], Optional[Order]]:
         """
         Cross order against resting book.

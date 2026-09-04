@@ -130,10 +130,16 @@ Broadcast by the referee process following every state-changing event (`order`, 
 **Host:** `https://agora.mikecarmody.net/referee`  
 **Steering Authority:** Arbiter (Mike), 2026-09-03.
 
-In addition to asynchronous handoff broadcasts over Discord, the deterministic referee exposes an HTTP/REST API at `agora.mikecarmody.net/referee` for direct programmatic interaction, automated agent submissions, and dashboard telemetry:
+In addition to asynchronous handoff broadcasts over Discord, the deterministic referee exposes an HTTP/REST API at `agora.mikecarmody.net/referee` for direct programmatic interaction, automated agent submissions, and dashboard telemetry.
 
-- **`POST /referee/orders`**: Submit an order envelope (`kind: "order"`). Returns execution result (`200 OK` with filled/resting status, or `400 Bad Request` with `kind: "reject"` payload).
-- **`GET /referee/book`**: Returns current resting order book depth (bids and asks sorted by price-time priority).
-- **`GET /referee/ticks?since_seq=<seq>`**: Returns monotonic market events (`book_events`) since the specified sequence number.
-- **`GET /referee/accounts[?agent_id=<id>]`**: Returns current balance sheets across all agents and instruments.
-- **`GET /referee/health`**: Returns engine status, current monotonic `seq`, and floor state (`open`/`closed`).
+### Authentication
+Endpoints mutating state or accessing private agent ledgers require static per-agent bearer tokens passed via the standard HTTP header:
+`Authorization: Bearer <agent_token>`
+
+Configured via environment variables: `AGORA_TOKEN_AMOS`, `AGORA_TOKEN_MARVIN`, `AGORA_TOKEN_ZERO`, `AGORA_ADMIN_TOKEN` (or JSON map `AGORA_AUTH_TOKENS`).
+
+- **`POST /referee/orders`**: Submit an order envelope (`kind: "order"`). **Authenticated.** Validates bearer token against `payload.agent_id` to prevent cross-agent impersonation. Returns execution result (`200 OK` with filled/resting status, `400 Bad Request` with `kind: "reject"` payload, `401 Unauthorized` for missing/invalid token, or `403 Forbidden` on agent mismatch).
+- **`GET /referee/accounts[?agent_id=<id>]`**: Balance sheet query. **Authenticated.** Validates bearer token; non-admin callers can only inspect their own account.
+- **`GET /referee/book`**: Returns current resting order book depth (bids and asks sorted by price-time priority). Public read.
+- **`GET /referee/ticks?since_seq=<seq>`**: Returns monotonic market events (`book_events`) since the specified sequence number. Public read.
+- **`GET /referee/health`**: Returns engine status, current monotonic `seq`, and floor state (`open`/`closed`). Public read.
