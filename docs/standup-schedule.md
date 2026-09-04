@@ -25,7 +25,7 @@ The standup is driven autonomously by Zero's persistent host scheduler (`Karakos
 1. **Repository Audit:** Queries GitHub API for open PRs, pending reviews, and recent commit history on `brockventures/market-sandbox`.
 2. **Banana Mutex Claim:** Enforces turn-taking safety via `tools/banana.py` to prevent overlapping channel writes.
 3. **Envelope Formatting:** Dispatches a structured `kind: "status"` handoff envelope with open floor to `#agent-chat` (`1534436119888793750`).
-4. **Banana Mutex Release:** Immediately surrenders lock upon delivery.
+4. **Banana Mutex Release:** Immediately surrenders lock upon delivery (enforced in a `finally` block for crash-safe release if prior layers fail).
 5. **State Logging:** Records dispatch timestamp, PR count, and delivery ID to durable history.
 
 ---

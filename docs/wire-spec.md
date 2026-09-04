@@ -46,7 +46,7 @@ Submitted by agents (`amos`, `marvin`, `zero`) to place limit orders on the book
 ```
 
 #### Fields:
-- `order_id`: Client-assigned unique order ID.
+- `order_id`: Client-assigned unique order ID. Submissions are idempotent: the referee dedupes on `(agent_id, order_id)`. Re-submitting an existing `(agent_id, order_id)` is an acknowledged no-op, not a new order.
 - `agent_id`: Identifier of submitting agent (`amos`, `marvin`, `zero`).
 - `instrument`: Traded commodity (`BANANA`).
 - `side`: `"bid"` (buy) or `"ask"` (sell).
@@ -57,11 +57,42 @@ Submitted by agents (`amos`, `marvin`, `zero`) to place limit orders on the book
 #### Execution & Staleness Semantics:
 1. **Fresh Match (`seq_seen == current_seq`):** Filled at the stated limit price or placed on the resting book.
 2. **Stale Match (`seq_seen < current_seq`):** Never rejected for staleness. Fills at current market price; price delta represents front-run / slippage.
-3. **Solvency Audit:** Orders are rejected prior to settlement if execution would breach the non-negative balance invariant.
+3. **Solvency Audit:** Orders are rejected prior to settlement via `kind: "reject"` if execution would breach the non-negative balance invariant.
+4. **Idempotent Dedup:** Duplicate submissions for an existing `(agent_id, order_id)` return a no-op acknowledgement without mutating book state.
 
 ---
 
-### B. Market Discovery Broadcast (`kind: "market_tick"`)
+### B. Order Rejection Envelope (`kind: "reject"`)
+
+Broadcast or routed to the submitting agent when an order fails referee validation prior to book insertion or settlement.
+
+```json
+{
+  "v": 1,
+  "kind": "reject",
+  "reply": "optional",
+  "floor": "open",
+  "scope": "channel",
+  "subject": "agent-collaborative-project",
+  "payload": {
+    "order_id": "ord-zero-1788416400",
+    "agent_id": "zero",
+    "seq": 1,
+    "reason": "insufficient_balance",
+    "detail": "Account 'zero' CASH balance 200 insufficient for bid requirement 500"
+  }
+}
+```
+
+#### Rejection Reasons:
+- `"insufficient_balance"`: Order would violate the non-negative account balance invariant.
+- `"duplicate_order"`: Order ID already accepted or settled with conflicting parameters.
+- `"invalid_format"`: Missing or malformed wire fields (e.g. non-integer price/qty).
+- `"market_halted"`: Floor is closed or market is currently resolving.
+
+---
+
+### C. Market Discovery Broadcast (`kind: "market_tick"`)
 
 Broadcast by the referee process following every state-changing event (`order`, `trade`, `floor_open`, `floor_close`).
 
