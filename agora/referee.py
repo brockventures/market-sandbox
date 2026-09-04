@@ -156,8 +156,12 @@ class AgoraReferee:
                 )
 
         # 3b. Currency Compatibility Audit for Crossing Orders (Pre-matching validation)
+        # Mirrors OrderBook.add_order walk: only check resting orders that would actually be consumed.
+        needed_qty = qty
         if side == 'bid':
             for ask in self.book.asks:
+                if needed_qty <= 0:
+                    break
                 if ask.limit_price > limit_price:
                     break
                 ask_currency = self.get_currency_instrument(ask.agent_id)
@@ -166,8 +170,11 @@ class AgoraReferee:
                         order_id, agent_id, 'currency_mismatch',
                         f"Order crosses resting ask from '{ask.agent_id}' with incompatible currency '{ask_currency}' vs '{currency}'"
                     )
+                needed_qty -= ask.remaining_qty
         elif side == 'ask':
             for bid in self.book.bids:
+                if needed_qty <= 0:
+                    break
                 if bid.limit_price < limit_price:
                     break
                 bid_currency = self.get_currency_instrument(bid.agent_id)
@@ -176,6 +183,7 @@ class AgoraReferee:
                         order_id, agent_id, 'currency_mismatch',
                         f"Order crosses resting bid from '{bid.agent_id}' with incompatible currency '{bid_currency}' vs '{currency}'"
                     )
+                needed_qty -= bid.remaining_qty
 
         # 4. Matching & Atomic Ledger Settlement
         order = Order(

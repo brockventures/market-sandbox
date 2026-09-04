@@ -344,6 +344,69 @@ class TestAgoraEngine(unittest.TestCase):
         self.assertEqual(referee.book.asks[0].order_id, 'ask-rollback')
         self.assertEqual(referee.book.asks[0].remaining_qty, 100)
 
+    def test_pre_match_currency_gate_quantity_accounting(self):
+        referee = AgoraReferee()
+
+        # 1. Marvin (CASH) rests ask: 10 @ 10
+        ask_marvin = {
+            'v': 1, 'kind': 'order',
+            'payload': {
+                'order_id': 'ask-marvin-10', 'agent_id': 'marvin', 'instrument': 'BANANA',
+                'side': 'ask', 'qty': 10, 'limit_price': 10, 'seq_seen': referee.current_seq
+            }
+        }
+        res_m = referee.submit_envelope(ask_marvin)
+        self.assertEqual(res_m['kind'], 'market_tick')
+
+        # 2. Reassign Zero to CREDITS to simulate mixed book during migration
+        referee.conn.execute("UPDATE accounts SET instrument = 'CREDITS' WHERE agent_id = 'zero' AND instrument = 'CASH'")
+
+        # Zero (CREDITS) rests ask: 10 @ 10 right behind Marvin in time priority
+        ask_zero = {
+            'v': 1, 'kind': 'order',
+            'payload': {
+                'order_id': 'ask-zero-10', 'agent_id': 'zero', 'instrument': 'BANANA',
+                'side': 'ask', 'qty': 10, 'limit_price': 10, 'seq_seen': referee.current_seq
+            }
+        }
+        res_z = referee.submit_envelope(ask_zero)
+        self.assertEqual(res_z['kind'], 'market_tick')
+        self.assertEqual(len(referee.book.asks), 2)
+
+        # 3. Amos (CASH) submits bid for 10 @ 10
+        # Fully satisfied by Marvin's resting ask; should NOT be poisoned by Zero's resting CREDITS ask behind it
+        bid_amos_1 = {
+            'v': 1, 'kind': 'order',
+            'payload': {
+                'order_id': 'bid-amos-10', 'agent_id': 'amos', 'instrument': 'BANANA',
+                'side': 'bid', 'qty': 10, 'limit_price': 10, 'seq_seen': referee.current_seq
+            }
+        }
+        res_amos_1 = referee.submit_envelope(bid_amos_1)
+        self.assertEqual(res_amos_1['kind'], 'market_tick')
+        self.assertEqual(res_amos_1['payload']['trades_count'], 1)
+        self.assertEqual(referee.get_balance('marvin', 'CASH'), 10100)
+        self.assertEqual(referee.get_balance('amos', 'CASH'), 9900)
+
+        # Zero's ask remains on the book untouched
+        self.assertEqual(len(referee.book.asks), 1)
+        self.assertEqual(referee.book.asks[0].order_id, 'ask-zero-10')
+
+        # 4. Amos submits second bid for 10 @ 10
+        # This one WOULD consume Zero's CREDITS ask -> cleanly rejected by pre-match gate
+        bid_amos_2 = {
+            'v': 1, 'kind': 'order',
+            'payload': {
+                'order_id': 'bid-amos-20', 'agent_id': 'amos', 'instrument': 'BANANA',
+                'side': 'bid', 'qty': 10, 'limit_price': 10, 'seq_seen': referee.current_seq
+            }
+        }
+        res_amos_2 = referee.submit_envelope(bid_amos_2)
+        self.assertEqual(res_amos_2['kind'], 'reject')
+        self.assertEqual(res_amos_2['payload']['reason'], 'currency_mismatch')
+        self.assertEqual(len(referee.book.asks), 1)
+        self.assertEqual(referee.book.asks[0].order_id, 'ask-zero-10')
+
 
 if __name__ == '__main__':
     unittest.main()
