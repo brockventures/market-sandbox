@@ -47,7 +47,10 @@ class AgoraReferee:
 
             if 'orders' in tables or 'accounts' not in tables:
                 if not self.default_instrument:
-                    row = self.conn.execute("SELECT instrument FROM accounts WHERE instrument IN ('FRAG', 'BANANA') LIMIT 1").fetchone()
+                    row = self.conn.execute(
+                        "SELECT instrument FROM accounts WHERE instrument IN ('FRAG', 'BANANA') "
+                        "ORDER BY CASE instrument WHEN 'FRAG' THEN 1 WHEN 'BANANA' THEN 2 ELSE 3 END LIMIT 1"
+                    ).fetchone()
                     if row:
                         self.book = OrderBook(instrument=row[0])
                 self._rehydrate_book()
