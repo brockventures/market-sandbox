@@ -15,12 +15,13 @@ from agora.order_book import OrderBook, Order, Trade
 
 
 class AgoraReferee:
-    def __init__(self, db_path: str = ':memory:'):
+    def __init__(self, db_path: str = ':memory:', instrument: Optional[str] = None):
         self.db_path = db_path
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.lock = threading.Lock()
-        self.book = OrderBook(instrument='BANANA')
+        self.default_instrument = instrument
+        self.book = OrderBook(instrument=instrument or 'FRAG')
         self.last_price: Optional[int] = None
         self.last_qty: Optional[int] = None
         self._init_db()
@@ -45,6 +46,10 @@ class AgoraReferee:
                     self.conn.execute("ALTER TABLE orders ADD COLUMN filled_qty INTEGER NOT NULL DEFAULT 0")
 
             if 'orders' in tables or 'accounts' not in tables:
+                if not self.default_instrument:
+                    row = self.conn.execute("SELECT instrument FROM accounts WHERE instrument IN ('FRAG', 'BANANA') LIMIT 1").fetchone()
+                    if row:
+                        self.book = OrderBook(instrument=row[0])
                 self._rehydrate_book()
 
     def _rehydrate_book(self):
@@ -81,14 +86,25 @@ class AgoraReferee:
 
     def get_balance(self, agent_id: str, instrument: str) -> int:
         cur = self.conn.cursor()
-        # Support both CREDITS and CASH as currency instrument
+        # Support CR, CREDITS, and CASH as currency instrument; FRAG and BANANA as commodity
         cur.execute(
             "SELECT balance FROM accounts WHERE agent_id = ? AND instrument = ?",
             (agent_id, instrument)
         )
         row = cur.fetchone()
-        if not row and instrument in ('CREDITS', 'CASH'):
-            alt = 'CASH' if instrument == 'CREDITS' else 'CREDITS'
+        if not row and instrument in ('CR', 'CREDITS', 'CASH'):
+            for alt in ('CR', 'CREDITS', 'CASH'):
+                if alt == instrument:
+                    continue
+                cur.execute(
+                    "SELECT balance FROM accounts WHERE agent_id = ? AND instrument = ?",
+                    (agent_id, alt)
+                )
+                row = cur.fetchone()
+                if row:
+                    break
+        elif not row and instrument in ('FRAG', 'BANANA'):
+            alt = 'BANANA' if instrument == 'FRAG' else 'FRAG'
             cur.execute(
                 "SELECT balance FROM accounts WHERE agent_id = ? AND instrument = ?",
                 (agent_id, alt)
@@ -98,9 +114,23 @@ class AgoraReferee:
 
     def get_currency_instrument(self, agent_id: str = 'amos') -> str:
         cur = self.conn.cursor()
-        cur.execute("SELECT instrument FROM accounts WHERE agent_id = ? AND instrument IN ('CREDITS', 'CASH') LIMIT 1", (agent_id,))
+        cur.execute(
+            "SELECT instrument FROM accounts WHERE agent_id = ? AND instrument IN ('CR', 'CREDITS', 'CASH') "
+            "ORDER BY CASE instrument WHEN 'CR' THEN 1 WHEN 'CREDITS' THEN 2 WHEN 'CASH' THEN 3 ELSE 4 END LIMIT 1",
+            (agent_id,)
+        )
         row = cur.fetchone()
-        return row[0] if row else 'CREDITS'
+        return row[0] if row else 'CR'
+
+    def get_commodity_instrument(self, agent_id: str = 'amos') -> str:
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT instrument FROM accounts WHERE agent_id = ? AND instrument IN ('FRAG', 'BANANA') "
+            "ORDER BY CASE instrument WHEN 'FRAG' THEN 1 WHEN 'BANANA' THEN 2 ELSE 3 END LIMIT 1",
+            (agent_id,)
+        )
+        row = cur.fetchone()
+        return row[0] if row else 'FRAG'
 
     def get_book_snapshot(self) -> Dict[str, Any]:
         return self.book.to_dict()
@@ -178,7 +208,7 @@ class AgoraReferee:
         if not all([order_id, agent_id, instrument, side, qty is not None, limit_price is not None]):
             return self._reject_envelope(order_id or 'unknown', agent_id or 'unknown', 'invalid_format', 'Missing required order fields')
 
-        if instrument != 'BANANA':
+        if instrument not in ('FRAG', 'BANANA'):
             return self._reject_envelope(order_id, agent_id, 'invalid_format', f"Unsupported instrument: {instrument}")
 
         if side not in ('bid', 'ask'):
@@ -225,18 +255,18 @@ class AgoraReferee:
                     f"(balance {buyer_balance} - committed {committed_funds}) insufficient for bid requirement {max_cost}"
                 )
         elif side == 'ask':
-            committed_banana = sum(
+            committed_commodity = sum(
                 o.remaining_qty
                 for o in self.book.asks
                 if o.agent_id == agent_id
             )
-            seller_balance = self.get_balance(agent_id, 'BANANA')
-            available_banana = seller_balance - committed_banana
-            if available_banana < qty:
+            seller_balance = self.get_balance(agent_id, instrument)
+            available_commodity = seller_balance - committed_commodity
+            if available_commodity < qty:
                 return self._reject_envelope(
                     order_id, agent_id, 'insufficient_balance',
-                    f"Account '{agent_id}' available BANANA balance {available_banana} "
-                    f"(balance {seller_balance} - committed {committed_banana}) insufficient for ask requirement {qty}"
+                    f"Account '{agent_id}' available {instrument} balance {available_commodity} "
+                    f"(balance {seller_balance} - committed {committed_commodity}) insufficient for ask requirement {qty}"
                 )
 
         # 3b. Currency Compatibility Audit for Crossing Orders (Pre-matching validation)
@@ -315,6 +345,7 @@ class AgoraReferee:
                     trade_currency = buyer_currency
                     cost = trade.price * trade.qty
                     txn_id = f'trade-{trade.trade_id}'
+                    commodity_inst = trade.instrument
 
                     # Double-entry rows: sum(delta) == 0 per instrument
                     # Currency deltas
@@ -327,15 +358,15 @@ class AgoraReferee:
                         VALUES (?, ?, ?, ?, ?)
                     """, (txn_id, next_seq, trade.seller_id, trade_currency, cost))
 
-                    # Commodity (BANANA) deltas
+                    # Commodity (FRAG / BANANA) deltas
                     self.conn.execute("""
                         INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta)
                         VALUES (?, ?, ?, ?, ?)
-                    """, (txn_id, next_seq, trade.buyer_id, 'BANANA', trade.qty))
+                    """, (txn_id, next_seq, trade.buyer_id, commodity_inst, trade.qty))
                     self.conn.execute("""
                         INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta)
                         VALUES (?, ?, ?, ?, ?)
-                    """, (txn_id, next_seq, trade.seller_id, 'BANANA', -trade.qty))
+                    """, (txn_id, next_seq, trade.seller_id, commodity_inst, -trade.qty))
 
                     # Update accounts with strict rowcount validation (must match exactly 1 row per update)
                     cur = self.conn.execute(
@@ -353,18 +384,18 @@ class AgoraReferee:
                         raise RuntimeError(f"Failed to credit {trade.seller_id} {trade_currency}: rowcount {cur.rowcount} != 1")
 
                     cur = self.conn.execute(
-                        "UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = 'BANANA'",
-                        (trade.qty, trade.buyer_id)
+                        "UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?",
+                        (trade.qty, trade.buyer_id, commodity_inst)
                     )
                     if cur.rowcount != 1:
-                        raise RuntimeError(f"Failed to credit {trade.buyer_id} BANANA: rowcount {cur.rowcount} != 1")
+                        raise RuntimeError(f"Failed to credit {trade.buyer_id} {commodity_inst}: rowcount {cur.rowcount} != 1")
 
                     cur = self.conn.execute(
-                        "UPDATE accounts SET balance = balance - ? WHERE agent_id = ? AND instrument = 'BANANA'",
-                        (trade.qty, trade.seller_id)
+                        "UPDATE accounts SET balance = balance - ? WHERE agent_id = ? AND instrument = ?",
+                        (trade.qty, trade.seller_id, commodity_inst)
                     )
                     if cur.rowcount != 1:
-                        raise RuntimeError(f"Failed to debit {trade.seller_id} BANANA: rowcount {cur.rowcount} != 1")
+                        raise RuntimeError(f"Failed to debit {trade.seller_id} {commodity_inst}: rowcount {cur.rowcount} != 1")
 
                     # Record trade event in book_events
                     trade_seq = self.current_seq + 1
@@ -483,14 +514,14 @@ class AgoraReferee:
 
     def get_leaderboard(self) -> List[Dict[str, Any]]:
         """
-        Calculate Net Worth = Balance(Cash/Credits) + Qty(BANANA) * Mark Price.
+        Calculate Net Worth = Balance(Credits/CR) + Qty(FRAG) * Mark Price.
         """
         mark = self.last_price if self.last_price is not None else 10  # default mark if no trades
         cur = self.conn.cursor()
         cur.execute("""
             SELECT agent_id,
-                   SUM(CASE WHEN instrument IN ('CREDITS', 'CASH') THEN balance ELSE 0 END) as liquid,
-                   SUM(CASE WHEN instrument = 'BANANA' THEN balance ELSE 0 END) as bananas
+                   SUM(CASE WHEN instrument IN ('CR', 'CREDITS', 'CASH') THEN balance ELSE 0 END) as liquid,
+                   SUM(CASE WHEN instrument IN ('FRAG', 'BANANA') THEN balance ELSE 0 END) as frags
             FROM accounts
             WHERE agent_id != 'SYSTEM'
             GROUP BY agent_id
@@ -498,12 +529,13 @@ class AgoraReferee:
         rows = cur.fetchall()
         board = []
         for r in rows:
-            net_worth = r['liquid'] + (r['bananas'] * mark)
+            net_worth = r['liquid'] + (r['frags'] * mark)
             board.append({
                 'agent_id': r['agent_id'],
                 'net_worth': net_worth,
                 'liquid': r['liquid'],
-                'bananas': r['bananas'],
+                'frags': r['frags'],
+                'bananas': r['frags'],  # backward compatibility alias
                 'mark_price': mark
             })
         board.sort(key=lambda x: x['net_worth'], reverse=True)

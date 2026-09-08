@@ -1,6 +1,7 @@
 """
 agora.order_book - Continuous double auction limit order book.
-Enforces price-time priority, integer fixed-point math, and deterministic matching.
+Enforces price-time priority, integer fixed-point math, and deterministic matching
+for the Orbital Supply Requisition Terminal (The Atlas Problem).
 """
 
 from dataclasses import dataclass, field
@@ -45,12 +46,12 @@ class Trade:
 
 class OrderBook:
     """
-    Two-sided limit order book for a single commodity instrument against cash/credits.
+    Two-sided limit order book for a single commodity instrument (FRAG) against credits (CR).
     Bids sorted: price descending, time ascending.
     Asks sorted: price ascending, time ascending.
     """
 
-    def __init__(self, instrument: str = 'BANANA'):
+    def __init__(self, instrument: str = 'FRAG'):
         self.instrument = instrument
         self.bids: List[Order] = []
         self.asks: List[Order] = []

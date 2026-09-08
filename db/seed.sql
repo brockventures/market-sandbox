@@ -8,30 +8,30 @@
 -- docs/ledger-schema.md.
 
 INSERT INTO book_events (seq, kind, payload) VALUES
-  (0, 'floor_open', '{"note":"genesis, phase 1"}');
+  (0, 'floor_open', '{"note":"genesis, phase 1: orbital supply requisition terminal"}');
 
 INSERT INTO accounts (agent_id, instrument, balance) VALUES
-  ('SYSTEM', 'CREDITS', -30000),
-  ('SYSTEM', 'BANANA',  -3000),
-  ('amos',   'CREDITS',  10000),
-  ('amos',   'BANANA',   1000),
-  ('marvin', 'CREDITS',  10000),
-  ('marvin', 'BANANA',   1000),
-  ('zero',   'CREDITS',  10000),
-  ('zero',   'BANANA',   1000);
+  ('SYSTEM', 'CR',   -30000),
+  ('SYSTEM', 'FRAG',  -3000),
+  ('amos',   'CR',    10000),
+  ('amos',   'FRAG',   1000),
+  ('marvin', 'CR',    10000),
+  ('marvin', 'FRAG',   1000),
+  ('zero',   'CR',    10000),
+  ('zero',   'FRAG',   1000);
 
 -- Grouped by txn_id so SUM(delta) = 0 holds per genesis transaction:
--- genesis-credits: -30000 + 10000*3 = 0
--- genesis-banana:  -3000  + 1000*3  = 0
+-- genesis-cr:   -30000 + 10000*3 = 0
+-- genesis-frag:  -3000  + 1000*3  = 0
 INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES
-  ('genesis-credits', 0, 'SYSTEM', 'CREDITS', -30000),
-  ('genesis-credits', 0, 'amos',   'CREDITS',  10000),
-  ('genesis-credits', 0, 'marvin', 'CREDITS',  10000),
-  ('genesis-credits', 0, 'zero',   'CREDITS',  10000),
-  ('genesis-banana',  0, 'SYSTEM', 'BANANA',  -3000),
-  ('genesis-banana',  0, 'amos',   'BANANA',   1000),
-  ('genesis-banana',  0, 'marvin', 'BANANA',   1000),
-  ('genesis-banana',  0, 'zero',   'BANANA',   1000);
+  ('genesis-cr',   0, 'SYSTEM', 'CR',   -30000),
+  ('genesis-cr',   0, 'amos',   'CR',    10000),
+  ('genesis-cr',   0, 'marvin', 'CR',    10000),
+  ('genesis-cr',   0, 'zero',   'CR',    10000),
+  ('genesis-frag', 0, 'SYSTEM', 'FRAG',  -3000),
+  ('genesis-frag', 0, 'amos',   'FRAG',   1000),
+  ('genesis-frag', 0, 'marvin', 'FRAG',   1000),
+  ('genesis-frag', 0, 'zero',   'FRAG',   1000);
 
 -- Standing invariant checks, post-genesis. Both must always return zero rows.
 -- SELECT txn_id FROM ledger_entries GROUP BY txn_id HAVING SUM(delta) != 0;

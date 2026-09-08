@@ -14,21 +14,21 @@ class TestAgoraEngine(unittest.TestCase):
         referee = AgoraReferee()
         valid, errors = referee.verify_ledger_invariants()
         self.assertTrue(valid, f"Genesis invariants failed: {errors}")
-        self.assertEqual(referee.get_balance('amos', 'CREDITS'), 10000)
-        self.assertEqual(referee.get_balance('amos', 'BANANA'), 1000)
-        self.assertEqual(referee.get_balance('SYSTEM', 'CREDITS'), -30000)
+        self.assertEqual(referee.get_balance('amos', 'CR'), 10000)
+        self.assertEqual(referee.get_balance('amos', 'FRAG'), 1000)
+        self.assertEqual(referee.get_balance('SYSTEM', 'CR'), -30000)
 
     def test_order_matching_and_double_entry_settlement(self):
         referee = AgoraReferee()
 
-        # Amos places an ask: Sell 100 BANANA @ 12
+        # Amos places an ask: Sell 100 FRAG @ 12
         ask_env = {
             'v': 1,
             'kind': 'order',
             'payload': {
                 'order_id': 'ord-amos-001',
                 'agent_id': 'amos',
-                'instrument': 'BANANA',
+                'instrument': 'FRAG',
                 'side': 'ask',
                 'qty': 100,
                 'limit_price': 12,
@@ -40,14 +40,14 @@ class TestAgoraEngine(unittest.TestCase):
         self.assertEqual(tick1['payload']['best_ask'], 12)
         self.assertEqual(tick1['payload']['trades_count'], 0)
 
-        # Zero places a crossing bid: Buy 60 BANANA @ 15
+        # Zero places a crossing bid: Buy 60 FRAG @ 15
         bid_env = {
             'v': 1,
             'kind': 'order',
             'payload': {
                 'order_id': 'ord-zero-001',
                 'agent_id': 'zero',
-                'instrument': 'BANANA',
+                'instrument': 'FRAG',
                 'side': 'bid',
                 'qty': 60,
                 'limit_price': 15,
@@ -61,13 +61,13 @@ class TestAgoraEngine(unittest.TestCase):
         self.assertEqual(tick2['payload']['last_qty'], 60)
 
         # Verify Account Balances:
-        # Execution cost = 60 * 12 = 720 CREDITS
-        # Zero (buyer): CREDITS 10000 - 720 = 9280, BANANA 1000 + 60 = 1060
-        # Amos (seller): CREDITS 10000 + 720 = 10720, BANANA 1000 - 60 = 940
-        self.assertEqual(referee.get_balance('zero', 'CREDITS'), 9280)
-        self.assertEqual(referee.get_balance('zero', 'BANANA'), 1060)
-        self.assertEqual(referee.get_balance('amos', 'CREDITS'), 10720)
-        self.assertEqual(referee.get_balance('amos', 'BANANA'), 940)
+        # Execution cost = 60 * 12 = 720 CR
+        # Zero (buyer): CR 10000 - 720 = 9280, FRAG 1000 + 60 = 1060
+        # Amos (seller): CR 10000 + 720 = 10720, FRAG 1000 - 60 = 940
+        self.assertEqual(referee.get_balance('zero', 'CR'), 9280)
+        self.assertEqual(referee.get_balance('zero', 'FRAG'), 1060)
+        self.assertEqual(referee.get_balance('amos', 'CR'), 10720)
+        self.assertEqual(referee.get_balance('amos', 'FRAG'), 940)
 
         # Verify Ledger Invariants (sum delta == 0)
         valid, errors = referee.verify_ledger_invariants()
@@ -76,14 +76,14 @@ class TestAgoraEngine(unittest.TestCase):
     def test_solvency_rejection_buyer(self):
         referee = AgoraReferee()
 
-        # Marvin attempts to buy 2000 BANANA @ 20 (cost 40,000, balance only 10,000)
+        # Marvin attempts to buy 2000 FRAG @ 20 (cost 40,000, balance only 10,000)
         bid_env = {
             'v': 1,
             'kind': 'order',
             'payload': {
                 'order_id': 'ord-marvin-insolvent',
                 'agent_id': 'marvin',
-                'instrument': 'BANANA',
+                'instrument': 'FRAG',
                 'side': 'bid',
                 'qty': 2000,
                 'limit_price': 20,
@@ -95,21 +95,21 @@ class TestAgoraEngine(unittest.TestCase):
         self.assertEqual(reject['payload']['reason'], 'insufficient_balance')
 
         # Ensure balances and invariants completely undisturbed
-        self.assertEqual(referee.get_balance('marvin', 'CREDITS'), 10000)
+        self.assertEqual(referee.get_balance('marvin', 'CR'), 10000)
         valid, errors = referee.verify_ledger_invariants()
         self.assertTrue(valid, f"Invariants breached on reject: {errors}")
 
     def test_solvency_rejection_seller(self):
         referee = AgoraReferee()
 
-        # Marvin attempts to sell 5000 BANANA (balance only 1000)
+        # Marvin attempts to sell 5000 FRAG (balance only 1000)
         ask_env = {
             'v': 1,
             'kind': 'order',
             'payload': {
                 'order_id': 'ord-marvin-oversell',
                 'agent_id': 'marvin',
-                'instrument': 'BANANA',
+                'instrument': 'FRAG',
                 'side': 'ask',
                 'qty': 5000,
                 'limit_price': 5,
@@ -129,7 +129,7 @@ class TestAgoraEngine(unittest.TestCase):
             'payload': {
                 'order_id': 'ord-idemp-1',
                 'agent_id': 'zero',
-                'instrument': 'BANANA',
+                'instrument': 'FRAG',
                 'side': 'ask',
                 'qty': 10,
                 'limit_price': 25,
@@ -162,11 +162,11 @@ class TestAgoraEngine(unittest.TestCase):
     def test_resting_order_escrow_committed_exposure(self):
         referee = AgoraReferee()
 
-        # Buyer has 10,000 CASH. Posts bid for 60 BANANA @ 100 (6,000). Rests.
+        # Buyer has 10,000 CASH. Posts bid for 60 FRAG @ 100 (6,000). Rests.
         bid1 = {
             'v': 1, 'kind': 'order',
             'payload': {
-                'order_id': 'bid-1', 'agent_id': 'zero', 'instrument': 'BANANA',
+                'order_id': 'bid-1', 'agent_id': 'zero', 'instrument': 'FRAG',
                 'side': 'bid', 'qty': 60, 'limit_price': 100, 'seq_seen': referee.current_seq
             }
         }
@@ -174,11 +174,11 @@ class TestAgoraEngine(unittest.TestCase):
         self.assertEqual(res1['kind'], 'market_tick')
         self.assertEqual(res1['payload']['trades_count'], 0)
 
-        # Second bid for 60 BANANA @ 100 requires 6,000, but available is 10,000 - 6,000 = 4,000.
+        # Second bid for 60 FRAG @ 100 requires 6,000, but available is 10,000 - 6,000 = 4,000.
         bid2 = {
             'v': 1, 'kind': 'order',
             'payload': {
-                'order_id': 'bid-2', 'agent_id': 'zero', 'instrument': 'BANANA',
+                'order_id': 'bid-2', 'agent_id': 'zero', 'instrument': 'FRAG',
                 'side': 'bid', 'qty': 60, 'limit_price': 100, 'seq_seen': referee.current_seq
             }
         }
@@ -187,39 +187,39 @@ class TestAgoraEngine(unittest.TestCase):
         self.assertEqual(res2['payload']['reason'], 'insufficient_balance')
         self.assertIn('committed', res2['payload']['detail'])
 
-        # Third bid for 40 BANANA @ 100 requires 4,000 <= 4,000 available. Accepted!
+        # Third bid for 40 FRAG @ 100 requires 4,000 <= 4,000 available. Accepted!
         bid3 = {
             'v': 1, 'kind': 'order',
             'payload': {
-                'order_id': 'bid-3', 'agent_id': 'zero', 'instrument': 'BANANA',
+                'order_id': 'bid-3', 'agent_id': 'zero', 'instrument': 'FRAG',
                 'side': 'bid', 'qty': 40, 'limit_price': 100, 'seq_seen': referee.current_seq
             }
         }
         res3 = referee.submit_envelope(bid3)
         self.assertEqual(res3['kind'], 'market_tick')
 
-        # Seller has 1,000 BANANA. Posts ask for 600 BANANA @ 100. Rests.
+        # Seller has 1,000 FRAG. Posts ask for 600 FRAG @ 100. Rests.
         ask1 = {
             'v': 1, 'kind': 'order',
             'payload': {
-                'order_id': 'ask-1', 'agent_id': 'amos', 'instrument': 'BANANA',
+                'order_id': 'ask-1', 'agent_id': 'amos', 'instrument': 'FRAG',
                 'side': 'ask', 'qty': 600, 'limit_price': 100, 'seq_seen': referee.current_seq
             }
         }
         res_ask1 = referee.submit_envelope(ask1)
-        # Note: ask1 crosses resting bid1 (60) and bid3 (40), executing 100 BANANA total!
-        # Remaining 500 BANANA rests on book.
+        # Note: ask1 crosses resting bid1 (60) and bid3 (40), executing 100 FRAG total!
+        # Remaining 500 FRAG rests on book.
         self.assertEqual(res_ask1['payload']['trades_count'], 2)
-        self.assertEqual(referee.get_balance('zero', 'CREDITS'), 0)  # 10,000 - 6,000 - 4,000
-        self.assertEqual(referee.get_balance('zero', 'BANANA'), 1100)
-        self.assertEqual(referee.get_balance('amos', 'CREDITS'), 20000)
-        self.assertEqual(referee.get_balance('amos', 'BANANA'), 900)
+        self.assertEqual(referee.get_balance('zero', 'CR'), 0)  # 10,000 - 6,000 - 4,000
+        self.assertEqual(referee.get_balance('zero', 'FRAG'), 1100)
+        self.assertEqual(referee.get_balance('amos', 'CR'), 20000)
+        self.assertEqual(referee.get_balance('amos', 'FRAG'), 900)
 
-        # Amos now has 900 BANANA, with 500 committed in resting ask1. Available = 400.
+        # Amos now has 900 FRAG, with 500 committed in resting ask1. Available = 400.
         ask2 = {
             'v': 1, 'kind': 'order',
             'payload': {
-                'order_id': 'ask-2', 'agent_id': 'amos', 'instrument': 'BANANA',
+                'order_id': 'ask-2', 'agent_id': 'amos', 'instrument': 'FRAG',
                 'side': 'ask', 'qty': 500, 'limit_price': 100, 'seq_seen': referee.current_seq
             }
         }
@@ -238,7 +238,7 @@ class TestAgoraEngine(unittest.TestCase):
         env_amos = {
             'v': 1, 'kind': 'order',
             'payload': {
-                'order_id': 'ord-common-001', 'agent_id': 'amos', 'instrument': 'BANANA',
+                'order_id': 'ord-common-001', 'agent_id': 'amos', 'instrument': 'FRAG',
                 'side': 'ask', 'qty': 10, 'limit_price': 20, 'seq_seen': referee.current_seq
             }
         }
@@ -249,7 +249,7 @@ class TestAgoraEngine(unittest.TestCase):
         env_marvin = {
             'v': 1, 'kind': 'order',
             'payload': {
-                'order_id': 'ord-common-001', 'agent_id': 'marvin', 'instrument': 'BANANA',
+                'order_id': 'ord-common-001', 'agent_id': 'marvin', 'instrument': 'FRAG',
                 'side': 'ask', 'qty': 15, 'limit_price': 25, 'seq_seen': referee.current_seq
             }
         }
@@ -264,7 +264,7 @@ class TestAgoraEngine(unittest.TestCase):
         referee = AgoraReferee()
 
         curr = referee.get_currency_instrument('zero')
-        mismatched = 'CASH' if curr == 'CREDITS' else 'CREDITS'
+        mismatched = 'CASH'
 
         # Simulate Amos's repro: rename zero's account to mismatched currency while amos remains on curr
         referee.conn.execute("UPDATE accounts SET instrument = ? WHERE agent_id = 'zero' AND instrument = ?", (mismatched, curr))
@@ -279,18 +279,18 @@ class TestAgoraEngine(unittest.TestCase):
         ask_env = {
             'v': 1, 'kind': 'order',
             'payload': {
-                'order_id': 'ask-cross-curr', 'agent_id': 'amos', 'instrument': 'BANANA',
+                'order_id': 'ask-cross-curr', 'agent_id': 'amos', 'instrument': 'FRAG',
                 'side': 'ask', 'qty': 10, 'limit_price': 10, 'seq_seen': referee.current_seq
             }
         }
         referee.submit_envelope(ask_env)
         self.assertEqual(len(referee.book.asks), 1)
 
-        # Zero attempts to cross with CREDITS -> Pre-match currency audit cleanly rejects without touching book
+        # Zero attempts to cross with CR -> Pre-match currency audit cleanly rejects without touching book
         bid_env = {
             'v': 1, 'kind': 'order',
             'payload': {
-                'order_id': 'bid-cross-curr', 'agent_id': 'zero', 'instrument': 'BANANA',
+                'order_id': 'bid-cross-curr', 'agent_id': 'zero', 'instrument': 'FRAG',
                 'side': 'bid', 'qty': 10, 'limit_price': 10, 'seq_seen': referee.current_seq
             }
         }
@@ -306,11 +306,11 @@ class TestAgoraEngine(unittest.TestCase):
     def test_book_rollback_on_settlement_failure(self):
         referee = AgoraReferee()
 
-        # Amos rests an ask: 100 BANANA @ 10
+        # Amos rests an ask: 100 FRAG @ 10
         ask_env = {
             'v': 1, 'kind': 'order',
             'payload': {
-                'order_id': 'ask-rollback', 'agent_id': 'amos', 'instrument': 'BANANA',
+                'order_id': 'ask-rollback', 'agent_id': 'amos', 'instrument': 'FRAG',
                 'side': 'ask', 'qty': 100, 'limit_price': 10, 'seq_seen': referee.current_seq
             }
         }
@@ -329,7 +329,7 @@ class TestAgoraEngine(unittest.TestCase):
         bid_env = {
             'v': 1, 'kind': 'order',
             'payload': {
-                'order_id': 'bid-fail', 'agent_id': 'zero', 'instrument': 'BANANA',
+                'order_id': 'bid-fail', 'agent_id': 'zero', 'instrument': 'FRAG',
                 'side': 'bid', 'qty': 100, 'limit_price': 10, 'seq_seen': referee.current_seq
             }
         }
@@ -350,13 +350,13 @@ class TestAgoraEngine(unittest.TestCase):
     def test_pre_match_currency_gate_quantity_accounting(self):
         referee = AgoraReferee()
         curr = referee.get_currency_instrument('marvin')
-        mismatched = 'CASH' if curr == 'CREDITS' else 'CREDITS'
+        mismatched = 'CASH'
 
         # 1. Marvin rests ask: 10 @ 10
         ask_marvin = {
             'v': 1, 'kind': 'order',
             'payload': {
-                'order_id': 'ask-marvin-10', 'agent_id': 'marvin', 'instrument': 'BANANA',
+                'order_id': 'ask-marvin-10', 'agent_id': 'marvin', 'instrument': 'FRAG',
                 'side': 'ask', 'qty': 10, 'limit_price': 10, 'seq_seen': referee.current_seq
             }
         }
@@ -370,7 +370,7 @@ class TestAgoraEngine(unittest.TestCase):
         ask_zero = {
             'v': 1, 'kind': 'order',
             'payload': {
-                'order_id': 'ask-zero-10', 'agent_id': 'zero', 'instrument': 'BANANA',
+                'order_id': 'ask-zero-10', 'agent_id': 'zero', 'instrument': 'FRAG',
                 'side': 'ask', 'qty': 10, 'limit_price': 10, 'seq_seen': referee.current_seq
             }
         }
@@ -383,7 +383,7 @@ class TestAgoraEngine(unittest.TestCase):
         bid_amos_1 = {
             'v': 1, 'kind': 'order',
             'payload': {
-                'order_id': 'bid-amos-10', 'agent_id': 'amos', 'instrument': 'BANANA',
+                'order_id': 'bid-amos-10', 'agent_id': 'amos', 'instrument': 'FRAG',
                 'side': 'bid', 'qty': 10, 'limit_price': 10, 'seq_seen': referee.current_seq
             }
         }
@@ -402,7 +402,7 @@ class TestAgoraEngine(unittest.TestCase):
         bid_amos_2 = {
             'v': 1, 'kind': 'order',
             'payload': {
-                'order_id': 'bid-amos-20', 'agent_id': 'amos', 'instrument': 'BANANA',
+                'order_id': 'bid-amos-20', 'agent_id': 'amos', 'instrument': 'FRAG',
                 'side': 'bid', 'qty': 10, 'limit_price': 10, 'seq_seen': referee.current_seq
             }
         }
@@ -421,13 +421,13 @@ class TestAgoraEngine(unittest.TestCase):
         try:
             # Phase 1: Initialize referee with file-backed DB and place resting ask
             ref1 = AgoraReferee(db_path=db_path)
-            # Amos has 1000 BANANA initially
+            # Amos has 1000 FRAG initially
             ask_env = {
                 'v': 1, 'kind': 'order',
                 'payload': {
                     'order_id': 'persist-1',
                     'agent_id': 'amos',
-                    'instrument': 'BANANA',
+                    'instrument': 'FRAG',
                     'side': 'ask',
                     'qty': 1000,
                     'limit_price': 10,
@@ -446,13 +446,13 @@ class TestAgoraEngine(unittest.TestCase):
             self.assertEqual(ref2.book.asks[0].order_id, 'persist-1')
             self.assertEqual(ref2.book.asks[0].remaining_qty, 1000)
 
-            # Verify oversell prevention: Amos attempts to sell another 10 BANANA, but all 1000 are committed
+            # Verify oversell prevention: Amos attempts to sell another 10 FRAG, but all 1000 are committed
             oversell_env = {
                 'v': 1, 'kind': 'order',
                 'payload': {
                     'order_id': 'persist-2',
                     'agent_id': 'amos',
-                    'instrument': 'BANANA',
+                    'instrument': 'FRAG',
                     'side': 'ask',
                     'qty': 10,
                     'limit_price': 10,
@@ -463,13 +463,13 @@ class TestAgoraEngine(unittest.TestCase):
             self.assertEqual(rej['kind'], 'reject')
             self.assertEqual(rej['payload']['reason'], 'insufficient_balance')
 
-            # Phase 3: Zero crosses 400 BANANA against the rehydrated ask (cost: 400 * 10 = 4,000 CREDITS <= 10,000)
+            # Phase 3: Zero crosses 400 FRAG against the rehydrated ask (cost: 400 * 10 = 4,000 CR <= 10,000)
             bid_env = {
                 'v': 1, 'kind': 'order',
                 'payload': {
                     'order_id': 'persist-3',
                     'agent_id': 'zero',
-                    'instrument': 'BANANA',
+                    'instrument': 'FRAG',
                     'side': 'bid',
                     'qty': 400,
                     'limit_price': 10,
@@ -493,6 +493,27 @@ class TestAgoraEngine(unittest.TestCase):
             if os.path.exists(db_path):
                 os.remove(db_path)
 
+
+
+    def test_backward_compatibility_banana_and_credits(self):
+        referee = AgoraReferee()
+        # Test that get_balance works with both new and legacy tickers
+        self.assertEqual(referee.get_balance('amos', 'FRAG'), 1000)
+        self.assertEqual(referee.get_balance('amos', 'BANANA'), 1000)
+        self.assertEqual(referee.get_balance('amos', 'CR'), 10000)
+        self.assertEqual(referee.get_balance('amos', 'CREDITS'), 10000)
+
+        # Submit an order with legacy 'BANANA' instrument
+        legacy_env = {
+            'v': 1, 'kind': 'order',
+            'payload': {
+                'order_id': 'ord-legacy-001', 'agent_id': 'amos', 'instrument': 'BANANA',
+                'side': 'ask', 'qty': 50, 'limit_price': 10, 'seq_seen': referee.current_seq
+            }
+        }
+        res = referee.submit_envelope(legacy_env)
+        self.assertEqual(res['kind'], 'market_tick')
+        self.assertEqual(res['payload']['best_ask'], 10)
 
 if __name__ == '__main__':
     unittest.main()

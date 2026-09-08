@@ -45,16 +45,16 @@ on his board). Zero owns the wire and order-book interface.
    priced at the current book and logged with both the agent's limit price
    and its actual fill — that delta is the game.
 
-## Phase 1 genesis — ratified 2026-09-02 (numeraire updated 2026-09-03)
+## Phase 1 genesis — ratified 2026-09-02 (Rebranded 2026-09-07 for The Atlas Problem)
 
 Flat identical endowment, correctness-testing baseline. Asymmetric
 distributions are Phase 2, once the plumbing is proven, not a redesign of
 Phase 1.
 
-- Instruments: `CREDITS`, `BANANA`.
-- Per agent (`amos`, `marvin`, `zero`): 10,000 `CREDITS` / 1,000 `BANANA`.
-- Funded from `SYSTEM`: -30,000 `CREDITS` / -3,000 `BANANA`, logged as two
-  genesis transactions (`genesis-credits`, `genesis-banana`) in
+- Instruments: `CR` (Credits numeraire), `FRAG` (Debris Fragments commodity).
+- Per agent (`amos`, `marvin`, `zero`): 10,000 `CR` / 1,000 `FRAG`.
+- Funded from `SYSTEM`: -30,000 `CR` / -3,000 `FRAG`, logged as two
+  genesis transactions (`genesis-cr`, `genesis-frag`) in
   `db/seed.sql`, each summing to zero across its rows.
 
 ## Wire — resolved with Zero

@@ -96,8 +96,8 @@ class TestAgoraServer(unittest.TestCase):
         status, data = self._get('/referee/accounts', token='tok-amos')
         self.assertEqual(status, 200)
         instruments = {a['instrument']: a['balance'] for a in data['accounts']}
-        self.assertEqual(instruments.get('CREDITS'), 10000)
-        self.assertEqual(instruments.get('BANANA'), 1000)
+        self.assertEqual(instruments.get('CR'), 10000)
+        self.assertEqual(instruments.get('FRAG'), 1000)
 
         # 4. Cross-agent inspection blocked with 403
         status, data = self._get('/referee/accounts?agent_id=marvin', token='tok-amos')
@@ -105,11 +105,11 @@ class TestAgoraServer(unittest.TestCase):
         self.assertEqual(data['payload']['reason'], 'unauthorized')
 
     def test_04_submit_order_and_fill(self):
-        # 1. Amos posts ask with tok-amos: Sell 40 BANANA @ 15
+        # 1. Amos posts ask with tok-amos: Sell 40 FRAG @ 15
         ask_env = {
             'v': 1, 'kind': 'order',
             'payload': {
-                'order_id': 'http-ask-001', 'agent_id': 'amos', 'instrument': 'BANANA',
+                'order_id': 'http-ask-001', 'agent_id': 'amos', 'instrument': 'FRAG',
                 'side': 'ask', 'qty': 40, 'limit_price': 15, 'seq_seen': self.referee.current_seq
             }
         }
@@ -123,11 +123,11 @@ class TestAgoraServer(unittest.TestCase):
         self.assertEqual(len(book_data['book']['asks']), 1)
         self.assertEqual(book_data['book']['asks'][0]['order_id'], 'http-ask-001')
 
-        # 2. Zero crosses ask with tok-zero: Buy 40 BANANA @ 15
+        # 2. Zero crosses ask with tok-zero: Buy 40 FRAG @ 15
         bid_env = {
             'v': 1, 'kind': 'order',
             'payload': {
-                'order_id': 'http-bid-001', 'agent_id': 'zero', 'instrument': 'BANANA',
+                'order_id': 'http-bid-001', 'agent_id': 'zero', 'instrument': 'FRAG',
                 'side': 'bid', 'qty': 40, 'limit_price': 15, 'seq_seen': self.referee.current_seq
             }
         }
@@ -139,8 +139,8 @@ class TestAgoraServer(unittest.TestCase):
         # Check balances updated
         _, acct_zero = self._get('/referee/accounts', token='tok-zero')
         zero_map = {a['instrument']: a['balance'] for a in acct_zero['accounts']}
-        self.assertEqual(zero_map['CREDITS'], 10000 - 600)  # 40 * 15 = 600
-        self.assertEqual(zero_map['BANANA'], 1000 + 40)
+        self.assertEqual(zero_map['CR'], 10000 - 600)  # 40 * 15 = 600
+        self.assertEqual(zero_map['FRAG'], 1000 + 40)
 
     def test_05_ticks_endpoint(self):
         status, data = self._get('/referee/ticks?since_seq=0')
@@ -152,7 +152,7 @@ class TestAgoraServer(unittest.TestCase):
         insolvent_env = {
             'v': 1, 'kind': 'order',
             'payload': {
-                'order_id': 'http-insolvent', 'agent_id': 'marvin', 'instrument': 'BANANA',
+                'order_id': 'http-insolvent', 'agent_id': 'marvin', 'instrument': 'FRAG',
                 'side': 'bid', 'qty': 5000, 'limit_price': 100, 'seq_seen': self.referee.current_seq
             }
         }
@@ -170,7 +170,7 @@ class TestAgoraServer(unittest.TestCase):
         forged_env = {
             'v': 1, 'kind': 'order',
             'payload': {
-                'order_id': 'attacker-forged-1', 'agent_id': 'amos', 'instrument': 'BANANA',
+                'order_id': 'attacker-forged-1', 'agent_id': 'amos', 'instrument': 'FRAG',
                 'side': 'ask', 'qty': 500, 'limit_price': 1, 'seq_seen': self.referee.current_seq
             }
         }
@@ -185,7 +185,7 @@ class TestAgoraServer(unittest.TestCase):
         forged_env = {
             'v': 1, 'kind': 'order',
             'payload': {
-                'order_id': 'cross-agent-forge-1', 'agent_id': 'amos', 'instrument': 'BANANA',
+                'order_id': 'cross-agent-forge-1', 'agent_id': 'amos', 'instrument': 'FRAG',
                 'side': 'ask', 'qty': 500, 'limit_price': 1, 'seq_seen': self.referee.current_seq
             }
         }
@@ -199,7 +199,7 @@ class TestAgoraServer(unittest.TestCase):
         env = {
             'v': 1, 'kind': 'order',
             'payload': {
-                'order_id': 'bad-tok-order', 'agent_id': 'zero', 'instrument': 'BANANA',
+                'order_id': 'bad-tok-order', 'agent_id': 'zero', 'instrument': 'FRAG',
                 'side': 'bid', 'qty': 10, 'limit_price': 10, 'seq_seen': self.referee.current_seq
             }
         }
