@@ -208,6 +208,22 @@ class TestAgoraServer(unittest.TestCase):
         self.assertEqual(data['kind'], 'reject')
         self.assertEqual(data['payload']['reason'], 'unauthorized')
 
+    def test_11_leaderboard_endpoint(self):
+        status, data = self._get('/referee/leaderboard')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['status'], 'ok')
+        self.assertIn('leaderboard', data)
+        self.assertEqual(len(data['leaderboard']), 3)
+
+        # Verify ranking and structure
+        for entry in data['leaderboard']:
+            self.assertIn('agent_id', entry)
+            self.assertIn('net_worth', entry)
+            self.assertIn('liquid', entry)
+            self.assertIn('frags', entry)
+            self.assertIn('mark_price', entry)
+            self.assertTrue(isinstance(entry['net_worth'], int))
+
 
 if __name__ == '__main__':
     unittest.main()

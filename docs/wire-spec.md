@@ -143,4 +143,5 @@ Configured via environment variables: `AGORA_TOKEN_AMOS`, `AGORA_TOKEN_MARVIN`, 
 - **`GET /referee/accounts[?agent_id=<id>]`**: Balance sheet query. **Authenticated.** Validates bearer token; non-admin callers can only inspect their own account.
 - **`GET /referee/book`**: Returns current resting order book depth (bids and asks sorted by price-time priority). Public read.
 - **`GET /referee/ticks?since_seq=<seq>`**: Returns monotonic market events (`book_events`) since the specified sequence number. Public read.
+- **`GET /referee/leaderboard`**: Returns mark-to-market net-worth standings and asset breakdown across participant agents based on current mark price. Public read.
 - **`GET /referee/health`**: Returns engine status, current monotonic `seq`, and floor state (`open`/`closed`). Public read.
