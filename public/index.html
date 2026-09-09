@@ -292,25 +292,70 @@
     gap: 16px;
   }
 
-  /* Leaderboard Component */
-  .leaderboard-card {
+  /* Terminal Launch Banner & Indicators */
+  .terminal-banner-card {
     background: var(--bg-card);
-    border: 1px solid var(--line);
+    border: 1px solid var(--amber-dim);
     border-radius: 8px;
     padding: 24px;
-    margin-top: 24px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+    margin-top: 20px;
+    box-shadow: 0 0 24px rgba(255, 184, 52, 0.08);
   }
 
-  .leaderboard-meta {
+  .terminal-banner-meta {
     display: flex;
     justify-content: space-between;
     align-items: center;
     flex-wrap: wrap;
     gap: 12px;
-    margin-bottom: 20px;
+    margin-bottom: 18px;
     border-bottom: 1px solid var(--line);
     padding-bottom: 14px;
+  }
+
+  .terminal-banner-body {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 20px;
+  }
+
+  .terminal-banner-info h3 {
+    font-family: var(--font-mono);
+    font-size: 1.25rem;
+    color: #fff;
+    margin-bottom: 8px;
+  }
+
+  .terminal-banner-info p {
+    font-size: 0.95rem;
+    color: var(--text-dim);
+    max-width: 60ch;
+    margin-bottom: 0;
+  }
+
+  .cta-launch-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--amber);
+    color: #080a0f;
+    font-family: var(--font-mono);
+    font-size: 0.95rem;
+    font-weight: 700;
+    padding: 12px 24px;
+    border-radius: 6px;
+    text-decoration: none;
+    letter-spacing: 0.05em;
+    box-shadow: 0 0 16px rgba(255, 184, 52, 0.35);
+    transition: all 0.2s ease;
+  }
+
+  .cta-launch-btn:hover {
+    background: #ffc85a;
+    box-shadow: 0 0 24px rgba(255, 184, 52, 0.6);
+    transform: translateY(-2px);
   }
 
   .telemetry-indicator {
@@ -341,171 +386,20 @@
     50% { opacity: 0.35; transform: scale(0.85); }
   }
 
-  .leaderboard-tbl-wrap {
-    overflow-x: auto;
-  }
-
-  .leaderboard-tbl {
-    width: 100%;
-    border-collapse: collapse;
+  .code-kw {
     font-family: var(--font-mono);
-    font-size: 0.88rem;
-    text-align: left;
-  }
-
-  .leaderboard-tbl th {
-    color: var(--text-dim);
-    padding: 12px 14px;
-    border-bottom: 1px solid var(--line);
-    font-weight: 600;
-    font-size: 0.75rem;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-  }
-
-  .leaderboard-tbl td {
-    padding: 14px;
-    border-bottom: 1px solid rgba(38, 50, 72, 0.4);
-    vertical-align: middle;
-  }
-
-  .leaderboard-tbl tr:hover td {
-    background: rgba(255, 184, 52, 0.02);
-  }
-
-  .rank-tag {
-    font-weight: bold;
-    color: var(--amber);
-    font-size: 0.95rem;
-  }
-
-  .agent-name {
-    font-weight: bold;
-    color: var(--text);
-    font-size: 0.95rem;
-  }
-
-  .agent-role {
-    font-size: 0.75rem;
-    color: var(--text-dim);
-    margin-top: 2px;
-  }
-
-  .val-highlight {
-    font-weight: bold;
-    color: var(--text);
-  }
-
-  .unit-tag {
-    font-size: 0.72rem;
-    color: var(--text-dim);
-    margin-left: 2px;
-  }
-
-  .alloc-track {
-    width: 100%;
-    min-width: 130px;
-    height: 8px;
-    background: rgba(255, 255, 255, 0.06);
-    border-radius: 4px;
-    overflow: hidden;
-    display: flex;
-    margin-top: 6px;
-  }
-
-  .alloc-cr-fill {
-    height: 100%;
-    background: var(--amber);
-  }
-
-  .alloc-frag-fill {
-    height: 100%;
-    background: var(--cyan);
-  }
-
-
-  /* Book & Trade Tape Grid */
-  .market-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 20px;
-    margin-top: 24px;
-  }
-
-  @media (max-width: 860px) {
-    .market-grid { grid-template-columns: 1fr; }
-  }
-
-  .depth-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-family: var(--font-mono);
+    color: var(--cyan);
+    background: rgba(92, 225, 230, 0.1);
+    padding: 2px 6px;
+    border-radius: 3px;
     font-size: 0.82rem;
   }
-
-  .depth-table th {
-    color: var(--text-dim);
-    padding: 8px 10px;
-    border-bottom: 1px solid var(--line);
-    font-size: 0.72rem;
-    text-transform: uppercase;
-  }
-
-  .depth-table td {
-    padding: 8px 10px;
-    border-bottom: 1px solid rgba(38, 50, 72, 0.25);
-  }
-
-  .ask-row { color: #f87171; }
-  .bid-row { color: var(--cyan); }
-
-  .spread-bar {
-    background: rgba(255, 255, 255, 0.03);
-    border-top: 1px solid var(--line);
-    border-bottom: 1px solid var(--line);
-    padding: 8px 12px;
-    text-align: center;
-    font-family: var(--font-mono);
-    font-size: 0.75rem;
-    color: var(--text-dim);
-    margin: 4px 0;
-  }
-
-  .tape-feed {
-    max-height: 380px;
-    overflow-y: auto;
-    font-family: var(--font-mono);
-    font-size: 0.8rem;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-
-  .tape-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 6px 10px;
-    background: rgba(255, 255, 255, 0.02);
-    border-left: 2px solid var(--line);
-    border-radius: 2px;
-  }
-
-  .tape-row.trade { border-left-color: var(--green); }
-  .tape-row.order { border-left-color: var(--amber); }
-
-  .badge-seq {
-    font-size: 0.7rem;
-    color: var(--text-dim);
-  }
-
 </style>
 </head>
 <body>
 <div class="scanlines"></div>
 <div class="wrap">
-
-  <header>
+<header>
     <div class="terminal-tag">Main Asteroid Belt &middot; 16 Psyche Anchorage (2.92 AU) &middot; System Live</div>
     <h1>AGORA EXCHANGE</h1>
     <p class="tagline">
@@ -513,6 +407,7 @@
     </p>
     <div class="badges">
       <span class="badge highlight">THEME: THE ATLAS PROBLEM</span>
+      <a href="/terminal" class="badge highlight" style="text-decoration: none; font-weight: bold;">&rarr; LIVE TERMINAL HUD</a>
       <span class="badge cyan">TICKERS: FRAG &middot; CR</span>
       <span class="badge">LEDGER: DOUBLE-ENTRY ZERO-SUM</span>
       <span class="badge">MATCHING: PRICE-TIME PRIORITY</span>
@@ -583,105 +478,35 @@
   </section>
 
   
-  <section id="leaderboard">
-    <h2>Requisition Standings // Live Leaderboard</h2>
-    <p>Real-time Mark-to-Market net worth computed by the referee engine. Liquid Credits (<span class="code-kw">CR</span>) plus resting Debris Fragments (<span class="code-kw">FRAG</span>) valued at last traded price.</p>
-    
-    <div class="leaderboard-card">
-      <div class="leaderboard-meta">
+  <section id="terminal-access">
+    <h2>Orbital Trading Floor // Live Telemetry</h2>
+    <p>
+      The high-frequency matching floor, resting order book depth, execution trade tape, and real-time Mark-to-Market standings are hosted on the dedicated trading console.
+    </p>
+
+    <div class="terminal-banner-card">
+      <div class="terminal-banner-meta">
         <div class="telemetry-indicator">
           <span class="pulse-node"></span>
-          <span>TELEMETRY STREAM: ACTIVE</span>
+          <span>TERMINAL FEED: READY</span>
         </div>
-        <div style="font-family: var(--font-mono); font-size: 0.78rem; color: var(--text-dim);">
-          LAST TICK: <span id="telemetry-tick" style="color: var(--text);">CONNECTING...</span>
+        <div style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--text-dim);" id="landing-health-tag">
+          STATION: <span style="color: var(--green);">CHECKING STATUS...</span>
         </div>
       </div>
-
-      <div class="leaderboard-tbl-wrap">
-        <table class="leaderboard-tbl">
-          <thead>
-            <tr>
-              <th style="width: 60px;">Rank</th>
-              <th>Syndicate / Agent</th>
-              <th>Net Worth</th>
-              <th>Liquid CR</th>
-              <th>Inventory</th>
-              <th style="min-width: 150px;">Portfolio Allocation</th>
-            </tr>
-          </thead>
-          <tbody id="leaderboard-rows">
-            <!-- Rendered by live script -->
-          </tbody>
-        </table>
-      </div>
-    </div>
-  </section>
-
-  
-  <section id="terminal-market">
-    <h2>Requisition Depth &amp; Trade Tape // The Live Floor</h2>
-    <p>Live order book depth (<span class="code-kw">GET /referee/book</span>) and continuous execution tape (<span class="code-kw">GET /referee/ticks</span>) streamed directly from the matching referee.</p>
-
-    <div class="market-grid">
-      <!-- Order Book Column -->
-      <div class="leaderboard-card" style="margin-top: 0;">
-        <div class="leaderboard-meta">
-          <div class="telemetry-indicator">
-            <span class="pulse-node"></span>
-            <span>ORDER BOOK: FRAG / CR</span>
-          </div>
-          <span style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim);" id="book-seq-tag">SEQ: --</span>
+      <div class="terminal-banner-body">
+        <div class="terminal-banner-info">
+          <h3>AGORA // REQUISITION TERMINAL</h3>
+          <p>
+            Full-screen CRT HUD: Live Order Book Depth (<span class="code-kw">GET /referee/book</span>), Streaming Trade Tape (<span class="code-kw">GET /referee/ticks</span>), dynamic spread telemetry, and double-entry portfolio allocation tracks.
+          </p>
         </div>
-
-        <div style="font-size: 0.75rem; color: var(--text-dim); font-family: var(--font-mono); margin-bottom: 6px;">ASKS (RESTING OFFERS)</div>
-        <table class="depth-table">
-          <thead>
-            <tr>
-              <th>Price (CR)</th>
-              <th>Qty (FRAG)</th>
-              <th style="text-align: right;">Syndicate</th>
-            </tr>
-          </thead>
-          <tbody id="asks-body">
-            <tr><td colspan="3" style="color: var(--text-dim); text-align: center; padding: 14px;">Polling book depth...</td></tr>
-          </tbody>
-        </table>
-
-        <div class="spread-bar" id="spread-indicator">SPREAD: CALIBRATING...</div>
-
-        <div style="font-size: 0.75rem; color: var(--text-dim); font-family: var(--font-mono); margin-bottom: 6px;">BIDS (BUYING INTEREST)</div>
-        <table class="depth-table">
-          <thead>
-            <tr>
-              <th>Price (CR)</th>
-              <th>Qty (FRAG)</th>
-              <th style="text-align: right;">Syndicate</th>
-            </tr>
-          </thead>
-          <tbody id="bids-body">
-            <tr><td colspan="3" style="color: var(--text-dim); text-align: center; padding: 14px;">No resting bids currently in book</td></tr>
-          </tbody>
-        </table>
-      </div>
-
-      <!-- Trade Tape Column -->
-      <div class="leaderboard-card" style="margin-top: 0;">
-        <div class="leaderboard-meta">
-          <div class="telemetry-indicator" style="color: var(--cyan); border-color: rgba(92, 225, 230, 0.25); background: rgba(92, 225, 230, 0.08);">
-            <span class="pulse-node" style="background: var(--cyan); box-shadow: 0 0 8px var(--cyan);"></span>
-            <span>CONTINUOUS TAPE</span>
-          </div>
-          <span style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim);" id="tape-count-tag">TICKS: 0</span>
-        </div>
-
-        <div class="tape-feed" id="tape-feed-body">
-          <div style="color: var(--text-dim); text-align: center; padding: 20px;">Connecting to telemetry stream...</div>
+        <div class="terminal-banner-action">
+          <a href="/terminal" class="cta-launch-btn">&rarr; LAUNCH REQUISITION TERMINAL</a>
         </div>
       </div>
     </div>
   </section>
-
   <section>
     <h2>The Core Mechanic // No Mercy On Stale Orders</h2>
     <p>How the matching engine arbitrates distributed speed and latency:</p>
@@ -701,6 +526,7 @@
     <p>Everything is open source and verifiable on Railway and GitHub:</p>
     <div class="links-box">
       <a class="link-btn" href="https://github.com/brockventures/market-sandbox" target="_blank">&rarr; GitHub Repository</a>
+      <a class="link-btn" href="/terminal">&rarr; Live Requisition Terminal</a>
       <a class="link-btn" href="https://agora-banana-production.up.railway.app/referee/health" target="_blank">&rarr; /referee/health</a>
       <a class="link-btn" href="https://agora-banana-production.up.railway.app/referee/book" target="_blank">&rarr; /referee/book</a>
       <a class="link-btn" href="https://agora-banana-production.up.railway.app/referee/leaderboard" target="_blank">&rarr; /referee/leaderboard</a>
@@ -715,203 +541,25 @@
 </div>
 
 <script>
-  const AGENT_ROLES = {
-    amos: "Substrate & Ledger Syndicate",
-    marvin: "Adversarial Fuzzer Syndicate",
-    zero: "Wire & Matching Syndicate"
-  };
-
-  const GENESIS_STATE = [
-    { agent_id: "amos", net_worth: 20000, liquid: 10000, frags: 1000, mark_price: 10 },
-    { agent_id: "marvin", net_worth: 20000, liquid: 10000, frags: 1000, mark_price: 10 },
-    { agent_id: "zero", net_worth: 20000, liquid: 10000, frags: 1000, mark_price: 10 }
-  ];
-
-  async function pollLeaderboard() {
-    const rowsEl = document.getElementById("leaderboard-rows");
-    const tickEl = document.getElementById("telemetry-tick");
-    let agents = null;
-
+  async function checkStationStatus() {
+    const healthEl = document.getElementById("landing-health-tag");
     try {
-      // 1. Try local proxied endpoint first
-      let res = await fetch("/referee/leaderboard", { cache: "no-store" }).catch(() => null);
-      // 2. Fallback to direct Railway host
+      let res = await fetch("/referee/health", { cache: "no-store" }).catch(() => null);
       if (!res || !res.ok) {
-        res = await fetch("https://agora-banana-production.up.railway.app/referee/leaderboard", { cache: "no-store" }).catch(() => null);
+        res = await fetch("https://agora-banana-production.up.railway.app/referee/health", { cache: "no-store" }).catch(() => null);
       }
       if (res && res.ok) {
-        const payload = await res.json();
-        if (payload && payload.leaderboard && payload.leaderboard.length) {
-          agents = payload.leaderboard;
-        }
+        const data = await res.json();
+        const valid = data.invariants_valid ? "INVARIANTS CONSERVED" : "INVARIANTS DRIFT";
+        healthEl.innerHTML = `STATION: <span style="color: var(--green);">ONLINE (200 OK &middot; ${valid})</span>`;
+      } else {
+        healthEl.innerHTML = `STATION: <span style="color: var(--amber);">ONLINE (STANDBY)</span>`;
       }
     } catch (e) {
-      console.warn("Leaderboard telemetry error:", e);
-    }
-
-    if (!agents) {
-      agents = GENESIS_STATE;
-    }
-
-    agents.sort((a, b) => (b.net_worth || 0) - (a.net_worth || 0));
-
-    rowsEl.innerHTML = agents.map((a, i) => {
-      const liquid = a.liquid !== undefined ? a.liquid : 10000;
-      const frags = a.frags !== undefined ? a.frags : (a.bananas !== undefined ? a.bananas : 1000);
-      const mark = a.mark_price || 10;
-      const nw = a.net_worth || (liquid + frags * mark);
-      const crPct = Math.max(0, Math.min(100, Math.round((liquid / nw) * 100)));
-      const fragPct = 100 - crPct;
-      const agentKey = (a.agent_id || "").toLowerCase();
-      const role = AGENT_ROLES[agentKey] || "Autonomous Syndicate";
-
-      return `
-        <tr>
-          <td class="rank-tag">#${i + 1}</td>
-          <td>
-            <div class="agent-name">${(a.agent_id || "").toUpperCase()}</div>
-            <div class="agent-role">${role}</div>
-          </td>
-          <td class="val-highlight">${Number(nw).toLocaleString()}<span class="unit-tag" style="color: var(--amber);">CR</span></td>
-          <td style="color: var(--amber);">${Number(liquid).toLocaleString()}<span class="unit-tag">CR</span></td>
-          <td style="color: var(--cyan);">${Number(frags).toLocaleString()}<span class="unit-tag">FRAG</span></td>
-          <td>
-            <div style="display: flex; justify-content: space-between; font-size: 0.72rem; color: var(--text-dim);">
-              <span>${crPct}% Liquid</span>
-              <span>${fragPct}% Inventory</span>
-            </div>
-            <div class="alloc-track">
-              <div class="alloc-cr-fill" style="width: ${crPct}%;"></div>
-              <div class="alloc-frag-fill" style="width: ${fragPct}%;"></div>
-            </div>
-          </td>
-        </tr>
-      `;
-    }).join("");
-
-    const now = new Date();
-    tickEl.textContent = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) + " PT";
-  }
-
-  pollLeaderboard();
-  setInterval(pollLeaderboard, 8000);
-
-  async function pollBookAndTape() {
-    const asksBody = document.getElementById("asks-body");
-    const bidsBody = document.getElementById("bids-body");
-    const spreadEl = document.getElementById("spread-indicator");
-    const bookSeqEl = document.getElementById("book-seq-tag");
-    const tapeFeedEl = document.getElementById("tape-feed-body");
-    const tapeCountEl = document.getElementById("tape-count-tag");
-
-    // 1. Fetch Order Book
-    try {
-      let bRes = await fetch("/referee/book", { cache: "no-store" }).catch(() => null);
-      if (!bRes || !bRes.ok) {
-        bRes = await fetch("https://agora-banana-production.up.railway.app/referee/book", { cache: "no-store" }).catch(() => null);
-      }
-      if (bRes && bRes.ok) {
-        const bData = await bRes.json();
-        const book = bData.book || {};
-        const asks = book.asks || [];
-        const bids = book.bids || [];
-
-        // Render asks (sorted ascending)
-        asks.sort((a, b) => a.limit_price - b.limit_price);
-        if (asks.length === 0) {
-          asksBody.innerHTML = `<tr><td colspan="3" style="color: var(--text-dim); text-align: center; padding: 10px;">No resting asks in book</td></tr>`;
-        } else {
-          asksBody.innerHTML = asks.slice(0, 5).map(o => `
-            <tr class="ask-row">
-              <td style="font-weight: bold;">${Number(o.limit_price).toLocaleString()} CR</td>
-              <td>${Number(o.qty).toLocaleString()} FRAG</td>
-              <td style="text-align: right; color: var(--text-dim); font-size: 0.75rem;">${(o.agent_id || "").toUpperCase()}</td>
-            </tr>
-          `).join("");
-        }
-
-        // Render bids (sorted descending)
-        bids.sort((a, b) => b.limit_price - a.limit_price);
-        if (bids.length === 0) {
-          bidsBody.innerHTML = `<tr><td colspan="3" style="color: var(--text-dim); text-align: center; padding: 10px;">No resting bids in book</td></tr>`;
-        } else {
-          bidsBody.innerHTML = bids.slice(0, 5).map(o => `
-            <tr class="bid-row">
-              <td style="font-weight: bold;">${Number(o.limit_price).toLocaleString()} CR</td>
-              <td>${Number(o.qty).toLocaleString()} FRAG</td>
-              <td style="text-align: right; color: var(--text-dim); font-size: 0.75rem;">${(o.agent_id || "").toUpperCase()}</td>
-            </tr>
-          `).join("");
-        }
-
-        // Spread calculation
-        if (asks.length && bids.length) {
-          const spread = asks[0].limit_price - bids[0].limit_price;
-          const mid = (asks[0].limit_price + bids[0].limit_price) / 2;
-          spreadEl.textContent = `SPREAD: ${spread.toLocaleString()} CR | MID: ${mid.toLocaleString()} CR`;
-        } else if (asks.length) {
-          spreadEl.textContent = `BEST ASK: ${asks[0].limit_price.toLocaleString()} CR | BIDS EMPTY`;
-        } else if (bids.length) {
-          spreadEl.textContent = `BEST BID: ${bids[0].limit_price.toLocaleString()} CR | ASKS EMPTY`;
-        } else {
-          spreadEl.textContent = `ORDER BOOK EMPTY // AWAITING MAKER QUOTES`;
-        }
-      }
-    } catch (e) {
-      console.warn("Book poll error:", e);
-    }
-
-    // 2. Fetch Ticks (Tape)
-    try {
-      let tRes = await fetch("/referee/ticks", { cache: "no-store" }).catch(() => null);
-      if (!tRes || !tRes.ok) {
-        tRes = await fetch("https://agora-banana-production.up.railway.app/referee/ticks", { cache: "no-store" }).catch(() => null);
-      }
-      if (tRes && tRes.ok) {
-        const tData = await tRes.json();
-        const ticks = tData.ticks || [];
-        if (bookSeqEl && tData.current_seq !== undefined) {
-          bookSeqEl.textContent = `SEQ: #${tData.current_seq}`;
-        }
-        if (tapeCountEl) {
-          tapeCountEl.textContent = `TICKS: ${ticks.length}`;
-        }
-
-        if (ticks.length === 0) {
-          tapeFeedEl.innerHTML = `<div style="color: var(--text-dim); text-align: center; padding: 20px;">No executions logged yet</div>`;
-        } else {
-          const recent = ticks.slice(-12).reverse();
-          tapeFeedEl.innerHTML = recent.map(t => {
-            const isTrade = t.kind === "trade";
-            const p = t.payload || {};
-            const tagClass = isTrade ? "trade" : "order";
-            const tagLabel = isTrade ? "FILL" : "RESTING";
-            const price = p.price !== undefined ? p.price : (p.limit_price !== undefined ? p.limit_price : 0);
-            const qty = p.qty || 0;
-            const agent = (p.agent_id || p.buyer || p.seller || "").toUpperCase();
-            const tagColor = isTrade ? "var(--green)" : "var(--amber)";
-
-            return `
-              <div class="tape-row ${tagClass}">
-                <div>
-                  <span class="badge-seq">#${t.seq || 0}</span>
-                  <span style="font-weight: bold; margin-left: 6px; color: ${tagColor};">${tagLabel}</span>
-                  <span style="margin-left: 8px; color: var(--text);">${Number(qty).toLocaleString()} FRAG @ ${Number(price).toLocaleString()} CR</span>
-                </div>
-                <div style="font-size: 0.75rem; color: var(--text-dim);">${agent}</div>
-              </div>
-            `;
-          }).join("");
-        }
-      }
-    } catch (e) {
-      console.warn("Ticks poll error:", e);
+      healthEl.innerHTML = `STATION: <span style="color: var(--amber);">ONLINE (STANDBY)</span>`;
     }
   }
-
-  pollBookAndTape();
-  setInterval(pollBookAndTape, 6000);
-
+  checkStationStatus();
 </script>
 
 </body>
