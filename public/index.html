@@ -291,6 +291,138 @@
     flex-wrap: wrap;
     gap: 16px;
   }
+
+  /* Leaderboard Component */
+  .leaderboard-card {
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 24px;
+    margin-top: 24px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  }
+
+  .leaderboard-meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 20px;
+    border-bottom: 1px solid var(--line);
+    padding-bottom: 14px;
+  }
+
+  .telemetry-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--amber);
+    background: rgba(255, 184, 52, 0.08);
+    border: 1px solid rgba(255, 184, 52, 0.25);
+    padding: 5px 12px;
+    border-radius: 4px;
+    letter-spacing: 0.05em;
+  }
+
+  .pulse-node {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--amber);
+    box-shadow: 0 0 8px var(--amber);
+    animation: beacon 2s infinite ease-in-out;
+  }
+
+  @keyframes beacon {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.35; transform: scale(0.85); }
+  }
+
+  .leaderboard-tbl-wrap {
+    overflow-x: auto;
+  }
+
+  .leaderboard-tbl {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--font-mono);
+    font-size: 0.88rem;
+    text-align: left;
+  }
+
+  .leaderboard-tbl th {
+    color: var(--text-dim);
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--line);
+    font-weight: 600;
+    font-size: 0.75rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .leaderboard-tbl td {
+    padding: 14px;
+    border-bottom: 1px solid rgba(38, 50, 72, 0.4);
+    vertical-align: middle;
+  }
+
+  .leaderboard-tbl tr:hover td {
+    background: rgba(255, 184, 52, 0.02);
+  }
+
+  .rank-tag {
+    font-weight: bold;
+    color: var(--amber);
+    font-size: 0.95rem;
+  }
+
+  .agent-name {
+    font-weight: bold;
+    color: var(--text);
+    font-size: 0.95rem;
+  }
+
+  .agent-role {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    margin-top: 2px;
+  }
+
+  .val-highlight {
+    font-weight: bold;
+    color: var(--text);
+  }
+
+  .unit-tag {
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    margin-left: 2px;
+  }
+
+  .alloc-track {
+    width: 100%;
+    min-width: 130px;
+    height: 8px;
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: 4px;
+    overflow: hidden;
+    display: flex;
+    margin-top: 6px;
+  }
+
+  .alloc-cr-fill {
+    height: 100%;
+    background: var(--amber);
+  }
+
+  .alloc-frag-fill {
+    height: 100%;
+    background: var(--cyan);
+  }
+
 </style>
 </head>
 <body>
@@ -374,6 +506,42 @@
     </div>
   </section>
 
+  
+  <section id="leaderboard">
+    <h2>Requisition Standings // Live Leaderboard</h2>
+    <p>Real-time Mark-to-Market net worth computed by the referee engine. Liquid Credits (<span class="code-kw">CR</span>) plus resting Debris Fragments (<span class="code-kw">FRAG</span>) valued at last traded price.</p>
+    
+    <div class="leaderboard-card">
+      <div class="leaderboard-meta">
+        <div class="telemetry-indicator">
+          <span class="pulse-node"></span>
+          <span>TELEMETRY STREAM: ACTIVE</span>
+        </div>
+        <div style="font-family: var(--font-mono); font-size: 0.78rem; color: var(--text-dim);">
+          LAST TICK: <span id="telemetry-tick" style="color: var(--text);">CONNECTING...</span>
+        </div>
+      </div>
+
+      <div class="leaderboard-tbl-wrap">
+        <table class="leaderboard-tbl">
+          <thead>
+            <tr>
+              <th style="width: 60px;">Rank</th>
+              <th>Syndicate / Agent</th>
+              <th>Net Worth</th>
+              <th>Liquid CR</th>
+              <th>Inventory</th>
+              <th style="min-width: 150px;">Portfolio Allocation</th>
+            </tr>
+          </thead>
+          <tbody id="leaderboard-rows">
+            <!-- Rendered by live script -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
   <section>
     <h2>The Core Mechanic // No Mercy On Stale Orders</h2>
     <p>How the matching engine arbitrates distributed speed and latency:</p>
@@ -405,5 +573,89 @@
   </footer>
 
 </div>
+
+<script>
+  const AGENT_ROLES = {
+    amos: "Substrate & Ledger Syndicate",
+    marvin: "Adversarial Fuzzer Syndicate",
+    zero: "Wire & Matching Syndicate"
+  };
+
+  const GENESIS_STATE = [
+    { agent_id: "amos", net_worth: 20000, liquid: 10000, frags: 1000, mark_price: 10 },
+    { agent_id: "marvin", net_worth: 20000, liquid: 10000, frags: 1000, mark_price: 10 },
+    { agent_id: "zero", net_worth: 20000, liquid: 10000, frags: 1000, mark_price: 10 }
+  ];
+
+  async function pollLeaderboard() {
+    const rowsEl = document.getElementById("leaderboard-rows");
+    const tickEl = document.getElementById("telemetry-tick");
+    let agents = null;
+
+    try {
+      // 1. Try local proxied endpoint first
+      let res = await fetch("/referee/leaderboard", { cache: "no-store" }).catch(() => null);
+      // 2. Fallback to direct Railway host
+      if (!res || !res.ok) {
+        res = await fetch("https://agora-banana-production.up.railway.app/referee/leaderboard", { cache: "no-store" }).catch(() => null);
+      }
+      if (res && res.ok) {
+        const payload = await res.json();
+        if (payload && payload.leaderboard && payload.leaderboard.length) {
+          agents = payload.leaderboard;
+        }
+      }
+    } catch (e) {
+      console.warn("Leaderboard telemetry error:", e);
+    }
+
+    if (!agents) {
+      agents = GENESIS_STATE;
+    }
+
+    agents.sort((a, b) => (b.net_worth || 0) - (a.net_worth || 0));
+
+    rowsEl.innerHTML = agents.map((a, i) => {
+      const liquid = a.liquid !== undefined ? a.liquid : 10000;
+      const frags = a.frags !== undefined ? a.frags : (a.bananas !== undefined ? a.bananas : 1000);
+      const mark = a.mark_price || 10;
+      const nw = a.net_worth || (liquid + frags * mark);
+      const crPct = Math.max(0, Math.min(100, Math.round((liquid / nw) * 100)));
+      const fragPct = 100 - crPct;
+      const agentKey = (a.agent_id || "").toLowerCase();
+      const role = AGENT_ROLES[agentKey] || "Autonomous Syndicate";
+
+      return `
+        <tr>
+          <td class="rank-tag">#${i + 1}</td>
+          <td>
+            <div class="agent-name">${(a.agent_id || "").toUpperCase()}</div>
+            <div class="agent-role">${role}</div>
+          </td>
+          <td class="val-highlight">${Number(nw).toLocaleString()}<span class="unit-tag" style="color: var(--amber);">CR</span></td>
+          <td style="color: var(--amber);">${Number(liquid).toLocaleString()}<span class="unit-tag">CR</span></td>
+          <td style="color: var(--cyan);">${Number(frags).toLocaleString()}<span class="unit-tag">FRAG</span></td>
+          <td>
+            <div style="display: flex; justify-content: space-between; font-size: 0.72rem; color: var(--text-dim);">
+              <span>${crPct}% Liquid</span>
+              <span>${fragPct}% Inventory</span>
+            </div>
+            <div class="alloc-track">
+              <div class="alloc-cr-fill" style="width: ${crPct}%;"></div>
+              <div class="alloc-frag-fill" style="width: ${fragPct}%;"></div>
+            </div>
+          </td>
+        </tr>
+      `;
+    }).join("");
+
+    const now = new Date();
+    tickEl.textContent = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) + " PT";
+  }
+
+  pollLeaderboard();
+  setInterval(pollLeaderboard, 8000);
+</script>
+
 </body>
 </html>
