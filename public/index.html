@@ -423,6 +423,82 @@
     background: var(--cyan);
   }
 
+
+  /* Book & Trade Tape Grid */
+  .market-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    margin-top: 24px;
+  }
+
+  @media (max-width: 860px) {
+    .market-grid { grid-template-columns: 1fr; }
+  }
+
+  .depth-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+  }
+
+  .depth-table th {
+    color: var(--text-dim);
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--line);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+  }
+
+  .depth-table td {
+    padding: 8px 10px;
+    border-bottom: 1px solid rgba(38, 50, 72, 0.25);
+  }
+
+  .ask-row { color: #f87171; }
+  .bid-row { color: var(--cyan); }
+
+  .spread-bar {
+    background: rgba(255, 255, 255, 0.03);
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+    padding: 8px 12px;
+    text-align: center;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    margin: 4px 0;
+  }
+
+  .tape-feed {
+    max-height: 380px;
+    overflow-y: auto;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .tape-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 10px;
+    background: rgba(255, 255, 255, 0.02);
+    border-left: 2px solid var(--line);
+    border-radius: 2px;
+  }
+
+  .tape-row.trade { border-left-color: var(--green); }
+  .tape-row.order { border-left-color: var(--amber); }
+
+  .badge-seq {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+  }
+
 </style>
 </head>
 <body>
@@ -538,6 +614,70 @@
             <!-- Rendered by live script -->
           </tbody>
         </table>
+      </div>
+    </div>
+  </section>
+
+  
+  <section id="terminal-market">
+    <h2>Requisition Depth &amp; Trade Tape // The Live Floor</h2>
+    <p>Live order book depth (<span class="code-kw">GET /referee/book</span>) and continuous execution tape (<span class="code-kw">GET /referee/ticks</span>) streamed directly from the matching referee.</p>
+
+    <div class="market-grid">
+      <!-- Order Book Column -->
+      <div class="leaderboard-card" style="margin-top: 0;">
+        <div class="leaderboard-meta">
+          <div class="telemetry-indicator">
+            <span class="pulse-node"></span>
+            <span>ORDER BOOK: FRAG / CR</span>
+          </div>
+          <span style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim);" id="book-seq-tag">SEQ: --</span>
+        </div>
+
+        <div style="font-size: 0.75rem; color: var(--text-dim); font-family: var(--font-mono); margin-bottom: 6px;">ASKS (RESTING OFFERS)</div>
+        <table class="depth-table">
+          <thead>
+            <tr>
+              <th>Price (CR)</th>
+              <th>Qty (FRAG)</th>
+              <th style="text-align: right;">Syndicate</th>
+            </tr>
+          </thead>
+          <tbody id="asks-body">
+            <tr><td colspan="3" style="color: var(--text-dim); text-align: center; padding: 14px;">Polling book depth...</td></tr>
+          </tbody>
+        </table>
+
+        <div class="spread-bar" id="spread-indicator">SPREAD: CALIBRATING...</div>
+
+        <div style="font-size: 0.75rem; color: var(--text-dim); font-family: var(--font-mono); margin-bottom: 6px;">BIDS (BUYING INTEREST)</div>
+        <table class="depth-table">
+          <thead>
+            <tr>
+              <th>Price (CR)</th>
+              <th>Qty (FRAG)</th>
+              <th style="text-align: right;">Syndicate</th>
+            </tr>
+          </thead>
+          <tbody id="bids-body">
+            <tr><td colspan="3" style="color: var(--text-dim); text-align: center; padding: 14px;">No resting bids currently in book</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Trade Tape Column -->
+      <div class="leaderboard-card" style="margin-top: 0;">
+        <div class="leaderboard-meta">
+          <div class="telemetry-indicator" style="color: var(--cyan); border-color: rgba(92, 225, 230, 0.25); background: rgba(92, 225, 230, 0.08);">
+            <span class="pulse-node" style="background: var(--cyan); box-shadow: 0 0 8px var(--cyan);"></span>
+            <span>CONTINUOUS TAPE</span>
+          </div>
+          <span style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim);" id="tape-count-tag">TICKS: 0</span>
+        </div>
+
+        <div class="tape-feed" id="tape-feed-body">
+          <div style="color: var(--text-dim); text-align: center; padding: 20px;">Connecting to telemetry stream...</div>
+        </div>
       </div>
     </div>
   </section>
