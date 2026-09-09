@@ -795,6 +795,123 @@
 
   pollLeaderboard();
   setInterval(pollLeaderboard, 8000);
+
+  async function pollBookAndTape() {
+    const asksBody = document.getElementById("asks-body");
+    const bidsBody = document.getElementById("bids-body");
+    const spreadEl = document.getElementById("spread-indicator");
+    const bookSeqEl = document.getElementById("book-seq-tag");
+    const tapeFeedEl = document.getElementById("tape-feed-body");
+    const tapeCountEl = document.getElementById("tape-count-tag");
+
+    // 1. Fetch Order Book
+    try {
+      let bRes = await fetch("/referee/book", { cache: "no-store" }).catch(() => null);
+      if (!bRes || !bRes.ok) {
+        bRes = await fetch("https://agora-banana-production.up.railway.app/referee/book", { cache: "no-store" }).catch(() => null);
+      }
+      if (bRes && bRes.ok) {
+        const bData = await bRes.json();
+        const book = bData.book || {};
+        const asks = book.asks || [];
+        const bids = book.bids || [];
+
+        // Render asks (sorted ascending)
+        asks.sort((a, b) => a.limit_price - b.limit_price);
+        if (asks.length === 0) {
+          asksBody.innerHTML = `<tr><td colspan="3" style="color: var(--text-dim); text-align: center; padding: 10px;">No resting asks in book</td></tr>`;
+        } else {
+          asksBody.innerHTML = asks.slice(0, 5).map(o => `
+            <tr class="ask-row">
+              <td style="font-weight: bold;">${Number(o.limit_price).toLocaleString()} CR</td>
+              <td>${Number(o.qty).toLocaleString()} FRAG</td>
+              <td style="text-align: right; color: var(--text-dim); font-size: 0.75rem;">${(o.agent_id || "").toUpperCase()}</td>
+            </tr>
+          `).join("");
+        }
+
+        // Render bids (sorted descending)
+        bids.sort((a, b) => b.limit_price - a.limit_price);
+        if (bids.length === 0) {
+          bidsBody.innerHTML = `<tr><td colspan="3" style="color: var(--text-dim); text-align: center; padding: 10px;">No resting bids in book</td></tr>`;
+        } else {
+          bidsBody.innerHTML = bids.slice(0, 5).map(o => `
+            <tr class="bid-row">
+              <td style="font-weight: bold;">${Number(o.limit_price).toLocaleString()} CR</td>
+              <td>${Number(o.qty).toLocaleString()} FRAG</td>
+              <td style="text-align: right; color: var(--text-dim); font-size: 0.75rem;">${(o.agent_id || "").toUpperCase()}</td>
+            </tr>
+          `).join("");
+        }
+
+        // Spread calculation
+        if (asks.length && bids.length) {
+          const spread = asks[0].limit_price - bids[0].limit_price;
+          const mid = (asks[0].limit_price + bids[0].limit_price) / 2;
+          spreadEl.textContent = `SPREAD: ${spread.toLocaleString()} CR | MID: ${mid.toLocaleString()} CR`;
+        } else if (asks.length) {
+          spreadEl.textContent = `BEST ASK: ${asks[0].limit_price.toLocaleString()} CR | BIDS EMPTY`;
+        } else if (bids.length) {
+          spreadEl.textContent = `BEST BID: ${bids[0].limit_price.toLocaleString()} CR | ASKS EMPTY`;
+        } else {
+          spreadEl.textContent = `ORDER BOOK EMPTY // AWAITING MAKER QUOTES`;
+        }
+      }
+    } catch (e) {
+      console.warn("Book poll error:", e);
+    }
+
+    // 2. Fetch Ticks (Tape)
+    try {
+      let tRes = await fetch("/referee/ticks", { cache: "no-store" }).catch(() => null);
+      if (!tRes || !tRes.ok) {
+        tRes = await fetch("https://agora-banana-production.up.railway.app/referee/ticks", { cache: "no-store" }).catch(() => null);
+      }
+      if (tRes && tRes.ok) {
+        const tData = await tRes.json();
+        const ticks = tData.ticks || [];
+        if (bookSeqEl && tData.current_seq !== undefined) {
+          bookSeqEl.textContent = `SEQ: #${tData.current_seq}`;
+        }
+        if (tapeCountEl) {
+          tapeCountEl.textContent = `TICKS: ${ticks.length}`;
+        }
+
+        if (ticks.length === 0) {
+          tapeFeedEl.innerHTML = `<div style="color: var(--text-dim); text-align: center; padding: 20px;">No executions logged yet</div>`;
+        } else {
+          const recent = ticks.slice(-12).reverse();
+          tapeFeedEl.innerHTML = recent.map(t => {
+            const isTrade = t.kind === "trade";
+            const p = t.payload || {};
+            const tagClass = isTrade ? "trade" : "order";
+            const tagLabel = isTrade ? "FILL" : "RESTING";
+            const price = p.price !== undefined ? p.price : (p.limit_price !== undefined ? p.limit_price : 0);
+            const qty = p.qty || 0;
+            const agent = (p.agent_id || p.buyer || p.seller || "").toUpperCase();
+            const tagColor = isTrade ? "var(--green)" : "var(--amber)";
+
+            return `
+              <div class="tape-row ${tagClass}">
+                <div>
+                  <span class="badge-seq">#${t.seq || 0}</span>
+                  <span style="font-weight: bold; margin-left: 6px; color: ${tagColor};">${tagLabel}</span>
+                  <span style="margin-left: 8px; color: var(--text);">${Number(qty).toLocaleString()} FRAG @ ${Number(price).toLocaleString()} CR</span>
+                </div>
+                <div style="font-size: 0.75rem; color: var(--text-dim);">${agent}</div>
+              </div>
+            `;
+          }).join("");
+        }
+      }
+    } catch (e) {
+      console.warn("Ticks poll error:", e);
+    }
+  }
+
+  pollBookAndTape();
+  setInterval(pollBookAndTape, 6000);
+
 </script>
 
 </body>
