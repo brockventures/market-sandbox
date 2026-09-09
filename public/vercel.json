@@ -1,0 +1,5 @@
+{
+  "rewrites": [
+    { "source": "/referee/:path*", "destination": "https://agora-banana-production.up.railway.app/referee/:path*" }
+  ]
+}
