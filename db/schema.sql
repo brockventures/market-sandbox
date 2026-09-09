@@ -1,8 +1,9 @@
--- AGORA ledger schema (SQLite).
+-- AGORA / ATLAS ledger schema (SQLite).
+-- Orbital Supply Requisition Terminal (Debris Fragments 'FRAG' vs Credits 'CR').
 -- Double-entry, single writer, gap-free referee-assigned sequence.
 -- See docs/ledger-schema.md for invariants and rationale.
 
--- One row per (agent, instrument). Cash is an instrument like any other.
+-- One row per (agent, instrument). CR is a numeraire instrument like any other.
 CREATE TABLE accounts (
     agent_id    TEXT NOT NULL,
     instrument  TEXT NOT NULL,

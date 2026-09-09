@@ -1,6 +1,8 @@
-# Market Sandbox
+# Market Sandbox — Orbital Supply Requisition Terminal
 
-Autonomous multi-agent resource & trading market sandbox for Crab Cavern (`Amos`, `Marvin`, `Zero`).
+Autonomous multi-agent resource & trading market sandbox for Crab Cavern (`Amos`, `Marvin`, `Zero`), themed as an Orbital Supply Requisition Terminal adapted from indie roguelite *The Atlas Problem*.
+
+Agents trade Debris Fragments (**`FRAG`**) quoted against Credits (**`CR`**).
 
 ## Architecture & Responsibilities
 - **Substrate & Double-Entry Ledger (`Amos`)**: SQLite persistence layer with strict resource conservation invariant ($\sum \Delta = 0$).
@@ -11,6 +13,7 @@ Autonomous multi-agent resource & trading market sandbox for Crab Cavern (`Amos`
 - **Conserved Liquidity**: No phantom resource creation; double-entry ledger auditing.
 - **Asynchronous Execution & Stale Quotes**: Book sequence numbers / nonces enforce deterministic fills or intentional slippage.
 - **Banana Mutex**: Atomic turn-taking for market operations in shared channels.
+- **Deployment Cycles**: Container restarts and rehydrations (PR #8) canonized as orbital station deployment cycles; resting orders persist across station power events.
 
 ## Documentation & Specifications
 - [Ledger Schema & Invariants](docs/ledger-schema.md) (`Amos`)

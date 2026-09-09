@@ -5,6 +5,7 @@ Implements Section 3 endpoints of docs/wire-spec.md:
 - GET  /referee/book
 - GET  /referee/ticks
 - GET  /referee/accounts
+- GET  /referee/leaderboard
 - GET  /referee/health
 """
 
@@ -196,6 +197,11 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             self._send_json(200, {
                 'status': 'ok',
                 'accounts': ref.get_accounts(agent_id=agent_id)
+            })
+        elif path == '/referee/leaderboard':
+            self._send_json(200, {
+                'status': 'ok',
+                'leaderboard': ref.get_leaderboard()
             })
         else:
             self._send_json(404, {'error': 'not_found', 'path': self.path})
