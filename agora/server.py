@@ -94,6 +94,63 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
         parsed_url = urllib.parse.urlparse(self.path)
         path = parsed_url.path.rstrip('/')
 
+        if path in ('/referee/floor', '/referee/admin/floor'):
+            auth_agent, auth_err = self._authenticate_request()
+            if auth_err:
+                self._send_json(401, auth_err)
+                return
+            if auth_agent != 'admin':
+                self._send_json(403, {
+                    'v': 1, 'kind': 'reject',
+                    'payload': {
+                        'reason': 'unauthorized',
+                        'detail': f"Only admin token can set floor state (authenticated as '{auth_agent}')"
+                    }
+                })
+                return
+
+            content_length = int(self.headers.get('Content-Length', 0))
+            if content_length == 0:
+                self._send_json(400, {
+                    'v': 1, 'kind': 'reject',
+                    'payload': {'reason': 'invalid_format', 'detail': 'Empty request body'}
+                })
+                return
+
+            try:
+                body = self.rfile.read(content_length)
+                payload = json.loads(body.decode('utf-8'))
+            except Exception as e:
+                self._send_json(400, {
+                    'v': 1, 'kind': 'reject',
+                    'payload': {'reason': 'invalid_format', 'detail': f'Malformed JSON: {e}'}
+                })
+                return
+
+            target = payload.get('floor')
+            if not target:
+                action = str(payload.get('action', '')).lower()
+                if action in ('halt', 'pause', 'stop', 'close'):
+                    target = 'closed'
+                elif action in ('resume', 'open', 'start'):
+                    target = 'open'
+
+            if target not in ('open', 'closed'):
+                self._send_json(400, {
+                    'v': 1, 'kind': 'reject',
+                    'payload': {'reason': 'invalid_format', 'detail': "Expected floor='open' or 'closed'"}
+                })
+                return
+
+            ref = self.referee or AgoraReferee()
+            ref.set_floor(target)
+            self._send_json(200, {
+                'status': 'ok',
+                'floor': ref.floor,
+                'seq': ref.current_seq
+            })
+            return
+
         if path != '/referee/orders':
             self._send_json(404, {'error': 'not_found', 'path': self.path})
             return
@@ -154,9 +211,15 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             self._send_json(status_code, {
                 'status': 'ok' if valid else 'error',
                 'seq': ref.current_seq,
-                'floor': 'open',
+                'floor': ref.floor,
                 'invariants_valid': valid,
                 'errors': errors
+            })
+        elif path in ('/referee/floor', '/referee/admin/floor'):
+            self._send_json(200, {
+                'status': 'ok',
+                'floor': ref.floor,
+                'seq': ref.current_seq
             })
         elif path == '/referee/book':
             self._send_json(200, {

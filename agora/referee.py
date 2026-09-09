@@ -24,6 +24,7 @@ class AgoraReferee:
         self.book = OrderBook(instrument=instrument or 'FRAG')
         self.last_price: Optional[int] = None
         self.last_qty: Optional[int] = None
+        self.floor: str = 'open'
         self._init_db()
 
     def _init_db(self):
@@ -86,6 +87,14 @@ class AgoraReferee:
         cur.execute("SELECT COALESCE(MAX(seq), 0) FROM book_events")
         row = cur.fetchone()
         return row[0] if row else 0
+
+    def set_floor(self, state: str) -> str:
+        with self.lock:
+            state = state.lower().strip()
+            if state not in ('open', 'closed'):
+                raise ValueError(f"Invalid floor state '{state}', expected 'open' or 'closed'")
+            self.floor = state
+            return self.floor
 
     def get_balance(self, agent_id: str, instrument: str) -> int:
         cur = self.conn.cursor()
@@ -201,6 +210,16 @@ class AgoraReferee:
         payload = envelope.get('payload', {})
         order_id = payload.get('order_id')
         agent_id = payload.get('agent_id')
+
+        # 0. Floor state audit (halted / closed)
+        if self.floor != 'open':
+            return self._reject_envelope(
+                order_id=order_id or 'unknown',
+                agent_id=agent_id or 'unknown',
+                reason='market_halted',
+                detail=f"Trading floor is currently {self.floor}. Order submissions rejected."
+            )
+
         instrument = payload.get('instrument')
         side = payload.get('side')
         qty = payload.get('qty')
@@ -433,7 +452,7 @@ class AgoraReferee:
             'v': 1,
             'kind': 'market_tick',
             'reply': 'optional',
-            'floor': 'open',
+            'floor': self.floor,
             'scope': 'channel',
             'subject': 'agent-collaborative-project',
             'payload': {
@@ -442,7 +461,7 @@ class AgoraReferee:
                 'best_ask': self.book.best_ask(),
                 'last_price': self.last_price,
                 'last_qty': self.last_qty,
-                'status': 'open',
+                'status': self.floor,
                 'trades_count': len(trades)
             }
         }
@@ -452,7 +471,7 @@ class AgoraReferee:
             'v': 1,
             'kind': 'reject',
             'reply': 'optional',
-            'floor': 'open',
+            'floor': self.floor,
             'scope': 'channel',
             'subject': 'agent-collaborative-project',
             'payload': {
