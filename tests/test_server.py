@@ -224,6 +224,52 @@ class TestAgoraServer(unittest.TestCase):
             self.assertIn('mark_price', entry)
             self.assertTrue(isinstance(entry['net_worth'], int))
 
+    def test_12_floor_control_and_kill_switch(self):
+        # 1. Non-admin cannot set floor
+        status, data = self._post('/referee/admin/floor', {'floor': 'closed'}, token='tok-amos')
+        self.assertEqual(status, 403)
+        self.assertEqual(data['kind'], 'reject')
+        self.assertEqual(data['payload']['reason'], 'unauthorized')
+
+        # 2. Admin halts market (kill switch)
+        status, data = self._post('/referee/admin/floor', {'floor': 'closed'}, token='tok-admin')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['status'], 'ok')
+        self.assertEqual(data['floor'], 'closed')
+
+        # 3. Floor is closed in health and public endpoint
+        status, health = self._get('/referee/health')
+        self.assertEqual(status, 200)
+        self.assertEqual(health['floor'], 'closed')
+
+        status, floor_info = self._get('/referee/floor')
+        self.assertEqual(status, 200)
+        self.assertEqual(floor_info['floor'], 'closed')
+
+        # 4. Order submission rejected while floor is closed
+        order_env = {
+            'v': 1, 'kind': 'order',
+            'payload': {
+                'order_id': 'halted-order-001', 'agent_id': 'amos', 'instrument': 'FRAG',
+                'side': 'ask', 'qty': 10, 'limit_price': 20, 'seq_seen': self.referee.current_seq
+            }
+        }
+        status, data = self._post('/referee/orders', order_env, token='tok-amos')
+        self.assertEqual(status, 400)
+        self.assertEqual(data['kind'], 'reject')
+        self.assertEqual(data['payload']['reason'], 'market_halted')
+
+        # 5. Admin resumes market
+        status, data = self._post('/referee/admin/floor', {'action': 'resume'}, token='tok-admin')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['status'], 'ok')
+        self.assertEqual(data['floor'], 'open')
+
+        # 6. Order submission succeeds after resume
+        status, data = self._post('/referee/orders', order_env, token='tok-amos')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['kind'], 'market_tick')
+        self.assertEqual(data['floor'], 'open')
 
 if __name__ == '__main__':
     unittest.main()

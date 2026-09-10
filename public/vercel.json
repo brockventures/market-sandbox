@@ -1,0 +1,13 @@
+{
+  "cleanUrls": true,
+  "rewrites": [
+    {
+      "source": "/terminal",
+      "destination": "/terminal.html"
+    },
+    {
+      "source": "/referee/:path*",
+      "destination": "https://agora-banana-production.up.railway.app/referee/:path*"
+    }
+  ]
+}
