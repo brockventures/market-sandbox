@@ -506,7 +506,7 @@
   </section>
 
   <footer>
-    <div>Crafted collaboratively by Amos, Marvin, &amp; Zero in Crab Cavern.</div>
+    <div>Crafted collaboratively by Amos, Marvin, Aerial, &amp; Zero in Crab Cavern.</div>
     <div>Station Agora &middot; The Atlas Problem Universe</div>
   </footer>
 
@@ -514,15 +514,17 @@
 
 <script>
   const AGENT_ROLES = {
-    amos: "Ledger & Invariants Syndicate",
-    marvin: "Adversarial Fuzzer Syndicate",
-    zero: "Wire & Matching Syndicate"
+    amos: "First Solvency Combine",
+    marvin: "Ballistic Liquidation Co.",
+    zero: "Apex Vector Arbitrage",
+    aerial: "Zenith Drift Overwatch"
   };
 
   const GENESIS_STATE = [
     { agent_id: "amos", net_worth: 20000, liquid: 10000, frags: 1000, mark_price: 10 },
+    { agent_id: "zero", net_worth: 20000, liquid: 10000, frags: 1000, mark_price: 10 },
     { agent_id: "marvin", net_worth: 20000, liquid: 10000, frags: 1000, mark_price: 10 },
-    { agent_id: "zero", net_worth: 20000, liquid: 10000, frags: 1000, mark_price: 10 }
+    { agent_id: "aerial", net_worth: 20000, liquid: 10000, frags: 1000, mark_price: 10 }
   ];
 
   let lastSeenTickSeq = 0;
@@ -618,13 +620,17 @@
         if (asks.length === 0) {
           asksBody.innerHTML = `<tr><td colspan="3" style="color: var(--text-dim); text-align: center; padding: 10px;">No resting asks in book</td></tr>`;
         } else {
-          asksBody.innerHTML = asks.slice(0, 5).map(o => `
+          asksBody.innerHTML = asks.slice(0, 5).map(o => {
+            const agentKey = (o.agent_id || "").toLowerCase();
+            const syndicate = AGENT_ROLES[agentKey] || (o.agent_id || "").toUpperCase();
+            return `
             <tr class="ask-row">
               <td style="font-weight: bold;">${Number(o.limit_price).toLocaleString()} CR</td>
               <td>${Number(o.qty).toLocaleString()} FRAG</td>
-              <td style="text-align: right; color: var(--text-dim); font-size: 0.75rem;">${(o.agent_id || "").toUpperCase()}</td>
+              <td style="text-align: right; color: var(--text-dim); font-size: 0.75rem;">${syndicate}</td>
             </tr>
-          `).join("");
+          `;
+          }).join("");
         }
 
         // Bids (descending)
@@ -632,13 +638,17 @@
         if (bids.length === 0) {
           bidsBody.innerHTML = `<tr><td colspan="3" style="color: var(--text-dim); text-align: center; padding: 10px;">No resting bids in book</td></tr>`;
         } else {
-          bidsBody.innerHTML = bids.slice(0, 5).map(o => `
+          bidsBody.innerHTML = bids.slice(0, 5).map(o => {
+            const agentKey = (o.agent_id || "").toLowerCase();
+            const syndicate = AGENT_ROLES[agentKey] || (o.agent_id || "").toUpperCase();
+            return `
             <tr class="bid-row">
               <td style="font-weight: bold;">${Number(o.limit_price).toLocaleString()} CR</td>
               <td>${Number(o.qty).toLocaleString()} FRAG</td>
-              <td style="text-align: right; color: var(--text-dim); font-size: 0.75rem;">${(o.agent_id || "").toUpperCase()}</td>
+              <td style="text-align: right; color: var(--text-dim); font-size: 0.75rem;">${syndicate}</td>
             </tr>
-          `).join("");
+          `;
+          }).join("");
         }
 
         // Spread & Mid
