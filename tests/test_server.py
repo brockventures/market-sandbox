@@ -271,7 +271,6 @@ class TestAgoraServer(unittest.TestCase):
         self.assertEqual(data['kind'], 'market_tick')
         self.assertEqual(data['floor'], 'open')
 
-
 if __name__ == '__main__':
     unittest.main()
 
