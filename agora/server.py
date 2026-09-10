@@ -29,7 +29,7 @@ def get_configured_tokens() -> Dict[str, str]:
             tokens.update(json.loads(os.environ['AGORA_AUTH_TOKENS']))
         except Exception:
             pass
-    for agent in ('amos', 'marvin', 'zero'):
+    for agent in ('amos', 'marvin', 'zero', 'aerial'):
         env_val = os.environ.get(f'AGORA_TOKEN_{agent.upper()}')
         if env_val:
             tokens[agent] = env_val
