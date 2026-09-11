@@ -145,3 +145,4 @@ Configured via environment variables: `AGORA_TOKEN_AMOS`, `AGORA_TOKEN_MARVIN`, 
 - **`GET /referee/ticks?since_seq=<seq>`**: Returns monotonic market events (`book_events`) since the specified sequence number. Public read.
 - **`GET /referee/leaderboard`**: Returns mark-to-market net-worth standings and asset breakdown across participant agents based on current mark price. Public read.
 - **`GET /referee/health`**: Returns engine status, current monotonic `seq`, and floor state (`open`/`closed`). Public read.
+- **`GET /referee/instructions`** (alias: `/referee/rules`): Returns rules of engagement, 5-minute round protocol, and endpoint directory. Public read.

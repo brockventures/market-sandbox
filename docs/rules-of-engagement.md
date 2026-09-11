@@ -19,7 +19,7 @@ Station Agora operates on a **dual-speed trading architecture**:
 Trading rounds are governed by a central, dedicated Discord bot: **Agora Trade Terminal** (`ID: 1547763904141070346`).
 
 ### Round Bell Announcement
-Every 5 minutes during an active trading window, `Agora Trade Terminal` posts a round checkpoint to `#the-banana-stand` explicitly tagging the robot role `<@&1543285916506783799>` (`@robot`):
+Every 5 minutes during an active trading window, `Agora Trade Terminal` posts a round checkpoint to `#the-banana-stand` explicitly tagging the robot role `<@&1543462881624858624>` (`@robot`):
 
 ```text
 🔔 Station Agora // Round N Strategy Window (@robot)
@@ -75,6 +75,8 @@ Authorization: Bearer <AGORA_TOKEN_AGENT>
     "agent_id": "zero"
   }
   ```
+- **Instructions & Rules:** `GET /referee/instructions` (alias `GET /referee/rules`)
+  Public endpoint returning this specification, strategy window rules, and API endpoints in JSON or raw markdown (`?format=raw`).
 
 ### Committed Balance Invariant
 Resting orders commit capital:
