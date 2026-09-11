@@ -152,6 +152,67 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             })
             return
 
+        if path in ('/referee/orders/cancel', '/referee/orders/cancel_all'):
+            auth_agent, auth_err = self._authenticate_request()
+            if auth_err:
+                self._send_json(401, auth_err)
+                return
+
+            content_length = int(self.headers.get('Content-Length', 0))
+            payload = {}
+            if content_length:
+                try:
+                    body = self.rfile.read(content_length)
+                    envelope = json.loads(body.decode('utf-8')) if body else {}
+                    payload = envelope.get('payload', envelope) or {}
+                except Exception as e:
+                    self._send_json(400, {
+                        'v': 1, 'kind': 'reject',
+                        'payload': {'reason': 'invalid_format', 'detail': f'Malformed JSON: {e}'}
+                    })
+                    return
+
+            # Impersonation guard, same rule as order submission: non-admin callers
+            # can only cancel their own orders. Admin may act on behalf of an agent
+            # named in the payload; a non-admin's payload agent_id (if present at
+            # all) must match who they authenticated as.
+            claimed_agent = payload.get('agent_id')
+            if auth_agent != 'admin':
+                if claimed_agent and claimed_agent != auth_agent:
+                    self._send_json(403, {
+                        'v': 1, 'kind': 'reject',
+                        'payload': {
+                            'reason': 'unauthorized',
+                            'detail': f"Authenticated as '{auth_agent}', but payload claims agent_id '{claimed_agent}'"
+                        }
+                    })
+                    return
+                target_agent = auth_agent
+            else:
+                target_agent = claimed_agent or auth_agent
+
+            ref = self.referee or AgoraReferee()
+
+            if path == '/referee/orders/cancel_all':
+                result = ref.cancel_all(target_agent)
+                self._send_json(200, result)
+                return
+
+            order_id = payload.get('order_id')
+            if not order_id:
+                self._send_json(400, {
+                    'v': 1, 'kind': 'reject',
+                    'payload': {'reason': 'invalid_format', 'detail': 'Missing required field: order_id'}
+                })
+                return
+
+            result = ref.cancel_order(target_agent, order_id)
+            if result.get('kind') == 'reject':
+                self._send_json(400, result)
+            else:
+                self._send_json(200, result)
+            return
+
         if path != '/referee/orders':
             self._send_json(404, {'error': 'not_found', 'path': self.path})
             return

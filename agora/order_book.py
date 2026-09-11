@@ -178,6 +178,18 @@ class OrderBook:
         else:
             raise ValueError(f'Invalid order side: {order.side}')
 
+    def remove_order(self, order_id: str, agent_id: str) -> Optional[Order]:
+        """
+        Remove a resting order by (order_id, agent_id) from whichever side it's
+        resting on. Returns the removed Order, or None if no matching resting
+        order was found (already filled, already cancelled, or never existed).
+        """
+        for side_list in (self.bids, self.asks):
+            for idx, o in enumerate(side_list):
+                if o.order_id == order_id and o.agent_id == agent_id:
+                    return side_list.pop(idx)
+        return None
+
     def _insert_bid(self, order: Order):
         # Insert maintaining price desc, time asc
         idx = 0
