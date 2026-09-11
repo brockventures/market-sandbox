@@ -6,6 +6,7 @@ WORKDIR /app
 # Nothing to install, so nothing to audit or pin here.
 COPY agora/ ./agora/
 COPY db/ ./db/
+COPY docs/ ./docs/
 
 # Bind to all interfaces inside the container. The application default stays
 # 127.0.0.1 (deliberate, see PR #7) so this exposure is explicit and lives in
