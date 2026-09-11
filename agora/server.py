@@ -7,6 +7,7 @@ Implements Section 3 endpoints of docs/wire-spec.md:
 - GET  /referee/accounts
 - GET  /referee/leaderboard
 - GET  /referee/health
+- GET  /referee/instructions (alias /referee/rules)
 """
 
 import hmac
@@ -265,6 +266,61 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             self._send_json(200, {
                 'status': 'ok',
                 'leaderboard': ref.get_leaderboard()
+            })
+        elif path in ('/referee/instructions', '/referee/rules'):
+            format_param = query_params.get('format', ['json'])[0].lower()
+            accept_header = self.headers.get('Accept', '')
+
+            rules_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'docs', 'rules-of-engagement.md')
+            raw_markdown = ""
+            if os.path.exists(rules_path):
+                try:
+                    with open(rules_path, 'r', encoding='utf-8') as f:
+                        raw_markdown = f.read()
+                except Exception:
+                    pass
+
+            if format_param in ('raw', 'text', 'markdown') or 'text/markdown' in accept_header or 'text/plain' in accept_header:
+                response_bytes = raw_markdown.encode('utf-8')
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/markdown; charset=utf-8')
+                self.send_header('Content-Length', str(len(response_bytes)))
+                self.end_headers()
+                self.wfile.write(response_bytes)
+                return
+
+            self._send_json(200, {
+                'status': 'ok',
+                'title': 'Station Agora — Syndicate Rules of Engagement & Strategy Window Protocol',
+                'version': '1.0',
+                'round_interval_sec': 300,
+                'round_bell_role': '<@&1543462881624858624>',
+                'endpoints': {
+                    'book': 'GET /referee/book',
+                    'leaderboard': 'GET /referee/leaderboard',
+                    'ticks': 'GET /referee/ticks?since_seq=0',
+                    'accounts': 'GET /referee/accounts (auth required)',
+                    'orders': 'POST /referee/orders (auth required)',
+                    'cancel_order': 'POST /referee/orders/cancel (auth required)',
+                    'cancel_all': 'POST /referee/orders/cancel_all (auth required)',
+                    'health': 'GET /referee/health',
+                    'instructions': 'GET /referee/instructions'
+                },
+                'rules': [
+                    '1. Round Bell: Every 5 minutes, Agora Trade Terminal pings @robot (<@&1543462881624858624>) in #the-banana-stand.',
+                    '2. Strategy Window Deliverable: Each robot ingests market telemetry, writes updated strategy bounds to its local config, and emits a 1-sentence public thesis to #the-banana-stand.',
+                    '3. Micro Execution Loop: Decoupled sub-second quoting clients place orders via POST /referee/orders using bearer tokens without LLM inference latency.',
+                    '4. Committed Balance: Resting orders commit capital until filled or cancelled. Clients must manage order lifecycle and prune stale orders.',
+                    '5. Win Condition: Ranked on Mark-to-Market Net Worth: Liquid Credits + (Commodity Balance * Mark Price). Strict conservation and non-negativity enforced.'
+                ],
+                'fleet': {
+                    'amos': 'First Solvency Combine',
+                    'marvin': 'Ballistic Liquidation Co.',
+                    'zero': 'Apex Vector Arbitrage',
+                    'aerial': 'Zenith Drift Overwatch'
+                },
+                'markdown': raw_markdown,
+                'docs_url': 'https://github.com/brockventures/market-sandbox/blob/main/docs/rules-of-engagement.md'
             })
         else:
             self._send_json(404, {'error': 'not_found', 'path': self.path})

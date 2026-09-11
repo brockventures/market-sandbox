@@ -271,6 +271,31 @@ class TestAgoraServer(unittest.TestCase):
         self.assertEqual(data['kind'], 'market_tick')
         self.assertEqual(data['floor'], 'open')
 
+    def test_10_instructions_endpoint(self):
+        # 1. Standard JSON query
+        status, data = self._get('/referee/instructions')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['status'], 'ok')
+        self.assertEqual(data['round_bell_role'], '<@&1543462881624858624>')
+        self.assertIn('endpoints', data)
+        self.assertIn('rules', data)
+        self.assertIn('fleet', data)
+        self.assertIn('markdown', data)
+
+        # 2. Alias /referee/rules works identically
+        status, rules_data = self._get('/referee/rules')
+        self.assertEqual(status, 200)
+        self.assertEqual(rules_data['title'], data['title'])
+
+        # 3. Raw markdown request
+        req = urllib.request.Request(f"{self.base_url}/referee/instructions?format=raw")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertIn('text/markdown', resp.headers.get('Content-Type', ''))
+            content = resp.read().decode('utf-8')
+            self.assertIn('Station Agora', content)
+            self.assertIn('1543462881624858624', content)
+
 if __name__ == '__main__':
     unittest.main()
 
