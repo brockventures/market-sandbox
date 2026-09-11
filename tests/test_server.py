@@ -296,6 +296,53 @@ class TestAgoraServer(unittest.TestCase):
             self.assertIn('Station Agora', content)
             self.assertIn('1543462881624858624', content)
 
+    def test_11_cancel_orders(self):
+        # 1. Place a resting bid as zero
+        bid = {
+            'v': 1, 'kind': 'order',
+            'payload': {
+                'order_id': 'zero-bid-cancel-1', 'agent_id': 'zero', 'instrument': 'FRAG',
+                'side': 'bid', 'qty': 5, 'limit_price': 15, 'seq_seen': self.referee.current_seq
+            }
+        }
+        status, data = self._post('/referee/orders', bid, token='tok-zero')
+        self.assertEqual(status, 200)
+
+        # 2. Cancel the resting bid
+        status, data = self._post('/referee/orders/cancel', {'order_id': 'zero-bid-cancel-1'}, token='tok-zero')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['status'], 'cancelled')
+        self.assertEqual(data['payload']['released_qty'], 5)
+
+        # 3. Idempotent cancel rejected cleanly
+        status, data = self._post('/referee/orders/cancel', {'order_id': 'zero-bid-cancel-1'}, token='tok-zero')
+        self.assertEqual(status, 400)
+        self.assertEqual(data['kind'], 'reject')
+        self.assertEqual(data['payload']['reason'], 'order_not_cancellable')
+
+        # 4. Place 2 resting asks and cancel_all
+        ask1 = {
+            'v': 1, 'kind': 'order',
+            'payload': {
+                'order_id': 'zero-ask-cancel-1', 'agent_id': 'zero', 'instrument': 'FRAG',
+                'side': 'ask', 'qty': 2, 'limit_price': 50, 'seq_seen': self.referee.current_seq
+            }
+        }
+        ask2 = {
+            'v': 1, 'kind': 'order',
+            'payload': {
+                'order_id': 'zero-ask-cancel-2', 'agent_id': 'zero', 'instrument': 'FRAG',
+                'side': 'ask', 'qty': 3, 'limit_price': 55, 'seq_seen': self.referee.current_seq
+            }
+        }
+        self._post('/referee/orders', ask1, token='tok-zero')
+        self._post('/referee/orders', ask2, token='tok-zero')
+
+        status, data = self._post('/referee/orders/cancel_all', {}, token='tok-zero')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['status'], 'cancelled_all')
+        self.assertEqual(data['payload']['count'], 2)
+
 if __name__ == '__main__':
     unittest.main()
 
