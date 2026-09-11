@@ -46,6 +46,28 @@ class AgoraReferee:
                 if 'filled_qty' not in cols:
                     self.conn.execute("ALTER TABLE orders ADD COLUMN filled_qty INTEGER NOT NULL DEFAULT 0")
 
+                # Migration: book_events.kind CHECK constraint pre-dated 'cancel' support
+                # (added for POST /referee/orders/cancel). SQLite can't ALTER a CHECK
+                # constraint in place, so rebuild the table, preserving every row and
+                # the seq PRIMARY KEY, if the live schema doesn't already allow 'cancel'.
+                if 'book_events' in tables:
+                    row = self.conn.execute(
+                        "SELECT sql FROM sqlite_master WHERE type='table' AND name='book_events'"
+                    ).fetchone()
+                    existing_sql = row[0] if row else ''
+                    if existing_sql and "'cancel'" not in existing_sql:
+                        self.conn.executescript("""
+                            CREATE TABLE book_events_new (
+                                seq         INTEGER PRIMARY KEY,
+                                kind        TEXT NOT NULL CHECK (kind IN ('order','trade','floor_open','floor_close','cancel')),
+                                payload     TEXT NOT NULL,
+                                created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                            );
+                            INSERT INTO book_events_new SELECT * FROM book_events;
+                            DROP TABLE book_events;
+                            ALTER TABLE book_events_new RENAME TO book_events;
+                        """)
+
             if 'orders' in tables or 'accounts' not in tables:
                 if not self.default_instrument:
                     row = self.conn.execute(
@@ -463,6 +485,91 @@ class AgoraReferee:
                 'last_qty': self.last_qty,
                 'status': self.floor,
                 'trades_count': len(trades)
+            }
+        }
+
+    def cancel_order(self, agent_id: str, order_id: str) -> Dict[str, Any]:
+        """
+        Cancel one resting order. Idempotent by design: cancelling an order
+        that's already filled/cancelled/nonexistent is a clean reject, not an
+        exception — clients retrying a cancel after a race shouldn't crash.
+
+        No ledger mutation needed: committed exposure (see _submit_envelope_locked
+        step 3) is computed live off self.book.{bids,asks}, so removing the
+        resting order from the in-memory book is the entire effect on solvency
+        accounting. Only the orders table needs a status flip, so a restart's
+        _rehydrate_book (which only pulls status='open') doesn't resurrect it.
+        """
+        with self.lock:
+            removed = self.book.remove_order(order_id, agent_id)
+            if removed is None:
+                cur = self.conn.cursor()
+                cur.execute(
+                    "SELECT status FROM orders WHERE agent_id = ? AND order_id = ?",
+                    (agent_id, order_id)
+                )
+                row = cur.fetchone()
+                if row is None:
+                    detail = f"No order '{order_id}' found for agent '{agent_id}'"
+                else:
+                    detail = f"Order '{order_id}' is already '{row['status']}', not resting"
+                return self._reject_envelope(order_id, agent_id, 'order_not_cancellable', detail)
+
+            next_seq = self.current_seq + 1
+            with self.conn:
+                self.conn.execute(
+                    "UPDATE orders SET status = 'cancelled' WHERE agent_id = ? AND order_id = ?",
+                    (agent_id, order_id)
+                )
+                self.conn.execute(
+                    "INSERT INTO book_events (seq, kind, payload) VALUES (?, 'cancel', ?)",
+                    (next_seq, json.dumps({
+                        'order_id': order_id,
+                        'agent_id': agent_id,
+                        'side': removed.side,
+                        'remaining_qty': removed.remaining_qty,
+                    }))
+                )
+
+            return {
+                'v': 1,
+                'kind': 'status',
+                'reply': 'none',
+                'status': 'cancelled',
+                'floor': self.floor,
+                'payload': {
+                    'order_id': order_id,
+                    'agent_id': agent_id,
+                    'seq': self.current_seq,
+                    'released_qty': removed.remaining_qty,
+                }
+            }
+
+    def cancel_all(self, agent_id: str) -> Dict[str, Any]:
+        """Cancel every resting order for one agent. Used to clear a stale quote set."""
+        with self.lock:
+            targets = [
+                o.order_id for o in list(self.book.bids) + list(self.book.asks)
+                if o.agent_id == agent_id
+            ]
+
+        cancelled = []
+        for order_id in targets:
+            result = self.cancel_order(agent_id, order_id)
+            if result.get('status') == 'cancelled':
+                cancelled.append(order_id)
+
+        return {
+            'v': 1,
+            'kind': 'status',
+            'reply': 'none',
+            'status': 'cancelled_all',
+            'floor': self.floor,
+            'payload': {
+                'agent_id': agent_id,
+                'seq': self.current_seq,
+                'cancelled_order_ids': cancelled,
+                'count': len(cancelled),
             }
         }
 
