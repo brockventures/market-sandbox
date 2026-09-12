@@ -17,6 +17,7 @@ import urllib.parse
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Optional, Dict
 from agora.referee import AgoraReferee
+from agora.galnet import GalNetEngine
 
 
 def get_configured_tokens() -> Dict[str, str]:
@@ -42,6 +43,7 @@ def get_configured_tokens() -> Dict[str, str]:
 
 class AgoraHTTPHandler(BaseHTTPRequestHandler):
     referee: Optional[AgoraReferee] = None
+    galnet_engine: Optional[GalNetEngine] = None
     auth_tokens: Optional[Dict[str, str]] = None  # agent_id -> bearer_token
 
     def _send_json(self, status_code: int, data: dict):
@@ -213,6 +215,58 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 self._send_json(200, result)
             return
 
+        if path == '/galnet/step':
+            content_length = int(self.headers.get('Content-Length', 0))
+            payload = {}
+            if content_length:
+                try:
+                    body = self.rfile.read(content_length)
+                    payload = json.loads(body.decode('utf-8')) if body else {}
+                except Exception:
+                    pass
+            engine = self.galnet_engine or (self.referee.galnet if self.referee else None)
+            if not engine:
+                engine = GalNetEngine()
+                self.galnet_engine = engine
+
+            round_num = payload.get('round', engine.current_round + 1)
+            event = engine.step_round(round_num)
+            if event and self.referee:
+                self.referee.record_news(event.to_dict())
+            self._send_json(200, {
+                'status': 'ok',
+                'round': round_num,
+                'event': event.to_dict() if event else None,
+                'active_shocks': engine.get_active_shocks()
+            })
+            return
+
+        if path == '/galnet/shock':
+            content_length = int(self.headers.get('Content-Length', 0))
+            payload = {}
+            if content_length:
+                try:
+                    body = self.rfile.read(content_length)
+                    payload = json.loads(body.decode('utf-8')) if body else {}
+                except Exception:
+                    pass
+            engine = self.galnet_engine or (self.referee.galnet if self.referee else None)
+            if not engine:
+                engine = GalNetEngine()
+                self.galnet_engine = engine
+
+            template_idx = payload.get('template_idx')
+            round_num = payload.get('round', engine.current_round)
+            event = engine.force_shock(round_num, template_idx=template_idx)
+            if self.referee:
+                self.referee.record_news(event.to_dict())
+            self._send_json(200, {
+                'status': 'ok',
+                'event': event.to_dict(),
+                'active_shocks': engine.get_active_shocks()
+            })
+            return
+
         if path != '/referee/orders':
             self._send_json(404, {'error': 'not_found', 'path': self.path})
             return
@@ -365,7 +419,12 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                     'cancel_order': 'POST /referee/orders/cancel (auth required)',
                     'cancel_all': 'POST /referee/orders/cancel_all (auth required)',
                     'health': 'GET /referee/health',
-                    'instructions': 'GET /referee/instructions'
+                    'instructions': 'GET /referee/instructions',
+                    'galnet_feed': 'GET /galnet/feed?limit=15',
+                    'galnet_events': 'GET /galnet/events',
+                    'galnet_drift': 'GET /galnet/drift?station_id=ceres&commodity=FUEL',
+                    'galnet_step': 'POST /galnet/step',
+                    'galnet_shock': 'POST /galnet/shock'
                 },
                 'rules': [
                     '1. Round Bell: Every 5 minutes, Agora Trade Terminal pings @robot (<@&1543462881624858624>) in #the-banana-stand.',
@@ -383,6 +442,43 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 'markdown': raw_markdown,
                 'docs_url': 'https://github.com/brockventures/market-sandbox/blob/main/docs/rules-of-engagement.md'
             })
+        elif path == '/galnet/feed':
+            engine = self.galnet_engine or (self.referee.galnet if self.referee else None)
+            if not engine:
+                engine = GalNetEngine()
+                self.galnet_engine = engine
+            limit_raw = query_params.get('limit', ['15'])[0]
+            try:
+                limit = int(limit_raw)
+            except ValueError:
+                limit = 15
+            self._send_json(200, {
+                'status': 'ok',
+                'feed': engine.get_feed(limit=limit)
+            })
+        elif path == '/galnet/events':
+            engine = self.galnet_engine or (self.referee.galnet if self.referee else None)
+            if not engine:
+                engine = GalNetEngine()
+                self.galnet_engine = engine
+            self._send_json(200, {
+                'status': 'ok',
+                'active_shocks': engine.get_active_shocks(),
+                'feed': engine.get_feed()
+            })
+        elif path == '/galnet/drift':
+            engine = self.galnet_engine or (self.referee.galnet if self.referee else None)
+            if not engine:
+                engine = GalNetEngine()
+                self.galnet_engine = engine
+            station_id = query_params.get('station_id', ['ceres'])[0].lower()
+            commodity = query_params.get('commodity', ['FRAG'])[0].upper()
+            self._send_json(200, {
+                'status': 'ok',
+                'station_id': station_id,
+                'commodity': commodity,
+                'drift_bias': engine.get_active_drift(station_id, commodity)
+            })
         else:
             self._send_json(404, {'error': 'not_found', 'path': self.path})
 
@@ -391,11 +487,12 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
         pass
 
 
-def make_handler(referee: AgoraReferee, auth_tokens: Optional[Dict[str, str]] = None):
+def make_handler(referee: AgoraReferee, auth_tokens: Optional[Dict[str, str]] = None, galnet: Optional[GalNetEngine] = None):
     class CustomHandler(AgoraHTTPHandler):
         pass
     CustomHandler.referee = referee
     CustomHandler.auth_tokens = auth_tokens
+    CustomHandler.galnet_engine = galnet or getattr(referee, 'galnet', None) or GalNetEngine()
     return CustomHandler
 
 
