@@ -56,6 +56,10 @@ CREATE TABLE transits (
     cargo_qty       INTEGER NOT NULL DEFAULT 0,
     fuel_burned     INTEGER NOT NULL DEFAULT 0,
     status          TEXT NOT NULL CHECK (status IN ('in_transit', 'arrived', 'cancelled')),
+    perishable      INTEGER NOT NULL DEFAULT 0,
+    decay_rate      REAL NOT NULL DEFAULT 0.0,
+    decayed_qty     INTEGER NOT NULL DEFAULT 0,
+    toll_paid       INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 

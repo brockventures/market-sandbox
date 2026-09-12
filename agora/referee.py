@@ -7,13 +7,17 @@ import sqlite3
 import json
 import time
 import copy
+import math
 import threading
 from typing import Optional, Dict, Any, Tuple, List
 from pathlib import Path
 
 from agora.order_book import OrderBook, Order, Trade
 from agora.galnet import GalNetEngine
-from agora.spatial import StationPriceEngine, STATIONS, COMMODITIES, BASE_PRICES, get_route, ROUTES
+from agora.spatial import (
+    StationPriceEngine, STATIONS, COMMODITIES, BASE_PRICES, get_route, ROUTES,
+    get_alignment_windows, PERISHABLE_COMMODITIES
+)
 from agora.equity import (
     SyndicateEquityEngine, FLEET_EQUITIES, EQUITY_SYMBOLS,
     AGENT_BY_SYMBOL, DEFAULT_BORROW_FEE_RATE
@@ -181,6 +185,17 @@ class AgoraReferee:
                         (?, 0, 'SYSTEM', ?, ?),
                         (?, 0, ?, ?, ?)
                     """, (f"genesis-{sym.lower()}", sym, -total_shares, f"genesis-{sym.lower()}", issuer_id, sym, total_shares))
+
+            if 'transits' in tables:
+                t_cols = [r[1] for r in self.conn.execute("PRAGMA table_info(transits)").fetchall()]
+                if 'perishable' not in t_cols:
+                    self.conn.execute("ALTER TABLE transits ADD COLUMN perishable INTEGER NOT NULL DEFAULT 0")
+                if 'decay_rate' not in t_cols:
+                    self.conn.execute("ALTER TABLE transits ADD COLUMN decay_rate REAL NOT NULL DEFAULT 0.0")
+                if 'decayed_qty' not in t_cols:
+                    self.conn.execute("ALTER TABLE transits ADD COLUMN decayed_qty INTEGER NOT NULL DEFAULT 0")
+                if 'toll_paid' not in t_cols:
+                    self.conn.execute("ALTER TABLE transits ADD COLUMN toll_paid INTEGER NOT NULL DEFAULT 0")
 
             if 'orders' in tables or 'accounts' not in tables:
                 if not self.default_instrument:
@@ -388,7 +403,7 @@ class AgoraReferee:
             return {'station_id': st, 'prices': all_prices.get(st, {}), 'round': self.current_round}
         return {'round': self.current_round, 'prices': all_prices}
 
-    def initiate_transit(self, agent_id: str, destination: str, commodity: str = 'FRAG', cargo_qty: int = 0) -> Dict[str, Any]:
+    def initiate_transit(self, agent_id: str, destination: str, commodity: str = 'FRAG', cargo_qty: int = 0, perishable: Optional[bool] = None) -> Dict[str, Any]:
         with self.lock:
             dest = destination.lower().strip()
             if dest not in STATIONS:
@@ -411,7 +426,7 @@ class AgoraReferee:
                     'payload': {'reason': 'invalid_transit', 'detail': f"Vessel is already docked at '{origin}'"}
                 }
 
-            route = get_route(origin, dest)
+            route = get_route(origin, dest, self.current_round)
             if not route:
                 return {
                     'v': 1, 'kind': 'reject', 'reply': 'optional', 'floor': self.floor,
@@ -434,6 +449,26 @@ class AgoraReferee:
                 }
 
             comm = (commodity or 'FRAG').upper().strip()
+            is_perishable = bool(perishable) if perishable is not None else (comm in PERISHABLE_COMMODITIES)
+            decay_rate = route.get('decay_rate', 0.0) if is_perishable else 0.0
+
+            toll_required = route.get('toll', 0)
+            if toll_required > 0:
+                cr_bal = self.get_balance(agent_id, 'CR')
+                committed_cr = sum(
+                    o.remaining_qty * o.limit_price
+                    for st_books in self.books.values()
+                    for b in st_books.values()
+                    for o in b.bids
+                    if o.agent_id == agent_id
+                )
+                avail_cr = cr_bal - committed_cr
+                if avail_cr < toll_required:
+                    return {
+                        'v': 1, 'kind': 'reject', 'reply': 'optional', 'floor': self.floor,
+                        'payload': {'reason': 'insufficient_credits_for_toll', 'detail': f"Asteroid belt route {origin}->{dest} requires {toll_required} CR toll, available {avail_cr} CR (balance {cr_bal} - committed {committed_cr})"}
+                    }
+
             try:
                 cargo_qty = int(cargo_qty)
             except (ValueError, TypeError):
@@ -472,27 +507,34 @@ class AgoraReferee:
             arr_round = dep_round + route['rounds']
 
             with self.conn:
-                next_seq = self.current_seq + 1
+                next_seq = self._get_next_seq()
                 # 1. Fuel debit (agent -> SYSTEM)
                 self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = ? AND instrument = 'FUEL'", (required_fuel, agent_id))
                 self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = 'SYSTEM' AND instrument = 'FUEL'", (required_fuel,))
                 self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, 'FUEL', ?)", (f"fuel-{transit_id}", next_seq, agent_id, -required_fuel))
                 self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, 'SYSTEM', 'FUEL', ?)", (f"fuel-{transit_id}", next_seq, required_fuel))
 
-                # 2. Cargo escrow (if cargo_qty > 0)
+                # 2. Belt toll debit (agent -> SYSTEM)
+                if toll_required > 0:
+                    self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = ? AND instrument = 'CR'", (toll_required, agent_id))
+                    self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = 'SYSTEM' AND instrument = 'CR'", (toll_required,))
+                    self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, 'CR', ?)", (f"toll-{transit_id}", next_seq, agent_id, -toll_required))
+                    self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, 'SYSTEM', 'CR', ?)", (f"toll-{transit_id}", next_seq, toll_required))
+
+                # 3. Cargo escrow (if cargo_qty > 0)
                 if cargo_qty > 0:
                     self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = ? AND instrument = ?", (cargo_qty, agent_id, comm))
                     self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = 'SYSTEM' AND instrument = ?", (cargo_qty, comm))
                     self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)", (f"escrow-{transit_id}", next_seq, agent_id, comm, -cargo_qty))
                     self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, 'SYSTEM', ?, ?)", (f"escrow-{transit_id}", next_seq, comm, cargo_qty))
 
-                # 3. Transits record
+                # 4. Transits record
                 self.conn.execute("""
-                    INSERT INTO transits (transit_id, agent_id, origin, destination, departure_round, arrival_round, commodity, cargo_qty, fuel_burned, status)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'in_transit')
-                """, (transit_id, agent_id, origin, dest, dep_round, arr_round, comm, cargo_qty, required_fuel))
+                    INSERT INTO transits (transit_id, agent_id, origin, destination, departure_round, arrival_round, commodity, cargo_qty, fuel_burned, status, perishable, decay_rate, decayed_qty, toll_paid)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'in_transit', ?, ?, 0, ?)
+                """, (transit_id, agent_id, origin, dest, dep_round, arr_round, comm, cargo_qty, required_fuel, int(is_perishable), decay_rate, toll_required))
 
-                # 4. Vessel locations
+                # 5. Vessel locations
                 self.conn.execute("""
                     INSERT INTO vessel_locations (agent_id, station_id, docked_since, updated_at)
                     VALUES (?, 'in_transit', ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
@@ -502,7 +544,7 @@ class AgoraReferee:
                         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
                 """, (agent_id, dep_round, dep_round))
 
-                # 5. Book event tick
+                # 6. Book event tick
                 self.conn.execute("INSERT INTO book_events (seq, kind, payload) VALUES (?, 'transit', ?)", (
                     next_seq,
                     json.dumps({
@@ -512,9 +554,15 @@ class AgoraReferee:
                         'destination': dest,
                         'departure_round': dep_round,
                         'arrival_round': arr_round,
+                        'rounds_duration': route['rounds'],
                         'commodity': comm,
                         'cargo_qty': cargo_qty,
                         'fuel_burned': required_fuel,
+                        'is_aligned': route.get('is_aligned', False),
+                        'window_name': route.get('window_name'),
+                        'toll_paid': toll_required,
+                        'perishable': is_perishable,
+                        'decay_rate': decay_rate,
                     })
                 ))
 
@@ -533,6 +581,11 @@ class AgoraReferee:
                     'commodity': comm,
                     'cargo_qty': cargo_qty,
                     'fuel_burned': required_fuel,
+                    'is_aligned': route.get('is_aligned', False),
+                    'window_name': route.get('window_name'),
+                    'toll_paid': toll_required,
+                    'perishable': is_perishable,
+                    'decay_rate': decay_rate,
                 }
             }
 
@@ -553,7 +606,7 @@ class AgoraReferee:
                 # Settle arriving transits
                 cur = self.conn.cursor()
                 cur.execute("""
-                    SELECT transit_id, agent_id, origin, destination, commodity, cargo_qty, arrival_round
+                    SELECT transit_id, agent_id, origin, destination, commodity, cargo_qty, arrival_round, departure_round, perishable, decay_rate
                     FROM transits
                     WHERE status = 'in_transit' AND arrival_round <= ?
                 """, (new_round,))
@@ -565,15 +618,25 @@ class AgoraReferee:
                     dest = a['destination']
                     comm = a['commodity']
                     c_qty = a['cargo_qty']
-                    next_seq = self.current_seq + 1
+                    is_perish = bool(a['perishable'])
+                    decay_rate = a['decay_rate'] or 0.0
+                    next_seq = self._get_next_seq()
 
+                    decay_qty = 0
+                    deliver_qty = c_qty
                     if c_qty > 0:
-                        self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?", (c_qty, ag_id, comm))
-                        self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = 'SYSTEM' AND instrument = ?", (c_qty, comm))
-                        self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)", (f"release-{t_id}", next_seq, ag_id, comm, c_qty))
-                        self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, 'SYSTEM', ?, ?)", (f"release-{t_id}", next_seq, comm, -c_qty))
+                        if is_perish and decay_rate > 0:
+                            transit_rounds = max(1, a['arrival_round'] - a['departure_round'])
+                            decay_qty = min(c_qty, math.floor(c_qty * decay_rate * transit_rounds))
+                            deliver_qty = c_qty - decay_qty
 
-                    self.conn.execute("UPDATE transits SET status = 'arrived' WHERE transit_id = ?", (t_id,))
+                        if deliver_qty > 0:
+                            self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?", (deliver_qty, ag_id, comm))
+                            self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = 'SYSTEM' AND instrument = ?", (deliver_qty, comm))
+                            self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)", (f"release-{t_id}", next_seq, ag_id, comm, deliver_qty))
+                            self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, 'SYSTEM', ?, ?)", (f"release-{t_id}", next_seq, comm, -deliver_qty))
+
+                    self.conn.execute("UPDATE transits SET status = 'arrived', decayed_qty = ? WHERE transit_id = ?", (decay_qty, t_id))
                     self.conn.execute("""
                         INSERT INTO vessel_locations (agent_id, station_id, docked_since, updated_at)
                         VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
@@ -590,6 +653,10 @@ class AgoraReferee:
                         'destination': dest,
                         'commodity': comm,
                         'cargo_qty': c_qty,
+                        'cargo_delivered': deliver_qty,
+                        'cargo_decayed': decay_qty,
+                        'perishable': is_perish,
+                        'decay_rate': decay_rate,
                         'arrival_round': new_round
                     }
                     self.conn.execute("INSERT INTO book_events (seq, kind, payload) VALUES (?, 'transit_arrived', ?)", (next_seq, json.dumps(arrival_payload)))
@@ -609,6 +676,10 @@ class AgoraReferee:
     def get_equity_summary(self) -> Dict[str, Any]:
         """Returns market cap, NAV, and short interest for all fleet equities."""
         return self.equity.get_equity_summary()
+
+    def get_orbital_windows(self) -> List[Dict[str, Any]]:
+        """Returns active and upcoming planetary alignment windows at current round."""
+        return get_alignment_windows(self.current_round)
 
     def get_equity_loans(self, borrower_id: Optional[str] = None, lender_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Returns active equity loans."""

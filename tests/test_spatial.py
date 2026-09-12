@@ -121,3 +121,132 @@ def test_referee_spatial_integration():
     valid, errors = ref.verify_ledger_invariants()
     assert valid is True
     assert len(errors) == 0
+
+
+def test_orbital_windows_lifecycle():
+    from agora.spatial import get_alignment_windows, get_active_window_for_route
+
+    # Round 0: all corridors inactive
+    windows_r0 = get_alignment_windows(0)
+    assert len(windows_r0) == 3
+    assert all(not w['is_active'] for w in windows_r0)
+    assert get_active_window_for_route("earth", "mars", 0) is None
+
+    # Base route check at round 0
+    r_em_0 = get_route("earth", "mars", 0)
+    assert r_em_0['rounds'] == 2
+    assert r_em_0['fuel'] == 15
+    assert r_em_0['is_aligned'] is False
+
+    # Round 4: Earth-Mars Opposition active!
+    windows_r4 = get_alignment_windows(4)
+    em_w = next(w for w in windows_r4 if w['corridor_id'] == 'earth_mars')
+    assert em_w['is_active'] is True
+    assert em_w['rounds_remaining'] == 2  # active on rounds 4 and 5
+
+    r_em_4 = get_route("earth", "mars", 4)
+    assert r_em_4['is_aligned'] is True
+    assert r_em_4['rounds'] == 1          # Halved from 2 to 1 round!
+    assert r_em_4['fuel'] == 10           # Reduced from 15 to 10 fuel!
+    assert r_em_4['rounds_remaining'] == 2
+
+    # Round 5: Earth-Mars still active, Mars-Ceres also active!
+    windows_r5 = get_alignment_windows(5)
+    mc_w = next(w for w in windows_r5 if w['corridor_id'] == 'mars_ceres')
+    assert mc_w['is_active'] is True
+
+    r_mc_5 = get_route("mars", "ceres", 5)
+    assert r_mc_5['is_aligned'] is True
+    assert r_mc_5['rounds'] == 1          # Halved from 2 to 1 round!
+    assert r_mc_5['fuel'] == 12           # Reduced from 20 to 12 fuel!
+
+    # Round 6: Earth-Ceres active!
+    r_ec_6 = get_route("earth", "ceres", 6)
+    assert r_ec_6['is_aligned'] is True
+    assert r_ec_6['rounds'] == 2          # Reduced from 3 to 2 rounds!
+    assert r_ec_6['fuel'] == 18           # Reduced from 30 to 18 fuel!
+
+
+def test_asteroid_belt_toll_booths_and_solvency():
+    from agora.referee import AgoraReferee
+    ref = AgoraReferee()
+
+    # ceres -> mars is a belt route, requires 25 CR toll
+    route = get_route("ceres", "mars", 0)
+    assert route['is_belt_route'] is True
+    assert route['toll'] == 25
+
+    # amos starts with 10,000 CR at ceres
+    init_cr = ref.get_balance('amos', 'CR')
+    init_fuel = ref.get_balance('amos', 'FUEL')
+    init_system_cr = ref.get_balance('SYSTEM', 'CR')
+
+    # Transit ceres -> mars with 0 cargo
+    res = ref.initiate_transit('amos', 'mars', cargo_qty=0)
+    assert res.get('kind') == 'status'
+    assert res['status'] == 'in_transit'
+    assert res['payload']['toll_paid'] == 25
+    assert res['payload']['fuel_burned'] == 20
+
+    # Verify CR and FUEL debits to SYSTEM
+    assert ref.get_balance('amos', 'CR') == init_cr - 25
+    assert ref.get_balance('amos', 'FUEL') == init_fuel - 20
+    assert ref.get_balance('SYSTEM', 'CR') == init_system_cr + 25
+
+    # Invariants strictly hold (conservation sum(delta)==0, non-negativity)
+    valid, errors = ref.verify_ledger_invariants()
+    assert valid is True
+    assert len(errors) == 0
+
+
+def test_perishable_cargo_decay_mechanics():
+    from agora.referee import AgoraReferee
+    ref = AgoraReferee()
+
+    # Step to round 4 (Earth-Mars alignment active)
+    # amos docked at ceres. Move amos to mars first
+    ref.initiate_transit('amos', 'mars', cargo_qty=0)
+    ref.step_round(2)  # arrives at mars
+
+    # Zero docked at ceres. Zero has 10,000 CR, 500 FUEL, 1,000 FRAG.
+    # Transit ceres -> earth (3 rounds, belt route with 5% decay per round)
+    init_frag = ref.get_balance('zero', 'FRAG')
+    init_cr = ref.get_balance('zero', 'CR')
+
+    # Non-perishable cargo transit (standard durable scrap)
+    res_durable = ref.initiate_transit('zero', 'earth', commodity='FRAG', cargo_qty=100, perishable=False)
+    assert res_durable['status'] == 'in_transit'
+    assert res_durable['payload']['perishable'] is False
+
+    # Step to round 5 (dep was 2, arrival round is 2 + 3 = 5)
+    step_res = ref.step_round(5)
+    assert len(step_res['arrived_transits']) == 1
+    arr = step_res['arrived_transits'][0]
+    assert arr['cargo_delivered'] == 100
+    assert arr['cargo_decayed'] == 0
+    # Full cargo returned, zero back to 1,000 FRAG
+    assert ref.get_balance('zero', 'FRAG') == init_frag
+
+    # Now test PERISHABLE cargo decay from earth -> ceres
+    # Route earth -> ceres: 3 rounds transit, belt route (decay_rate = 0.05)
+    # 5% decay per round * 3 rounds = 15% decay!
+    # With 100 cargo: floor(100 * 0.15) = 15 units decayed, 85 units delivered!
+    res_perish = ref.initiate_transit('zero', 'ceres', commodity='FRAG', cargo_qty=100, perishable=True)
+    assert res_perish['status'] == 'in_transit'
+    assert res_perish['payload']['perishable'] is True
+
+    # Step 3 rounds forward: 5 + 3 = round 8
+    step_res2 = ref.step_round(8)
+    assert len(step_res2['arrived_transits']) == 1
+    arr_perish = step_res2['arrived_transits'][0]
+    assert arr_perish['cargo_decayed'] == 15
+    assert arr_perish['cargo_delivered'] == 85
+
+    # Zero account received 85 FRAG; 15 units decayed in belt
+    assert ref.get_balance('zero', 'FRAG') == init_frag - 15
+
+    # Double-entry ledger conservation check: sum(delta) == 0 for all txns
+    valid, errors = ref.verify_ledger_invariants()
+    assert valid is True
+    assert len(errors) == 0
+
