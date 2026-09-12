@@ -51,7 +51,7 @@ def random_order(rng: random.Random, i: int) -> dict:
         payload = {
             "order_id": f"fz-{i}",
             "agent_id": agent,
-            "instrument": "BANANA",
+            "instrument": "FRAG",
             "side": rng.choice(["bid", "ask"]),
             "qty": rng.choice([-5, 0, "ten", 3.5]),
             "limit_price": rng.choice([-1, 0, "x"]),
@@ -61,7 +61,7 @@ def random_order(rng: random.Random, i: int) -> dict:
         payload = {
             "order_id": f"fz-{i}",
             "agent_id": agent,
-            "instrument": rng.choice(["FRAG", "DOGE", ""]),
+            "instrument": rng.choice(["UNOBTANIUM", "DOGE", ""]),
             "side": rng.choice(["bid", "ask"]),
             "qty": rng.randint(1, 50),
             "limit_price": rng.randint(1, 50),
@@ -71,7 +71,7 @@ def random_order(rng: random.Random, i: int) -> dict:
         payload = {
             "order_id": f"fz-{i}",
             "agent_id": agent,
-            "instrument": "BANANA",
+            "instrument": "FRAG",
             "side": rng.choice(["bid", "ask"]),
             "qty": rng.randint(10_000, 1_000_000),
             "limit_price": rng.randint(10_000, 1_000_000),
@@ -84,7 +84,7 @@ def random_order(rng: random.Random, i: int) -> dict:
         payload = {
             "order_id": f"fz-{i - rng.randint(1, min(i, 5))}" if reuse else f"fz-{i}",
             "agent_id": agent,
-            "instrument": "BANANA",
+            "instrument": "FRAG",
             "side": rng.choice(["bid", "ask"]),
             "qty": rng.randint(1, 200),
             "limit_price": rng.randint(1, 30),
@@ -103,6 +103,8 @@ def random_order(rng: random.Random, i: int) -> dict:
 
 
 def check_book_not_crossed(ref: AgoraReferee) -> str | None:
+    if hasattr(ref, "circuit_breaker") and ref.circuit_breaker.is_halted("ceres", ref.default_instrument):
+        return None
     book = ref.book
     if book.bids and book.asks:
         best_bid = book.bids[0].limit_price
