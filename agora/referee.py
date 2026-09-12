@@ -467,7 +467,7 @@ class AgoraReferee:
                         if o.agent_id == agent_id:
                             self.cancel_order(agent_id, o.order_id)
 
-            transit_id = f"tx-{agent_id}-{int(time.time()*1000)}"
+            transit_id = f"tx-{agent_id}-{time.time_ns()}"
             dep_round = self.current_round
             arr_round = dep_round + route['rounds']
 
