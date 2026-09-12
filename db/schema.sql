@@ -27,7 +27,7 @@ CREATE TABLE ledger_entries (
 -- referee only, never by a client.
 CREATE TABLE book_events (
     seq         INTEGER PRIMARY KEY,
-    kind        TEXT NOT NULL CHECK (kind IN ('order','trade','floor_open','floor_close','cancel','news','transit','transit_arrived')),
+    kind        TEXT NOT NULL CHECK (kind IN ('order','trade','floor_open','floor_close','cancel','news','transit','transit_arrived','borrow','loan_closed','liquidation')),
     payload     TEXT NOT NULL,        -- JSON
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
@@ -65,6 +65,21 @@ CREATE TABLE vessel_locations (
     station_id      TEXT NOT NULL,
     docked_since    INTEGER NOT NULL DEFAULT 0,
     updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+-- Bilateral stock loans and short obligations.
+CREATE TABLE equity_loans (
+    loan_id         TEXT PRIMARY KEY,
+    borrower_id     TEXT NOT NULL,
+    lender_id       TEXT NOT NULL,
+    equity_symbol   TEXT NOT NULL,
+    shares          INTEGER NOT NULL,
+    collateral_cr   INTEGER NOT NULL,
+    fee_rate        REAL NOT NULL DEFAULT 0.02,
+    start_round     INTEGER NOT NULL,
+    status          TEXT NOT NULL CHECK (status IN ('active', 'closed', 'liquidated')),
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    closed_at       TEXT
 );
 
 -- Orders as submitted, carrying the agent's belief about the book at
