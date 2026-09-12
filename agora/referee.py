@@ -22,6 +22,7 @@ from agora.equity import (
     SyndicateEquityEngine, FLEET_EQUITIES, EQUITY_SYMBOLS,
     AGENT_BY_SYMBOL, DEFAULT_BORROW_FEE_RATE
 )
+from agora.salvage import DerelictSalvageEngine
 
 
 class AgoraReferee:
@@ -45,6 +46,7 @@ class AgoraReferee:
         self.book = self.books['ceres'][self.default_instrument if self.default_instrument in self.books['ceres'] else 'FRAG']
         self._init_db()
         self.equity = SyndicateEquityEngine(self.conn, self)
+        self.salvage = DerelictSalvageEngine(self.conn, self)
 
     def _init_db(self):
         """Load schema and genesis seed if database is uninitialized, and rehydrate book from open orders."""
@@ -108,17 +110,17 @@ class AgoraReferee:
                         )
                     """)
 
-                # Migration: book_events.kind CHECK constraint pre-dated 'cancel', 'news', 'transit', 'borrow' support
+                # Migration: book_events.kind CHECK constraint pre-dated 'cancel', 'news', 'transit', 'borrow', 'distress', 'rescue', 'salvage' support
                 if 'book_events' in tables:
                     row = self.conn.execute(
                         "SELECT sql FROM sqlite_master WHERE type='table' AND name='book_events'"
                     ).fetchone()
                     existing_sql = row[0] if row else ''
-                    if existing_sql and ("'borrow'" not in existing_sql or "'cancel'" not in existing_sql or "'news'" not in existing_sql or "'transit'" not in existing_sql):
+                    if existing_sql and ("'borrow'" not in existing_sql or "'cancel'" not in existing_sql or "'news'" not in existing_sql or "'transit'" not in existing_sql or "'distress'" not in existing_sql or "'rescue'" not in existing_sql or "'salvage'" not in existing_sql):
                         self.conn.executescript("""
                             CREATE TABLE book_events_new (
                                 seq         INTEGER PRIMARY KEY,
-                                kind        TEXT NOT NULL CHECK (kind IN ('order','trade','floor_open','floor_close','cancel','news','transit','transit_arrived','borrow','loan_closed','liquidation')),
+                                kind        TEXT NOT NULL CHECK (kind IN ('order','trade','floor_open','floor_close','cancel','news','transit','transit_arrived','borrow','loan_closed','liquidation','distress','rescue','salvage')),
                                 payload     TEXT NOT NULL,
                                 created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
                             );
@@ -700,6 +702,80 @@ class AgoraReferee:
         """Returns borrowed shares to lender and unlocks escrowed collateral."""
         with self.lock:
             return self.equity.return_loan(borrower_id=borrower_id, loan_id=loan_id)
+
+    def broadcast_distress(
+        self,
+        agent_id: str,
+        location: Optional[str] = None,
+        cargo_bounty: Optional[Dict[str, int]] = None,
+        transit_id: Optional[str] = None,
+        fuel_needed: int = 15,
+        max_reward_cr: int = 0,
+        reason: str = "out_of_fuel"
+    ) -> Dict[str, Any]:
+        """Broadcasts a distress beacon and creates a rescue RFQ."""
+        with self.lock:
+            return self.salvage.broadcast_distress(
+                agent_id=agent_id,
+                location=location,
+                cargo_bounty=cargo_bounty,
+                transit_id=transit_id,
+                fuel_needed=fuel_needed,
+                max_reward_cr=max_reward_cr,
+                reason=reason
+            )
+
+    def submit_rescue_quote(
+        self,
+        rescuer_id: str,
+        rfq_id: str,
+        fuel_offered: int,
+        price_cr: int
+    ) -> Dict[str, Any]:
+        """Submits a competitive rescue quote offering propellant."""
+        with self.lock:
+            return self.salvage.submit_rescue_quote(
+                rescuer_id=rescuer_id,
+                rfq_id=rfq_id,
+                fuel_offered=fuel_offered,
+                price_cr=price_cr
+            )
+
+    def accept_rescue_quote(
+        self,
+        agent_id: str,
+        quote_id: str
+    ) -> Dict[str, Any]:
+        """Accepts a rescue quote and atomically settles fuel and credits on the ledger."""
+        with self.lock:
+            return self.salvage.accept_rescue_quote(
+                agent_id=agent_id,
+                quote_id=quote_id
+            )
+
+    def claim_salvage(
+        self,
+        salvager_id: str,
+        beacon_id: str
+    ) -> Dict[str, Any]:
+        """Claims derelict cargo bounty on an unrescued distress beacon."""
+        with self.lock:
+            return self.salvage.claim_salvage(
+                salvager_id=salvager_id,
+                beacon_id=beacon_id
+            )
+
+    def get_distress_beacons(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Returns active or filtered distress beacons."""
+        return self.salvage.get_beacons(status=status)
+
+    def get_rescue_rfqs(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Returns open rescue RFQs and quotes."""
+        return self.salvage.get_rfqs(status=status)
+
+    def get_salvage_summary(self) -> Dict[str, Any]:
+        """Returns high-level salvage and rescue statistics."""
+        return self.salvage.get_salvage_summary()
 
     def get_ticks(self, since_seq: int = 0) -> List[Dict[str, Any]]:
         cur = self.conn.cursor()
