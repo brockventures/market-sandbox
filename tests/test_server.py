@@ -604,6 +604,8 @@ class TestAgoraServer(unittest.TestCase):
             self.assertIn('LIQUIDITY DEPTH MOUNTAINS', body)
             self.assertIn('drawDepthMountain', body)
             self.assertIn('initOrbitalRadar', body)
+            self.assertIn('DYNAMIC LULD CIRCUIT BREAKERS', body)
+            self.assertIn('pollCircuitBreakerTelemetry', body)
 
     def test_18_equity_endpoints_and_borrow_flow(self):
         """Integration test for /equity/summary, /equity/loans, /equity/borrow, and /equity/return."""
@@ -788,7 +790,86 @@ class TestAgoraServer(unittest.TestCase):
         self.assertEqual(len(data['errors']), 0)
 
 
+    def test_21_circuit_breaker_endpoints(self):
+        # 1. Verify GET /circuit_breaker/bands returns band data
+        status, data = self._get('/circuit_breaker/bands')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['status'], 'ok')
+        self.assertIn('bands', data)
+        self.assertTrue(len(data['bands']) > 0)
+        ceres_fuel = next((b for b in data['bands'] if b['station_id'] == 'ceres' and b['instrument'] == 'FUEL'), None)
+        self.assertIsNotNone(ceres_fuel)
+        self.assertIn('vwap', ceres_fuel)
+        self.assertIn('lower_limit', ceres_fuel)
+        self.assertIn('upper_limit', ceres_fuel)
+        self.assertGreater(ceres_fuel['upper_limit'], ceres_fuel['lower_limit'])
+
+        # Filtered query
+        status, data = self._get('/circuit_breaker/bands?station_id=ceres&instrument=FUEL')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['status'], 'ok')
+        self.assertEqual(len(data['bands']), 1)
+        self.assertEqual(data['bands'][0]['station_id'], 'ceres')
+        self.assertEqual(data['bands'][0]['instrument'], 'FUEL')
+
+        # 2. Verify GET /circuit_breaker/halts initially returns empty list
+        status, data = self._get('/circuit_breaker/halts')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['status'], 'ok')
+        self.assertIsInstance(data['halts'], list)
+
+        # 3. POST /circuit_breaker/halt without auth fails
+        status, data = self._post('/circuit_breaker/halt', {
+            'station_id': 'mars',
+            'instrument': 'FRAG',
+            'reason': 'test_volatility'
+        })
+        self.assertEqual(status, 401)
+
+        # 4. POST /circuit_breaker/halt with auth triggers halt
+        status, data = self._post('/circuit_breaker/halt', {
+            'station_id': 'mars',
+            'instrument': 'FRAG',
+            'reason': 'test_volatility'
+        }, token=self.auth_tokens['zero'])
+        self.assertEqual(status, 200)
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['status'], 'halted')
+        halt_id = data['halt_id']
+        self.assertEqual(data['station_id'], 'mars')
+        self.assertEqual(data['instrument'], 'FRAG')
+
+        # 5. GET /circuit_breaker/halts verifies active halt
+        status, data = self._get('/circuit_breaker/halts?station_id=mars&instrument=FRAG')
+        self.assertEqual(status, 200)
+        self.assertTrue(any(h['halt_id'] == halt_id and h['status'] == 'halted' for h in data['halts']))
+
+        # 6. POST /circuit_breaker/reopen reopens the market
+        status, data = self._post('/circuit_breaker/reopen', {
+            'station_id': 'mars',
+            'instrument': 'FRAG'
+        }, token=self.auth_tokens['zero'])
+        self.assertEqual(status, 200)
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['status'], 'reopened')
+        self.assertIn('clearing_price', data)
+        self.assertIn('reopen_volume', data)
+        self.assertIn('trades', data)
+
+        # 7. GET /circuit_breaker/halts?status=reopened verifies halt is reopened
+        status, data = self._get('/circuit_breaker/halts?station_id=mars&status=reopened')
+        self.assertEqual(status, 200)
+        self.assertTrue(any(h['halt_id'] == halt_id and h['status'] == 'reopened' for h in data['halts']))
+
+        # 8. Invariants check
+        status, data = self._get('/referee/health')
+        self.assertEqual(status, 200)
+        self.assertTrue(data['invariants_valid'])
+        self.assertEqual(len(data['errors']), 0)
+
+
 if __name__ == '__main__':
     unittest.main()
+
 
 

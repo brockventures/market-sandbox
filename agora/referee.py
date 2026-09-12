@@ -23,6 +23,7 @@ from agora.equity import (
     AGENT_BY_SYMBOL, DEFAULT_BORROW_FEE_RATE
 )
 from agora.salvage import DerelictSalvageEngine
+from agora.circuit_breaker import CircuitBreakerEngine
 
 
 class AgoraReferee:
@@ -47,6 +48,7 @@ class AgoraReferee:
         self._init_db()
         self.equity = SyndicateEquityEngine(self.conn, self)
         self.salvage = DerelictSalvageEngine(self.conn, self)
+        self.circuit_breaker = CircuitBreakerEngine(self.conn, self)
 
     def _init_db(self):
         """Load schema and genesis seed if database is uninitialized, and rehydrate book from open orders."""
@@ -116,11 +118,11 @@ class AgoraReferee:
                         "SELECT sql FROM sqlite_master WHERE type='table' AND name='book_events'"
                     ).fetchone()
                     existing_sql = row[0] if row else ''
-                    if existing_sql and ("'borrow'" not in existing_sql or "'cancel'" not in existing_sql or "'news'" not in existing_sql or "'transit'" not in existing_sql or "'distress'" not in existing_sql or "'rescue'" not in existing_sql or "'salvage'" not in existing_sql):
+                    if existing_sql and ("'borrow'" not in existing_sql or "'cancel'" not in existing_sql or "'news'" not in existing_sql or "'transit'" not in existing_sql or "'distress'" not in existing_sql or "'rescue'" not in existing_sql or "'salvage'" not in existing_sql or "'circuit_breaker_halt'" not in existing_sql):
                         self.conn.executescript("""
                             CREATE TABLE book_events_new (
                                 seq         INTEGER PRIMARY KEY,
-                                kind        TEXT NOT NULL CHECK (kind IN ('order','trade','floor_open','floor_close','cancel','news','transit','transit_arrived','borrow','loan_closed','liquidation','distress','rescue','salvage')),
+                                kind        TEXT NOT NULL CHECK (kind IN ('order','trade','floor_open','floor_close','cancel','news','transit','transit_arrived','borrow','loan_closed','liquidation','distress','rescue','salvage','circuit_breaker_halt','circuit_breaker_reopen')),
                                 payload     TEXT NOT NULL,
                                 created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
                             );
@@ -667,12 +669,16 @@ class AgoraReferee:
             # Distribute bilateral borrow fees & audit maintenance margin
             borrow_fee_reports = self.equity.step_borrow_fees(new_round)
 
+            # Audit active circuit breaker halts and execute call auction reopens
+            reopen_reports = self.circuit_breaker.step_round(new_round)
+
             return {
                 'status': 'ok',
                 'round': new_round,
                 'prices': self.spatial.get_prices(),
                 'arrived_transits': arrived_list,
-                'borrow_fee_reports': borrow_fee_reports
+                'borrow_fee_reports': borrow_fee_reports,
+                'circuit_breaker_reopens': reopen_reports
             }
 
     def get_equity_summary(self) -> Dict[str, Any]:
@@ -776,6 +782,36 @@ class AgoraReferee:
     def get_salvage_summary(self) -> Dict[str, Any]:
         """Returns high-level salvage and rescue statistics."""
         return self.salvage.get_salvage_summary()
+
+    def get_circuit_breaker_bands(self, station_id: Optional[str] = None, instrument: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Returns LULD bands, VWAPs, and halt status."""
+        if station_id and instrument:
+            return [self.circuit_breaker.get_bands(station_id, instrument)]
+        return self.circuit_breaker.get_all_bands()
+
+    def get_circuit_breaker_halts(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Returns active or historical circuit breaker halts."""
+        return self.circuit_breaker.get_halts(status=status)
+
+    def trigger_circuit_breaker_halt(self, station_id: str, instrument: str, trigger_price: float, reason: str = "manual_halt") -> Dict[str, Any]:
+        """Manually trigger a 2-round circuit breaker halt."""
+        with self.lock:
+            return self.circuit_breaker.trigger_halt(
+                station_id=station_id,
+                instrument=instrument,
+                trigger_price=trigger_price,
+                reason=reason,
+                current_round=self.current_round
+            )
+
+    def reopen_circuit_breaker_auction(self, station_id: str, instrument: str) -> Dict[str, Any]:
+        """Manually triggers call auction reopen matching for a halted book."""
+        with self.lock:
+            return self.circuit_breaker.execute_auction_reopen(
+                station_id=station_id,
+                instrument=instrument,
+                round_num=self.current_round
+            )
 
     def get_ticks(self, since_seq: int = 0) -> List[Dict[str, Any]]:
         cur = self.conn.cursor()
@@ -998,6 +1034,128 @@ class AgoraReferee:
             seq_seen=seq_seen
         )
 
+        # Check if station book is currently halted by circuit breaker (commodities only)
+        is_commodity = instrument.upper() in ('FRAG', 'FUEL', 'BANANA') and not instrument.upper().startswith('EQ_')
+        if is_commodity and self.circuit_breaker.is_halted(order_station, instrument):
+            halt_info = self.circuit_breaker.get_active_halt(order_station, instrument)
+            with self.conn:
+                next_seq = self.current_seq + 1
+                if order.side == 'bid':
+                    target_book.bids.append(order)
+                    target_book.bids.sort(key=lambda o: (-o.limit_price, o.submitted_at))
+                else:
+                    target_book.asks.append(order)
+                    target_book.asks.sort(key=lambda o: (o.limit_price, o.submitted_at))
+
+                self.conn.execute("""
+                    INSERT INTO orders (order_id, agent_id, instrument, side, qty, limit_price, seq_seen, status, resolved_seq, filled_qty, station_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'open', NULL, 0, ?)
+                """, (order_id, agent_id, instrument, side, qty, limit_price, seq_seen, order_station))
+
+                self.conn.execute("""
+                    INSERT INTO book_events (seq, kind, payload)
+                    VALUES (?, 'order', ?)
+                """, (next_seq, json.dumps(payload)))
+
+            return {
+                'v': 1,
+                'kind': 'market_tick',
+                'reply': 'optional',
+                'floor': 'halted',
+                'scope': 'channel',
+                'subject': 'agent-collaborative-project',
+                'payload': {
+                    'seq': self.current_seq,
+                    'station_id': order_station,
+                    'instrument': instrument,
+                    'best_bid': target_book.best_bid(),
+                    'best_ask': target_book.best_ask(),
+                    'last_price': self.last_price,
+                    'last_qty': self.last_qty,
+                    'status': 'halted',
+                    'trades_count': 0,
+                    'auction_resting': True,
+                    'reopen_round': halt_info.get('reopen_round') if halt_info else None
+                }
+            }
+
+        # Inspect if crossing order would breach rolling +-10% LULD bands
+        # Circuit breaker applies to station commodities where a station is explicitly targeted
+        # or prior trades have established an active rolling market.
+        has_station_specified = bool(payload.get('station_id'))
+        has_trades = self.circuit_breaker.has_prior_trades(order_station, instrument)
+        should_check_luld = is_commodity and (has_station_specified or has_trades)
+
+        breach = False
+        breach_price = None
+        if should_check_luld:
+            bands = self.circuit_breaker.get_bands(order_station, instrument)
+            lower_limit = bands['lower_limit']
+            upper_limit = bands['upper_limit']
+
+            if order.side == 'bid':
+                for ask in target_book.asks:
+                    if ask.limit_price <= order.limit_price:
+                        if ask.limit_price < lower_limit or ask.limit_price > upper_limit:
+                            breach = True
+                            breach_price = ask.limit_price
+                            break
+            elif order.side == 'ask':
+                for bid in target_book.bids:
+                    if bid.limit_price >= order.limit_price:
+                        if bid.limit_price < lower_limit or bid.limit_price > upper_limit:
+                            breach = True
+                            breach_price = bid.limit_price
+                            break
+
+        if breach:
+            # Trigger discrete 2-round station trading halt
+            halt_res = self.circuit_breaker.trigger_halt(
+                station_id=order_station,
+                instrument=instrument,
+                trigger_price=breach_price,
+                reason=f"LULD breach: trade price {breach_price} outside [{lower_limit}, {upper_limit}] (VWAP: {bands['vwap']})",
+                current_round=self.current_round
+            )
+
+            # Order rests in the halted book for the upcoming auction call
+            with self.conn:
+                next_seq = self.current_seq + 1
+                if order.side == 'bid':
+                    target_book.bids.append(order)
+                    target_book.bids.sort(key=lambda o: (-o.limit_price, o.submitted_at))
+                else:
+                    target_book.asks.append(order)
+                    target_book.asks.sort(key=lambda o: (o.limit_price, o.submitted_at))
+
+                self.conn.execute("""
+                    INSERT INTO orders (order_id, agent_id, instrument, side, qty, limit_price, seq_seen, status, resolved_seq, filled_qty, station_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'open', NULL, 0, ?)
+                """, (order_id, agent_id, instrument, side, qty, limit_price, seq_seen, order_station))
+
+                self.conn.execute("""
+                    INSERT INTO book_events (seq, kind, payload)
+                    VALUES (?, 'order', ?)
+                """, (next_seq, json.dumps(payload)))
+
+            return {
+                'v': 1,
+                'kind': 'status',
+                'status': 'circuit_breaker_halted',
+                'floor': 'halted',
+                'payload': {
+                    'station_id': order_station,
+                    'instrument': instrument,
+                    'halt_round': self.current_round,
+                    'reopen_round': halt_res['reopen_round'],
+                    'trigger_price': breach_price,
+                    'lower_limit': lower_limit,
+                    'upper_limit': upper_limit,
+                    'vwap': bands['vwap'],
+                    'action': 'order_resting_for_auction'
+                }
+            }
+
         book_snapshot = copy.deepcopy(target_book)
         try:
             with self.conn:
@@ -1021,6 +1179,7 @@ class AgoraReferee:
 
                 # Settle each executed trade atomically in ledger_entries and accounts
                 for trade in trades:
+                    self.circuit_breaker.record_trade(order_station, instrument, trade.price, trade.qty, self.current_round)
                     self.last_price = trade.price
                     self.last_qty = trade.qty
                     buyer_currency = self.get_currency_instrument(trade.buyer_id)

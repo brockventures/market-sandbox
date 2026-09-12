@@ -1103,6 +1103,65 @@
         </div>
       </div>
     </div>
+
+    <!-- Dynamic LULD Circuit Breakers & Station Halts Desk (Issue #24) -->
+    <div class="terminal-card" style="margin-top: 20px;">
+      <div class="terminal-card-meta">
+        <div class="telemetry-indicator" style="color: var(--amber); background: rgba(255, 184, 52, 0.08); border-color: rgba(255, 184, 52, 0.25);">
+          <span class="pulse-node" style="background: var(--amber); box-shadow: 0 0 8px var(--amber);"></span>
+          <span>DYNAMIC LULD CIRCUIT BREAKERS // STATION TRADING HALTS &amp; AUCTION REOPENS</span>
+        </div>
+        <span style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim);" id="circuit-breaker-desk-status">CIRCUIT BREAKERS: NOMINAL</span>
+      </div>
+
+      <!-- Station LULD Price Bands Table -->
+      <div style="margin-bottom: 16px;">
+        <div style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim); margin-bottom: 8px;">
+          STATION COMMODITY LULD PRICE BANDS (&plusmn;10% ROLLING VWAP) (<span class="code-kw">GET /circuit_breaker/bands</span>)
+        </div>
+        <div style="overflow-x: auto;">
+          <table class="manifest-table">
+            <thead>
+              <tr>
+                <th>Station Node</th>
+                <th>Commodity</th>
+                <th>Rolling VWAP</th>
+                <th>Lower Band (-10%)</th>
+                <th>Upper Band (+10%)</th>
+                <th>Floor Status</th>
+              </tr>
+            </thead>
+            <tbody id="circuit-breaker-bands-tbody">
+              <tr><td colspan="6" style="color: var(--text-dim); text-align: center; padding: 14px;">Polling LULD bands...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Station Trading Halts & Auction Reopens Table -->
+      <div>
+        <div style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim); margin-bottom: 8px;">
+          DISCRETE 2-ROUND STATION HALTS &amp; CALL AUCTION REOPENS (<span class="code-kw">GET /circuit_breaker/halts</span>)
+        </div>
+        <div style="overflow-x: auto;">
+          <table class="manifest-table">
+            <thead>
+              <tr>
+                <th>Halt ID</th>
+                <th>Station // Instrument</th>
+                <th>Trigger Price vs Ref VWAP</th>
+                <th>Halt &rarr; Reopen Round</th>
+                <th>Status</th>
+                <th>Clearing Price / Volume</th>
+              </tr>
+            </thead>
+            <tbody id="circuit-breaker-halts-tbody">
+              <tr><td colspan="6" style="color: var(--text-dim); text-align: center; padding: 14px;">No circuit breaker halts recorded. All station floors active.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
   </section>
 
   <footer>
@@ -1136,6 +1195,8 @@
   let cachedTicks = [];
   let orbitalWindows = [];
   let distressBeacons = [];
+  let circuitBreakerBands = [];
+  let circuitBreakerHalts = [];
 
   function selectStation(st) {
     currentStation = (st || 'ceres').toLowerCase();
@@ -2033,6 +2094,23 @@
         const { x, y, conf } = data;
         const isCurrent = (st === currentStation);
         const isHovered = (st === hoveredStation);
+        const isHalted = (circuitBreakerHalts || []).some(h => (h.station_id || "").toLowerCase() === st && h.status === "halted");
+
+        if (isHalted) {
+          const haltPulse = 7 + (Math.sin(timestamp * 0.008) + 1) * 5;
+          ctx.strokeStyle = "rgba(248, 113, 113, 0.85)";
+          ctx.lineWidth = 2;
+          ctx.setLineDash([4, 3]);
+          ctx.beginPath();
+          ctx.arc(x, y, conf.size + haltPulse, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          ctx.fillStyle = "#f87171";
+          ctx.font = "bold 8px 'Space Mono', monospace";
+          ctx.textAlign = "center";
+          ctx.fillText("⚠️ [HALTED]", x, y - conf.size - 6);
+        }
 
         if (isCurrent || isHovered) {
           ctx.strokeStyle = isCurrent ? "var(--cyan)" : "rgba(255, 255, 255, 0.6)";
@@ -2050,20 +2128,20 @@
           }
         }
 
-        ctx.fillStyle = conf.color;
+        ctx.fillStyle = isHalted ? "#f87171" : conf.color;
         ctx.beginPath();
         ctx.arc(x, y, conf.size, 0, Math.PI * 2);
         ctx.fill();
 
-        ctx.fillStyle = isCurrent ? "#ffffff" : "var(--text-dim)";
+        ctx.fillStyle = isHalted ? "#f87171" : (isCurrent ? "#ffffff" : "var(--text-dim)");
         ctx.font = isCurrent ? "bold 10px 'Space Mono', monospace" : "9px 'Space Mono', monospace";
         ctx.textAlign = "center";
         ctx.fillText(conf.name.split(" // ")[0], x, y + conf.size + 11);
 
         const pFrag = (stationPrices[st] && stationPrices[st].FRAG !== undefined) ? Number(stationPrices[st].FRAG).toFixed(0) : "--";
-        ctx.fillStyle = isCurrent ? "var(--amber)" : "rgba(255, 184, 52, 0.65)";
+        ctx.fillStyle = isHalted ? "#f87171" : (isCurrent ? "var(--amber)" : "rgba(255, 184, 52, 0.65)");
         ctx.font = "8px 'Space Mono', monospace";
-        ctx.fillText(`${pFrag} CR`, x, y + conf.size + 20);
+        ctx.fillText(isHalted ? "LULD HALTED" : `${pFrag} CR`, x, y + conf.size + 20);
 
         const dockedHere = fleetLocations.filter(loc => loc.status === "docked" && loc.station_id === st);
         if (dockedHere.length > 0) {
@@ -2284,6 +2362,92 @@
     }
   }
 
+  async function pollCircuitBreakerTelemetry() {
+    try {
+      // 1. Fetch bands
+      let bRes = await fetch("/circuit_breaker/bands", { cache: "no-store" }).catch(() => null);
+      if (!bRes || !bRes.ok) {
+        bRes = await fetch("https://agora-banana-production.up.railway.app/circuit_breaker/bands", { cache: "no-store" }).catch(() => null);
+      }
+      if (bRes && bRes.ok) {
+        const bData = await bRes.json();
+        circuitBreakerBands = bData.bands || [];
+        const bTbody = document.getElementById("circuit-breaker-bands-tbody");
+        if (bTbody && circuitBreakerBands.length > 0) {
+          bTbody.innerHTML = circuitBreakerBands.map(b => {
+            const isHalted = b.status === "halted";
+            const stBadge = isHalted
+              ? `<span class="status-tag neg" style="font-size: 0.7rem;">⚠️ HALTED</span>`
+              : `<span class="status-tag active" style="font-size: 0.7rem;">● OPEN</span>`;
+            return `
+              <tr>
+                <td style="font-weight: bold; color: #fff;">${(b.station_id || '').toUpperCase()}</td>
+                <td style="color: var(--cyan); font-weight: bold;">${(b.instrument || '').toUpperCase()}</td>
+                <td style="font-family: var(--font-mono); color: var(--amber); font-weight: bold;">${Number(b.vwap).toFixed(2)} CR</td>
+                <td style="font-family: var(--font-mono); color: var(--green);">${Number(b.lower_limit).toFixed(2)} CR</td>
+                <td style="font-family: var(--font-mono); color: var(--red);">${Number(b.upper_limit).toFixed(2)} CR</td>
+                <td>${stBadge}</td>
+              </tr>
+            `;
+          }).join("");
+        }
+      }
+
+      // 2. Fetch halts
+      let hRes = await fetch("/circuit_breaker/halts", { cache: "no-store" }).catch(() => null);
+      if (!hRes || !hRes.ok) {
+        hRes = await fetch("https://agora-banana-production.up.railway.app/circuit_breaker/halts", { cache: "no-store" }).catch(() => null);
+      }
+      if (hRes && hRes.ok) {
+        const hData = await hRes.json();
+        circuitBreakerHalts = hData.halts || [];
+
+        const activeHalts = circuitBreakerHalts.filter(h => h.status === "halted");
+        const deskStatus = document.getElementById("circuit-breaker-desk-status");
+        if (deskStatus) {
+          if (activeHalts.length > 0) {
+            deskStatus.textContent = `CIRCUIT BREAKERS: ⚠️ ${activeHalts.length} STATION HALT(S) ACTIVE`;
+            deskStatus.style.color = "var(--red)";
+          } else {
+            deskStatus.textContent = "CIRCUIT BREAKERS: NOMINAL (ALL FLOORS OPEN)";
+            deskStatus.style.color = "var(--green)";
+          }
+        }
+
+        const hTbody = document.getElementById("circuit-breaker-halts-tbody");
+        if (hTbody) {
+          if (circuitBreakerHalts.length === 0) {
+            hTbody.innerHTML = `<tr><td colspan="6" style="color: var(--text-dim); text-align: center; padding: 14px;">No circuit breaker halts recorded. All station floors active.</td></tr>`;
+          } else {
+            hTbody.innerHTML = circuitBreakerHalts.map(h => {
+              const isH = h.status === "halted";
+              const tagClass = isH ? "status-tag neg" : "status-tag active";
+              const tagLabel = isH ? "⚠️ HALTED" : "✅ REOPENED";
+              const clearInfo = h.status === "reopened" && h.clearing_price != null
+                ? `<span style="color: var(--cyan);">${Number(h.clearing_price).toFixed(2)} CR</span> (${h.reopen_volume || 0} vol)`
+                : `<span style="color: var(--text-dim);">Pre-Auction</span>`;
+              return `
+                <tr>
+                  <td style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--amber);">${(h.halt_id || '').slice(0, 18)}</td>
+                  <td style="font-weight: bold; color: #fff;">${(h.station_id || '').toUpperCase()} // ${(h.instrument || '').toUpperCase()}</td>
+                  <td>
+                    <span style="color: var(--red); font-weight: bold;">${Number(h.trigger_price).toFixed(1)} CR</span>
+                    <span style="color: var(--text-dim); font-size: 0.75rem;"> (Ref: ${Number(h.reference_vwap).toFixed(1)})</span>
+                  </td>
+                  <td style="font-family: var(--font-mono); font-size: 0.75rem;">RND #${h.halt_round} &rarr; RND #${h.reopen_round}</td>
+                  <td><span class="${tagClass}" style="font-size: 0.7rem;">${tagLabel}</span></td>
+                  <td>${clearInfo}</td>
+                </tr>
+              `;
+            }).join("");
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Circuit breaker telemetry poll error:", e);
+    }
+  }
+
   // Initial poll and scheduling
   pollLeaderboard();
   setInterval(pollLeaderboard, 8000);
@@ -2302,6 +2466,9 @@
 
   pollSalvageTelemetry();
   setInterval(pollSalvageTelemetry, 4000);
+
+  pollCircuitBreakerTelemetry();
+  setInterval(pollCircuitBreakerTelemetry, 4000);
 
   initOrbitalRadar();
 </script>
