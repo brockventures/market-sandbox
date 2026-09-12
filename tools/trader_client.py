@@ -70,6 +70,36 @@ def get_galnet_feed(limit: int = 15):
 def get_galnet_drift(station_id: str = "ceres", commodity: str = "FUEL"):
     return request(f"/galnet/drift?station_id={station_id}&commodity={commodity}")
 
+def get_stations_prices(station_id: str = None, commodity: str = None):
+    q = []
+    if station_id:
+        q.append(f"station_id={station_id}")
+    if commodity:
+        q.append(f"commodity={commodity}")
+    suffix = f"?{'&'.join(q)}" if q else ""
+    return request(f"/stations/prices{suffix}")
+
+def get_stations_routes(origin: str = None, destination: str = None):
+    q = []
+    if origin:
+        q.append(f"origin={origin}")
+    if destination:
+        q.append(f"destination={destination}")
+    suffix = f"?{'&'.join(q)}" if q else ""
+    return request(f"/stations/routes{suffix}")
+
+def get_stations_locations(agent_id: str = None):
+    suffix = f"?agent_id={agent_id}" if agent_id else ""
+    return request(f"/stations/locations{suffix}")
+
+def post_transit(destination: str, commodity: str = "FRAG", cargo_qty: int = 0):
+    return request("/stations/transit", {
+        "agent_id": AGENT_ID,
+        "destination": destination,
+        "commodity": commodity,
+        "cargo_qty": cargo_qty
+    })
+
 def cancel_all():
     return request("/referee/orders/cancel_all", {"agent_id": AGENT_ID})
 
@@ -165,6 +195,11 @@ if __name__ == "__main__":
     parser.add_argument("--run", action="store_true", help="Run continuous trading loop for test run")
     parser.add_argument("--duration", type=int, default=900, help="Run duration in seconds (default: 900 = 15m)")
     parser.add_argument("--interval", type=float, default=10.0, help="Interval between orders in seconds (default: 10.0)")
+    parser.add_argument("--prices", action="store_true", help="Probe station spot prices across Sol nodes")
+    parser.add_argument("--routes", action="store_true", help="Inspect Sol orbital transit route matrix")
+    parser.add_argument("--locations", action="store_true", help="Inspect fleet vessel locations and dock statuses")
+    parser.add_argument("--transit", type=str, help="Initiate orbital transit to destination station (e.g. mars)")
+    parser.add_argument("--cargo", type=int, default=0, help="Cargo quantity to transport during transit")
     args = parser.parse_args()
 
     if args.run:
@@ -180,6 +215,19 @@ if __name__ == "__main__":
         for st, comm in [("ceres", "FUEL"), ("mars", "FRAG"), ("luna", "FUEL"), ("earth", "FRAG")]:
             drift = get_galnet_drift(st, comm)
             print(f"{st.upper()} ({comm}): {drift.get('drift_bias', 0.0)}")
+    elif args.prices:
+        print("=== Sol Station Spot Prices ===")
+        print(json.dumps(get_stations_prices(), indent=2))
+    elif args.routes:
+        print("=== Sol Orbital Routes ===")
+        print(json.dumps(get_stations_routes(), indent=2))
+    elif args.locations:
+        print("=== Fleet Vessel Locations ===")
+        print(json.dumps(get_stations_locations(), indent=2))
+    elif args.transit:
+        print(f"Initiating transit to {args.transit} with cargo_qty={args.cargo}...")
+        res = post_transit(destination=args.transit, cargo_qty=args.cargo)
+        print(json.dumps(res, indent=2))
     else:
         print("=== Agora Health ===")
         print(json.dumps(check_health(), indent=2))

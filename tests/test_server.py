@@ -393,6 +393,205 @@ class TestAgoraServer(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(data['drift_bias'], 0.0)
 
+    def test_16_spatial_routes_and_prices_query(self):
+        # 1. Prices query across Sol nodes
+        status, data = self._get('/stations/prices')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['status'], 'ok')
+        self.assertIn('prices', data['data'])
+        self.assertIn('ceres', data['data']['prices'])
+        self.assertIn('mars', data['data']['prices'])
+        self.assertIn('earth', data['data']['prices'])
+        self.assertIn('luna', data['data']['prices'])
+
+        # Filtered price query
+        status, data = self._get('/stations/prices?station_id=mars&commodity=FRAG')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['data']['station_id'], 'mars')
+        self.assertEqual(data['data']['commodity'], 'FRAG')
+        self.assertGreater(data['data']['spot_price'], 0)
+
+        # 2. Routes query
+        status, data = self._get('/stations/routes')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['status'], 'ok')
+        self.assertTrue(len(data['routes']) >= 12)
+
+        # Specific route lookup
+        status, data = self._get('/stations/routes?origin=ceres&destination=mars')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['route']['rounds'], 2)
+        self.assertEqual(data['route']['fuel'], 20)
+
+        # 3. Initial vessel locations query
+        status, data = self._get('/stations/locations')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['status'], 'ok')
+        self.assertTrue(len(data['locations']) >= 3)
+
+        status, data = self._get('/stations/locations?agent_id=amos')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['location']['agent_id'], 'amos')
+        self.assertEqual(data['location']['station_id'], 'ceres')
+        self.assertEqual(data['location']['status'], 'docked')
+
+    def test_17_spatial_transit_lifecycle_and_invariants(self):
+        # 1. Unauthenticated transit rejected
+        status, data = self._post('/stations/transit', {
+            'agent_id': 'zero',
+            'destination': 'mars',
+            'commodity': 'FRAG',
+            'cargo_qty': 50
+        })
+        self.assertEqual(status, 401)
+
+        # 2. Impersonation rejected
+        status, data = self._post('/stations/transit', {
+            'agent_id': 'amos',
+            'destination': 'mars',
+            'commodity': 'FRAG',
+            'cargo_qty': 50
+        }, token='tok-zero')
+        self.assertEqual(status, 403)
+
+        # 3. Invalid destination rejected
+        status, data = self._post('/stations/transit', {
+            'agent_id': 'zero',
+            'destination': 'jupiter',
+            'commodity': 'FRAG',
+            'cargo_qty': 50
+        }, token='tok-zero')
+        self.assertEqual(status, 400)
+        self.assertEqual(data['payload']['reason'], 'invalid_station')
+
+        # 4. Check initial balances for zero
+        status, data = self._get('/referee/accounts', token='tok-zero')
+        self.assertEqual(status, 200)
+        balances = {a['instrument']: a['balance'] for a in data['accounts']}
+        init_fuel = balances.get('FUEL', 500)
+        init_frag = balances.get('FRAG', 1000)
+
+        # 5. Successful transit departure: zero departs ceres for mars with 100 FRAG cargo
+        # Route ceres -> mars requires 20 fuel and 2 rounds
+        status, data = self._post('/stations/transit', {
+            'agent_id': 'zero',
+            'destination': 'mars',
+            'commodity': 'FRAG',
+            'cargo_qty': 100
+        }, token='tok-zero')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['status'], 'in_transit')
+        transit_payload = data['payload']
+        self.assertEqual(transit_payload['origin'], 'ceres')
+        self.assertEqual(transit_payload['destination'], 'mars')
+        self.assertEqual(transit_payload['cargo_qty'], 100)
+        self.assertEqual(transit_payload['fuel_burned'], 20)
+
+        # 6. Verify fuel debit and cargo escrow
+        status, data = self._get('/referee/accounts', token='tok-zero')
+        self.assertEqual(status, 200)
+        updated_balances = {a['instrument']: a['balance'] for a in data['accounts']}
+        self.assertEqual(updated_balances['FUEL'], init_fuel - 20)
+        self.assertEqual(updated_balances['FRAG'], init_frag - 100)
+
+        # 7. Verify vessel location reflects in_transit
+        status, data = self._get('/stations/locations?agent_id=zero')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['location']['status'], 'in_transit')
+        self.assertEqual(data['location']['station_id'], 'in_transit')
+        self.assertIsNotNone(data['location']['transit'])
+
+        # 8. In-transit order submission rejected (vessel_in_transit)
+        status, data = self._post('/referee/orders', {
+            'kind': 'order',
+            'payload': {
+                'order_id': 'zero-flight-order-1',
+                'agent_id': 'zero',
+                'instrument': 'FRAG',
+                'side': 'bid',
+                'qty': 10,
+                'limit_price': 10,
+                'seq_seen': 0
+            }
+        }, token='tok-zero')
+        self.assertEqual(status, 400)
+        self.assertEqual(data['payload']['reason'], 'vessel_in_transit')
+
+        # 9. Step round 1: still in flight (arrival is round 2)
+        status, data = self._post('/stations/step_round', {'round': 1})
+        self.assertEqual(status, 200)
+        self.assertEqual(data['round'], 1)
+        self.assertEqual(len(data['arrived_transits']), 0)
+
+        # 10. Step round 2: arrival triggered!
+        status, data = self._post('/stations/step_round', {'round': 2})
+        self.assertEqual(status, 200)
+        self.assertEqual(data['round'], 2)
+        self.assertEqual(len(data['arrived_transits']), 1)
+        self.assertEqual(data['arrived_transits'][0]['agent_id'], 'zero')
+        self.assertEqual(data['arrived_transits'][0]['destination'], 'mars')
+
+        # 11. Verify cargo released back to zero at destination mars
+        status, data = self._get('/referee/accounts', token='tok-zero')
+        self.assertEqual(status, 200)
+        arrived_balances = {a['instrument']: a['balance'] for a in data['accounts']}
+        self.assertEqual(arrived_balances['FRAG'], init_frag)
+        self.assertEqual(arrived_balances['FUEL'], init_fuel - 20)
+
+        # 12. Verify docked at mars
+        status, data = self._get('/stations/locations?agent_id=zero')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['location']['status'], 'docked')
+        self.assertEqual(data['location']['station_id'], 'mars')
+
+        # 13. Submitting order at ceres rejected (vessel_not_docked)
+        status, data = self._post('/referee/orders', {
+            'kind': 'order',
+            'payload': {
+                'order_id': 'zero-ceres-order-1',
+                'agent_id': 'zero',
+                'station_id': 'ceres',
+                'instrument': 'FRAG',
+                'side': 'ask',
+                'qty': 10,
+                'limit_price': 25,
+                'seq_seen': 0
+            }
+        }, token='tok-zero')
+        self.assertEqual(status, 400)
+        self.assertEqual(data['payload']['reason'], 'vessel_not_docked')
+
+        # 14. Submitting order at mars succeeds!
+        status, data = self._post('/referee/orders', {
+            'kind': 'order',
+            'payload': {
+                'order_id': 'zero-mars-order-1',
+                'agent_id': 'zero',
+                'station_id': 'mars',
+                'instrument': 'FRAG',
+                'side': 'ask',
+                'qty': 10,
+                'limit_price': 18,
+                'seq_seen': 0
+            }
+        }, token='tok-zero')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['kind'], 'market_tick')
+        self.assertEqual(data['payload']['station_id'], 'mars')
+
+        # 15. Verify book at mars shows the resting ask
+        status, data = self._get('/referee/book?station_id=mars&instrument=FRAG')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['station_id'], 'mars')
+        self.assertEqual(len(data['book']['asks']), 1)
+        self.assertEqual(data['book']['asks'][0]['order_id'], 'zero-mars-order-1')
+
+        # 16. Verify standing invariants hold completely (conservation, non-negativity, reconciliation)
+        status, data = self._get('/referee/health')
+        self.assertEqual(status, 200)
+        self.assertTrue(data['invariants_valid'])
+        self.assertEqual(len(data['errors']), 0)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -27,9 +27,44 @@ CREATE TABLE ledger_entries (
 -- referee only, never by a client.
 CREATE TABLE book_events (
     seq         INTEGER PRIMARY KEY,
-    kind        TEXT NOT NULL CHECK (kind IN ('order','trade','floor_open','floor_close','cancel','news')),
+    kind        TEXT NOT NULL CHECK (kind IN ('order','trade','floor_open','floor_close','cancel','news','transit','transit_arrived')),
     payload     TEXT NOT NULL,        -- JSON
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+-- Station price surface snapshots across Sol nodes.
+CREATE TABLE station_prices (
+    station_id  TEXT NOT NULL,
+    commodity   TEXT NOT NULL,
+    round       INTEGER NOT NULL,
+    base_price  REAL NOT NULL,
+    drift_bias  REAL NOT NULL DEFAULT 0.0,
+    spot_price  REAL NOT NULL,
+    updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY (station_id, commodity, round)
+);
+
+-- Cargo and fuel escrow during orbital transit.
+CREATE TABLE transits (
+    transit_id      TEXT PRIMARY KEY,
+    agent_id        TEXT NOT NULL,
+    origin          TEXT NOT NULL,
+    destination     TEXT NOT NULL,
+    departure_round INTEGER NOT NULL,
+    arrival_round   INTEGER NOT NULL,
+    commodity       TEXT NOT NULL,
+    cargo_qty       INTEGER NOT NULL DEFAULT 0,
+    fuel_burned     INTEGER NOT NULL DEFAULT 0,
+    status          TEXT NOT NULL CHECK (status IN ('in_transit', 'arrived', 'cancelled')),
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+-- Current docked station or transit status per agent vessel.
+CREATE TABLE vessel_locations (
+    agent_id        TEXT PRIMARY KEY,
+    station_id      TEXT NOT NULL,
+    docked_since    INTEGER NOT NULL DEFAULT 0,
+    updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 
 -- Orders as submitted, carrying the agent's belief about the book at
@@ -46,6 +81,7 @@ CREATE TABLE orders (
     resolved_seq INTEGER,             -- null while open
     status       TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','filled','cancelled')),
     filled_qty   INTEGER NOT NULL DEFAULT 0,
+    station_id   TEXT NOT NULL DEFAULT 'ceres',
     PRIMARY KEY (agent_id, order_id)
 );
 

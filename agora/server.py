@@ -18,6 +18,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Optional, Dict
 from agora.referee import AgoraReferee
 from agora.galnet import GalNetEngine
+from agora.spatial import STATIONS, COMMODITIES, ROUTES, get_route
 
 
 def get_configured_tokens() -> Dict[str, str]:
@@ -267,6 +268,82 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             })
             return
 
+        if path == '/stations/transit':
+            auth_agent, auth_err = self._authenticate_request()
+            if auth_err:
+                self._send_json(401, auth_err)
+                return
+
+            content_length = int(self.headers.get('Content-Length', 0))
+            if content_length == 0:
+                self._send_json(400, {
+                    'v': 1, 'kind': 'reject',
+                    'payload': {'reason': 'invalid_format', 'detail': 'Empty request body'}
+                })
+                return
+
+            try:
+                body = self.rfile.read(content_length)
+                payload = json.loads(body.decode('utf-8'))
+            except Exception as e:
+                self._send_json(400, {
+                    'v': 1, 'kind': 'reject',
+                    'payload': {'reason': 'invalid_format', 'detail': f'Malformed JSON: {e}'}
+                })
+                return
+
+            claimed_agent = payload.get('agent_id')
+            if auth_agent != 'admin' and claimed_agent and claimed_agent != auth_agent:
+                self._send_json(403, {
+                    'v': 1, 'kind': 'reject',
+                    'payload': {
+                        'reason': 'unauthorized',
+                        'detail': f"Authenticated as '{auth_agent}', but payload claims agent_id '{claimed_agent}'"
+                    }
+                })
+                return
+
+            target_agent = auth_agent if auth_agent != 'admin' else (claimed_agent or auth_agent)
+            destination = payload.get('destination')
+            if not destination:
+                self._send_json(400, {
+                    'v': 1, 'kind': 'reject',
+                    'payload': {'reason': 'invalid_format', 'detail': 'Missing required destination parameter'}
+                })
+                return
+
+            commodity = payload.get('commodity', 'FRAG')
+            cargo_qty = payload.get('cargo_qty', 0)
+
+            ref = self.referee or AgoraReferee()
+            result = ref.initiate_transit(
+                agent_id=target_agent,
+                destination=destination,
+                commodity=commodity,
+                cargo_qty=cargo_qty
+            )
+            if result.get('kind') == 'reject':
+                self._send_json(400, result)
+            else:
+                self._send_json(200, result)
+            return
+
+        if path == '/stations/step_round':
+            content_length = int(self.headers.get('Content-Length', 0))
+            payload = {}
+            if content_length:
+                try:
+                    body = self.rfile.read(content_length)
+                    payload = json.loads(body.decode('utf-8')) if body else {}
+                except Exception:
+                    pass
+
+            ref = self.referee or AgoraReferee()
+            round_num = payload.get('round')
+            result = ref.step_round(round_num=round_num)
+            self._send_json(200, result)
+            return
+
         if path != '/referee/orders':
             self._send_json(404, {'error': 'not_found', 'path': self.path})
             return
@@ -338,9 +415,13 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 'seq': ref.current_seq
             })
         elif path == '/referee/book':
+            station_id = query_params.get('station_id', [None])[0]
+            instrument = query_params.get('instrument', [None])[0]
             self._send_json(200, {
                 'status': 'ok',
-                'book': ref.get_book_snapshot()
+                'station_id': station_id or 'ceres',
+                'instrument': instrument or getattr(ref, 'default_instrument', 'FRAG'),
+                'book': ref.get_book_snapshot(station_id=station_id, instrument=instrument)
             })
         elif path == '/referee/ticks':
             since_seq_raw = query_params.get('since_seq', ['0'])[0]
@@ -424,7 +505,12 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                     'galnet_events': 'GET /galnet/events',
                     'galnet_drift': 'GET /galnet/drift?station_id=ceres&commodity=FUEL',
                     'galnet_step': 'POST /galnet/step',
-                    'galnet_shock': 'POST /galnet/shock'
+                    'galnet_shock': 'POST /galnet/shock',
+                    'station_prices': 'GET /stations/prices?station_id=mars&commodity=FRAG',
+                    'station_routes': 'GET /stations/routes?origin=ceres&destination=mars',
+                    'station_locations': 'GET /stations/locations',
+                    'station_transit': 'POST /stations/transit (auth required)',
+                    'station_step_round': 'POST /stations/step_round'
                 },
                 'rules': [
                     '1. Round Bell: Every 5 minutes, Agora Trade Terminal pings @robot (<@&1543462881624858624>) in #the-banana-stand.',
@@ -479,6 +565,50 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 'commodity': commodity,
                 'drift_bias': engine.get_active_drift(station_id, commodity)
             })
+        elif path == '/stations/prices':
+            station_id = query_params.get('station_id', [None])[0]
+            commodity = query_params.get('commodity', [None])[0]
+            prices_data = ref.get_station_prices(station_id=station_id, commodity=commodity)
+            self._send_json(200, {
+                'status': 'ok',
+                'data': prices_data
+            })
+        elif path == '/stations/routes':
+            origin = query_params.get('origin', [None])[0]
+            destination = query_params.get('destination', [None])[0]
+            if origin and destination:
+                route = get_route(origin, destination)
+                self._send_json(200, {
+                    'status': 'ok',
+                    'origin': origin.lower(),
+                    'destination': destination.lower(),
+                    'route': route
+                })
+            else:
+                formatted_routes = [
+                    {'origin': k[0], 'destination': k[1], 'rounds': v['rounds'], 'fuel': v['fuel']}
+                    for k, v in ROUTES.items()
+                ]
+                self._send_json(200, {
+                    'status': 'ok',
+                    'stations': STATIONS,
+                    'commodities': COMMODITIES,
+                    'routes': formatted_routes
+                })
+        elif path == '/stations/locations':
+            agent_id = query_params.get('agent_id', [None])[0]
+            if agent_id:
+                loc = ref.get_vessel_location(agent_id)
+                self._send_json(200, {
+                    'status': 'ok',
+                    'location': loc
+                })
+            else:
+                locs = ref.get_all_vessel_locations()
+                self._send_json(200, {
+                    'status': 'ok',
+                    'locations': locs
+                })
         else:
             self._send_json(404, {'error': 'not_found', 'path': self.path})
 
