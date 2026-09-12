@@ -28,7 +28,7 @@ def load_env():
 
 load_env()
 
-BASE_URL = os.environ.get("AGORA_BASE_URL", "https://agora-banana-production.up.railway.app").rstrip("/")
+BASE_URL = os.environ.get("AGORA_BASE_URL", "https://agora.mikecarmody.net").rstrip("/")
 TOKEN = os.environ.get("AGORA_TOKEN_ZERO", "")
 AGENT_ID = "zero"
 
@@ -64,6 +64,15 @@ def get_accounts():
 def get_book():
     return request("/referee/book")
 
+def get_galnet_feed(limit: int = 15):
+    return request(f"/galnet/feed?limit={limit}")
+
+def get_galnet_drift(station_id: str = "ceres", commodity: str = "FUEL"):
+    return request(f"/galnet/drift?station_id={station_id}&commodity={commodity}")
+
+def cancel_all():
+    return request("/referee/orders/cancel_all", {"agent_id": AGENT_ID})
+
 def submit_order(side: str, qty: int, limit_price: int, instrument: str = "FRAG") -> dict:
     seq_res = check_health()
     current_seq = seq_res.get("seq", 0) if isinstance(seq_res, dict) else 0
@@ -87,7 +96,7 @@ def submit_order(side: str, qty: int, limit_price: int, instrument: str = "FRAG"
     }
     return request("/referee/orders", envelope)
 
-def run_loop(duration: int = 1800, interval: float = 10.0, instrument: str = "FRAG"):
+def run_loop(duration: int = 900, interval: float = 10.0, instrument: str = "FRAG"):
     """
     Run continuous trading loop for systems combine.
     Posts alternating bids/asks within conservative bounds to generate socket traffic,
@@ -115,6 +124,13 @@ def run_loop(duration: int = 1800, interval: float = 10.0, instrument: str = "FR
             best_bid = bids[0]["limit_price"] if bids else 5
             best_ask = asks[0]["limit_price"] if asks else 25
             
+            # Prune stale resting orders every 5 cycles to keep free margin liquid
+            if cycle % 5 == 0:
+                cancel_res = cancel_all()
+                cancelled_cnt = cancel_res.get("payload", {}).get("count", 0)
+                if cancelled_cnt > 0:
+                    print(f"[{elapsed}s] Pruned {cancelled_cnt} stale resting orders")
+            
             # Alternate between posting bids and asks around the active spread
             if cycle % 2 == 1:
                 price = max(1, best_bid + 1 if best_bid < best_ask - 2 else best_bid)
@@ -132,6 +148,8 @@ def run_loop(duration: int = 1800, interval: float = 10.0, instrument: str = "FR
             
         time.sleep(interval)
 
+    # Clean up all resting orders on loop exit
+    cancel_all()
     print(f"Trader loop finished after {cycle} cycles.")
     print("Final account status:")
     print(json.dumps(get_accounts(), indent=2))
@@ -140,11 +158,12 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Zero Agora Trader Client")
     parser.add_argument("--probe", action="store_true", help="Run a health and balance probe")
+    parser.add_argument("--galnet", action="store_true", help="Probe GalNet feed and active station drifts")
     parser.add_argument("--order", choices=["bid", "ask"], help="Place a single test limit order")
     parser.add_argument("--qty", type=int, default=10, help="Order quantity")
     parser.add_argument("--price", type=int, default=10, help="Order limit price")
     parser.add_argument("--run", action="store_true", help="Run continuous trading loop for test run")
-    parser.add_argument("--duration", type=int, default=1800, help="Run duration in seconds (default: 1800 = 30m)")
+    parser.add_argument("--duration", type=int, default=900, help="Run duration in seconds (default: 900 = 15m)")
     parser.add_argument("--interval", type=float, default=10.0, help="Interval between orders in seconds (default: 10.0)")
     args = parser.parse_args()
 
@@ -154,6 +173,13 @@ if __name__ == "__main__":
         print(f"Placing {args.order} qty={args.qty} @ {args.price} CR...")
         res = submit_order(side=args.order, qty=args.qty, limit_price=args.price)
         print(json.dumps(res, indent=2))
+    elif args.galnet:
+        print("=== GalNet News Feed ===")
+        print(json.dumps(get_galnet_feed(), indent=2))
+        print("=== Sol Station Active Drifts ===")
+        for st, comm in [("ceres", "FUEL"), ("mars", "FRAG"), ("luna", "FUEL"), ("earth", "FRAG")]:
+            drift = get_galnet_drift(st, comm)
+            print(f"{st.upper()} ({comm}): {drift.get('drift_bias', 0.0)}")
     else:
         print("=== Agora Health ===")
         print(json.dumps(check_health(), indent=2))

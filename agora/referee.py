@@ -12,16 +12,18 @@ from typing import Optional, Dict, Any, Tuple, List
 from pathlib import Path
 
 from agora.order_book import OrderBook, Order, Trade
+from agora.galnet import GalNetEngine
 
 
 class AgoraReferee:
-    def __init__(self, db_path: str = ':memory:', instrument: Optional[str] = None):
+    def __init__(self, db_path: str = ':memory:', instrument: Optional[str] = None, galnet: Optional[GalNetEngine] = None):
         self.db_path = db_path
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.lock = threading.Lock()
         self.default_instrument = instrument
         self.book = OrderBook(instrument=instrument or 'FRAG')
+        self.galnet = galnet or GalNetEngine()
         self.last_price: Optional[int] = None
         self.last_qty: Optional[int] = None
         self.floor: str = 'open'
@@ -55,11 +57,11 @@ class AgoraReferee:
                         "SELECT sql FROM sqlite_master WHERE type='table' AND name='book_events'"
                     ).fetchone()
                     existing_sql = row[0] if row else ''
-                    if existing_sql and "'cancel'" not in existing_sql:
+                    if existing_sql and ("'cancel'" not in existing_sql or "'news'" not in existing_sql):
                         self.conn.executescript("""
                             CREATE TABLE book_events_new (
                                 seq         INTEGER PRIMARY KEY,
-                                kind        TEXT NOT NULL CHECK (kind IN ('order','trade','floor_open','floor_close','cancel')),
+                                kind        TEXT NOT NULL CHECK (kind IN ('order','trade','floor_open','floor_close','cancel','news')),
                                 payload     TEXT NOT NULL,
                                 created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
                             );
@@ -117,6 +119,16 @@ class AgoraReferee:
                 raise ValueError(f"Invalid floor state '{state}', expected 'open' or 'closed'")
             self.floor = state
             return self.floor
+
+    def record_news(self, event_dict: Dict[str, Any]) -> int:
+        """Records a GalNet breaking news wire event into book_events ticks."""
+        with self.lock:
+            next_seq = self.current_seq + 1
+            self.conn.execute(
+                "INSERT INTO book_events (seq, kind, payload) VALUES (?, 'news', ?)",
+                (next_seq, json.dumps(event_dict))
+            )
+            return next_seq
 
     def get_balance(self, agent_id: str, instrument: str) -> int:
         cur = self.conn.cursor()

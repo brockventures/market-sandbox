@@ -343,6 +343,58 @@ class TestAgoraServer(unittest.TestCase):
         self.assertEqual(data['status'], 'cancelled_all')
         self.assertEqual(data['payload']['count'], 2)
 
+    def test_12_galnet_endpoints(self):
+        # 1. Initial feed and drift
+        status, data = self._get('/galnet/feed')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['status'], 'ok')
+        self.assertIsInstance(data['feed'], list)
+
+        status, data = self._get('/galnet/drift?station_id=ceres&commodity=FUEL')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['status'], 'ok')
+        self.assertEqual(data['drift_bias'], 0.0)
+
+        # 2. Force shock via POST /galnet/shock (Template 0 is Ceres FUEL blowout, bias +0.40, duration 4)
+        status, data = self._post('/galnet/shock', {'template_idx': 0, 'round': 1})
+        self.assertEqual(status, 200)
+        self.assertEqual(data['status'], 'ok')
+        self.assertEqual(data['event']['station_id'], 'ceres')
+        self.assertEqual(data['event']['commodity'], 'FUEL')
+        self.assertEqual(data['event']['drift_bias'], 0.40)
+
+        # 3. Verify active drift reflects shock
+        status, data = self._get('/galnet/drift?station_id=ceres&commodity=FUEL')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['drift_bias'], 0.40)
+
+        # 4. Verify feed and active_shocks
+        status, data = self._get('/galnet/events')
+        self.assertEqual(status, 200)
+        self.assertEqual(len(data['active_shocks']), 1)
+        self.assertEqual(data['active_shocks'][0]['station_id'], 'ceres')
+        self.assertTrue(len(data['feed']) >= 1)
+
+        # 5. Verify news wire tick is streamed via /referee/ticks
+        status, data = self._get('/referee/ticks?since_seq=0')
+        self.assertEqual(status, 200)
+        news_ticks = [t for t in data['ticks'] if t['kind'] == 'news']
+        self.assertTrue(len(news_ticks) >= 1)
+        self.assertEqual(news_ticks[-1]['payload']['station_id'], 'ceres')
+        self.assertIn('CERES', news_ticks[-1]['payload']['headline'])
+
+        # 6. Step round past duration (round 6 > round 1 + duration 4) and verify expiration
+        status, data = self._post('/galnet/step', {'round': 6})
+        self.assertEqual(status, 200)
+        self.assertEqual(data['status'], 'ok')
+        self.assertEqual(data['round'], 6)
+
+        status, data = self._get('/galnet/drift?station_id=ceres&commodity=FUEL')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['drift_bias'], 0.0)
+
+
 if __name__ == '__main__':
     unittest.main()
+
 

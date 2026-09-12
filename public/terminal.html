@@ -378,6 +378,130 @@
     border-top: 1px solid var(--line);
     margin-top: 32px;
   }
+
+  /* GalNet Breaking News Wire */
+  .galnet-marquee-wrap {
+    margin: 20px 0 0;
+    background: rgba(255, 184, 52, 0.05);
+    border: 1px solid rgba(255, 184, 52, 0.3);
+    border-radius: 6px;
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    overflow: hidden;
+  }
+
+  .galnet-badge {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: var(--bg-deep);
+    background: var(--amber);
+    padding: 3px 8px;
+    border-radius: 3px;
+    letter-spacing: 0.06em;
+    white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .galnet-ticker-text {
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    color: var(--amber);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .galnet-ticker-text .meta {
+    color: var(--text-dim);
+    margin-right: 8px;
+  }
+
+  .galnet-ticker-text .bias-pos {
+    color: var(--green);
+    font-weight: bold;
+    margin-left: 6px;
+  }
+
+  .galnet-ticker-text .bias-neg {
+    color: var(--red);
+    font-weight: bold;
+    margin-left: 6px;
+  }
+
+  /* Sol Orbital Stations Grid */
+  .sol-stations-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-top: 14px;
+    margin-bottom: 8px;
+  }
+
+  @media (max-width: 800px) {
+    .sol-stations-grid {
+      grid-template-columns: repeat(2, 1fr);
+    }
+  }
+
+  .station-card {
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    transition: border-color 0.2s ease;
+  }
+
+  .station-card:hover {
+    border-color: rgba(255, 184, 52, 0.4);
+  }
+
+  .station-card-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .station-card-name {
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: #fff;
+    letter-spacing: 0.04em;
+  }
+
+  .station-card-status {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    padding: 2px 6px;
+    border-radius: 3px;
+    background: rgba(92, 225, 230, 0.08);
+    color: var(--cyan);
+    border: 1px solid rgba(92, 225, 230, 0.2);
+  }
+
+  .station-card-focus {
+    font-size: 0.72rem;
+    color: var(--text-dim);
+  }
+
+  .station-card-drift {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-top: 1px solid rgba(38, 50, 72, 0.4);
+    padding-top: 6px;
+    margin-top: 2px;
+  }
 </style>
 </head>
 <body>
@@ -400,6 +524,67 @@
       </div>
     </div>
   </header>
+
+  <!-- GalNet Breaking News Wire & Sol Orbital Stations -->
+  <div class="galnet-marquee-wrap">
+    <div class="galnet-badge">
+      <span class="pulse-node" style="width: 6px; height: 6px; background: #080a0f;"></span>
+      GALNET WIRE
+    </div>
+    <div class="galnet-ticker-text" id="galnet-wire-text">
+      <span class="meta">[ROUND #-- // 16 PSYCHE]</span> MONITORING SOL INTER-STATION WIRE FREQUENCIES...
+    </div>
+  </div>
+
+  <div class="sol-stations-grid">
+    <div class="station-card" id="station-card-ceres">
+      <div class="station-card-head">
+        <span class="station-card-name">CERES // PIAZZI</span>
+        <span class="station-card-status" id="drift-status-ceres">NOMINAL</span>
+      </div>
+      <div class="station-card-focus">Cryo-Propellant / Ore Extraction</div>
+      <div class="station-card-drift">
+        <span style="color: var(--text-dim);">FUEL DRIFT</span>
+        <span id="drift-val-ceres" style="color: var(--text);">0.0%</span>
+      </div>
+    </div>
+
+    <div class="station-card" id="station-card-mars">
+      <div class="station-card-head">
+        <span class="station-card-name">MARS // ARCADIA</span>
+        <span class="station-card-status" id="drift-status-mars">NOMINAL</span>
+      </div>
+      <div class="station-card-focus">Orbital Shipyards & Foundries</div>
+      <div class="station-card-drift">
+        <span style="color: var(--text-dim);">FRAG DRIFT</span>
+        <span id="drift-val-mars" style="color: var(--text);">0.0%</span>
+      </div>
+    </div>
+
+    <div class="station-card" id="station-card-luna">
+      <div class="station-card-head">
+        <span class="station-card-name">LUNA // SHACKLETON</span>
+        <span class="station-card-status" id="drift-status-luna">NOMINAL</span>
+      </div>
+      <div class="station-card-focus">He-3 Collectors / Lunar Rim</div>
+      <div class="station-card-drift">
+        <span style="color: var(--text-dim);">FUEL DRIFT</span>
+        <span id="drift-val-luna" style="color: var(--text);">0.0%</span>
+      </div>
+    </div>
+
+    <div class="station-card" id="station-card-earth">
+      <div class="station-card-head">
+        <span class="station-card-name">EARTH // LEO ORBIT</span>
+        <span class="station-card-status" id="drift-status-earth">NOMINAL</span>
+      </div>
+      <div class="station-card-focus">Orbital Defense / Salvage Depot</div>
+      <div class="station-card-drift">
+        <span style="color: var(--text-dim);">FRAG DRIFT</span>
+        <span id="drift-val-earth" style="color: var(--text);">0.0%</span>
+      </div>
+    </div>
+  </div>
 
   <!-- Section 1: Live Mark-to-Market Leaderboard -->
   <section id="leaderboard-section">
@@ -722,6 +907,23 @@
           tapeFeedEl.innerHTML = recent.map(t => {
             const isTrade = t.kind === "trade";
             const p = t.payload || {};
+
+            if (t.kind === "news") {
+              const headline = p.headline || "BREAKING NEWS";
+              const st = (p.station_id || "").toUpperCase();
+              const comm = (p.commodity || "").toUpperCase();
+              return `
+                <div class="tape-row" style="border-left: 2px solid var(--amber); background: rgba(255, 184, 52, 0.06);">
+                  <div>
+                    <span class="badge-seq">#${t.seq || 0}</span>
+                    <span style="font-weight: bold; margin-left: 6px; color: var(--amber);">WIRE</span>
+                    <span style="margin-left: 8px; color: #fff;">[${st} // ${comm}] ${headline}</span>
+                  </div>
+                  <div style="font-size: 0.75rem; color: var(--amber);">GALNET</div>
+                </div>
+              `;
+            }
+
             const tagClass = isTrade ? "trade" : "order";
             const tagLabel = isTrade ? "FILL" : "RESTING";
             const price = p.price !== undefined ? p.price : (p.limit_price !== undefined ? p.limit_price : 0);
@@ -747,12 +949,74 @@
     }
   }
 
+  async function pollGalnetFeed() {
+    const wireEl = document.getElementById("galnet-wire-text");
+    try {
+      let res = await fetch("/galnet/events", { cache: "no-store" }).catch(() => null);
+      if (!res || !res.ok) {
+        res = await fetch("https://agora-banana-production.up.railway.app/galnet/events", { cache: "no-store" }).catch(() => null);
+      }
+      if (res && res.ok) {
+        const data = await res.json();
+        const activeShocks = data.active_shocks || [];
+        const feed = data.feed || [];
+
+        if (feed.length > 0 && wireEl) {
+          const latest = feed[0];
+          const biasVal = Math.abs(Math.round((latest.drift_bias || 0) * 100));
+          const sign = (latest.drift_bias || 0) > 0 ? `+${biasVal}%` : `-${biasVal}%`;
+          const biasClass = (latest.drift_bias || 0) > 0 ? "bias-pos" : "bias-neg";
+          wireEl.innerHTML = `
+            <span class="meta">[ROUND #${latest.round || 1} // ${(latest.station_id || '').toUpperCase()} // ${(latest.commodity || '').toUpperCase()}]</span>
+            <strong>${latest.headline}</strong> &mdash; 
+            <span>${latest.body}</span>
+            <span class="${biasClass}">(${sign} Drift Bias)</span>
+          `;
+        }
+
+        const stations = ["ceres", "mars", "luna", "earth"];
+        stations.forEach(st => {
+          const stShocks = activeShocks.filter(s => s.station_id === st);
+          const valEl = document.getElementById(`drift-val-${st}`);
+          const statusEl = document.getElementById(`drift-status-${st}`);
+          if (valEl && statusEl) {
+            if (stShocks.length > 0) {
+              const netBias = stShocks.reduce((acc, s) => acc + (s.drift_bias || 0), 0);
+              const pct = Math.abs(Math.round(netBias * 100));
+              const sign = netBias > 0 ? `+${pct}%` : `-${pct}%`;
+              valEl.textContent = sign;
+              valEl.style.color = netBias > 0 ? "var(--green)" : "var(--red)";
+              valEl.style.fontWeight = "bold";
+              statusEl.textContent = "SHOCK ACTIVE";
+              statusEl.style.color = "var(--amber)";
+              statusEl.style.borderColor = "var(--amber)";
+              statusEl.style.background = "rgba(255, 184, 52, 0.12)";
+            } else {
+              valEl.textContent = "0.0%";
+              valEl.style.color = "var(--text)";
+              valEl.style.fontWeight = "normal";
+              statusEl.textContent = "NOMINAL";
+              statusEl.style.color = "var(--cyan)";
+              statusEl.style.borderColor = "rgba(92, 225, 230, 0.2)";
+              statusEl.style.background = "rgba(92, 225, 230, 0.08)";
+            }
+          }
+        });
+      }
+    } catch (e) {
+      console.warn("GalNet telemetry error:", e);
+    }
+  }
+
   // Initial poll and scheduling
   pollLeaderboard();
   setInterval(pollLeaderboard, 8000);
 
   pollBookAndTape();
   setInterval(pollBookAndTape, 6000);
+
+  pollGalnetFeed();
+  setInterval(pollGalnetFeed, 4000);
 </script>
 
 </body>
