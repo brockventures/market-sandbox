@@ -398,6 +398,18 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
         query_params = urllib.parse.parse_qs(parsed_url.query)
         ref = self.referee or AgoraReferee()
 
+        if path in ('', '/terminal', '/terminal.html'):
+            terminal_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'public', 'terminal.html')
+            if os.path.exists(terminal_path):
+                with open(terminal_path, 'rb') as f:
+                    content = f.read()
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.send_header('Content-Length', str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+                return
+
         if path == '/referee/health':
             valid, errors = ref.verify_ledger_invariants()
             status_code = 200 if valid else 500

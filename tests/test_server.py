@@ -592,6 +592,19 @@ class TestAgoraServer(unittest.TestCase):
         self.assertTrue(data['invariants_valid'])
         self.assertEqual(len(data['errors']), 0)
 
+    def test_terminal_hud_endpoint(self):
+        """Verify root and /terminal serve public/terminal.html."""
+        url = f"{self.base_url}/terminal"
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertIn('text/html', resp.headers.get('Content-Type', ''))
+            body = resp.read().decode('utf-8')
+            self.assertIn('Sol System // Orbital Orrery &amp; Transit Radar', body)
+            self.assertIn('LIQUIDITY DEPTH MOUNTAINS', body)
+            self.assertIn('drawDepthMountain', body)
+            self.assertIn('initOrbitalRadar', body)
+
 
 if __name__ == '__main__':
     unittest.main()
