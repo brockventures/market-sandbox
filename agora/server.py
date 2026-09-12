@@ -344,6 +344,86 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             self._send_json(200, result)
             return
 
+        if path == '/equity/borrow':
+            auth_agent, auth_err = self._authenticate_request()
+            if auth_err:
+                self._send_json(401, auth_err)
+                return
+
+            content_length = int(self.headers.get('Content-Length', 0))
+            if content_length == 0:
+                self._send_json(400, {'ok': False, 'reason': 'invalid_format', 'detail': 'Empty request body'})
+                return
+
+            try:
+                body = self.rfile.read(content_length)
+                payload = json.loads(body.decode('utf-8'))
+            except Exception as e:
+                self._send_json(400, {'ok': False, 'reason': 'invalid_format', 'detail': f'Malformed JSON: {e}'})
+                return
+
+            claimed_agent = payload.get('borrower_id', payload.get('agent_id'))
+            if auth_agent != 'admin' and claimed_agent and claimed_agent != auth_agent:
+                self._send_json(403, {'ok': False, 'reason': 'unauthorized', 'detail': f"Authenticated as '{auth_agent}', but payload claims '{claimed_agent}'"})
+                return
+
+            target_agent = auth_agent if auth_agent != 'admin' else (claimed_agent or auth_agent)
+            equity_symbol = payload.get('equity_symbol')
+            shares = payload.get('shares', 0)
+            collateral_cr = payload.get('collateral_cr')
+            lender_id = payload.get('lender_id')
+
+            ref = self.referee or AgoraReferee()
+            result = ref.borrow_equity(
+                borrower_id=target_agent,
+                equity_symbol=equity_symbol,
+                shares=shares,
+                collateral_cr=collateral_cr,
+                lender_id=lender_id
+            )
+            if not result.get('ok'):
+                self._send_json(400, result)
+            else:
+                self._send_json(200, result)
+            return
+
+        if path == '/equity/return':
+            auth_agent, auth_err = self._authenticate_request()
+            if auth_err:
+                self._send_json(401, auth_err)
+                return
+
+            content_length = int(self.headers.get('Content-Length', 0))
+            if content_length == 0:
+                self._send_json(400, {'ok': False, 'reason': 'invalid_format', 'detail': 'Empty request body'})
+                return
+
+            try:
+                body = self.rfile.read(content_length)
+                payload = json.loads(body.decode('utf-8'))
+            except Exception as e:
+                self._send_json(400, {'ok': False, 'reason': 'invalid_format', 'detail': f'Malformed JSON: {e}'})
+                return
+
+            claimed_agent = payload.get('borrower_id', payload.get('agent_id'))
+            if auth_agent != 'admin' and claimed_agent and claimed_agent != auth_agent:
+                self._send_json(403, {'ok': False, 'reason': 'unauthorized', 'detail': f"Authenticated as '{auth_agent}', but payload claims '{claimed_agent}'"})
+                return
+
+            target_agent = auth_agent if auth_agent != 'admin' else (claimed_agent or auth_agent)
+            loan_id = payload.get('loan_id')
+
+            ref = self.referee or AgoraReferee()
+            result = ref.return_equity_loan(
+                borrower_id=target_agent,
+                loan_id=loan_id
+            )
+            if not result.get('ok'):
+                self._send_json(400, result)
+            else:
+                self._send_json(200, result)
+            return
+
         if path != '/referee/orders':
             self._send_json(404, {'error': 'not_found', 'path': self.path})
             return
@@ -522,7 +602,11 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                     'station_routes': 'GET /stations/routes?origin=ceres&destination=mars',
                     'station_locations': 'GET /stations/locations',
                     'station_transit': 'POST /stations/transit (auth required)',
-                    'station_step_round': 'POST /stations/step_round'
+                    'station_step_round': 'POST /stations/step_round',
+                    'equity_summary': 'GET /equity/summary',
+                    'equity_loans': 'GET /equity/loans?borrower_id=&lender_id=',
+                    'equity_borrow': 'POST /equity/borrow (auth required)',
+                    'equity_return': 'POST /equity/return (auth required)'
                 },
                 'rules': [
                     '1. Round Bell: Every 5 minutes, Agora Trade Terminal pings @robot (<@&1543462881624858624>) in #the-banana-stand.',
@@ -621,6 +705,18 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                     'status': 'ok',
                     'locations': locs
                 })
+        elif path == '/equity/summary':
+            self._send_json(200, {
+                'status': 'ok',
+                'equities': ref.get_equity_summary()
+            })
+        elif path == '/equity/loans':
+            b_id = query_params.get('borrower_id', [None])[0]
+            l_id = query_params.get('lender_id', [None])[0]
+            self._send_json(200, {
+                'status': 'ok',
+                'loans': ref.get_equity_loans(borrower_id=b_id, lender_id=l_id)
+            })
         else:
             self._send_json(404, {'error': 'not_found', 'path': self.path})
 

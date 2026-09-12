@@ -605,6 +605,66 @@ class TestAgoraServer(unittest.TestCase):
             self.assertIn('drawDepthMountain', body)
             self.assertIn('initOrbitalRadar', body)
 
+    def test_18_equity_endpoints_and_borrow_flow(self):
+        """Integration test for /equity/summary, /equity/loans, /equity/borrow, and /equity/return."""
+        # 1. Verify summary endpoint
+        status, data = self._get('/equity/summary')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['status'], 'ok')
+        self.assertIn('EQ_AMOS', data['equities'])
+        self.assertIn('EQ_MARV', data['equities'])
+        self.assertIn('EQ_ZERO', data['equities'])
+
+        # 2. Unauthenticated borrow fails
+        status, data = self._post('/equity/borrow', {
+            'equity_symbol': 'EQ_AMOS',
+            'shares': 50,
+            'collateral_cr': 1200
+        })
+        self.assertEqual(status, 401)
+
+        # 3. Self-short fails
+        status, data = self._post('/equity/borrow', {
+            'equity_symbol': 'EQ_AMOS',
+            'shares': 50,
+            'collateral_cr': 1200
+        }, token='tok-amos')
+        self.assertEqual(status, 400)
+        self.assertEqual(data['reason'], 'self_short_prohibited')
+
+        # 4. Valid borrow: zero shorts EQ_AMOS
+        status, data = self._post('/equity/borrow', {
+            'equity_symbol': 'EQ_AMOS',
+            'shares': 50,
+            'collateral_cr': 2700,
+            'lender_id': 'amos'
+        }, token='tok-zero')
+        self.assertEqual(status, 200)
+        self.assertTrue(data['ok'])
+        loan_id = data['loan_id']
+
+        # 5. Verify active loans endpoint
+        status, data = self._get('/equity/loans?borrower_id=zero')
+        self.assertEqual(status, 200)
+        self.assertEqual(len(data['loans']), 1)
+        self.assertEqual(data['loans'][0]['loan_id'], loan_id)
+        self.assertEqual(data['loans'][0]['status'], 'active')
+
+        # 6. Return loan
+        status, data = self._post('/equity/return', {
+            'loan_id': loan_id
+        }, token='tok-zero')
+        self.assertEqual(status, 200)
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['shares_returned'], 50)
+        self.assertEqual(data['collateral_released'], 2700)
+
+        # 7. Verify standing invariants hold completely
+        status, data = self._get('/referee/health')
+        self.assertEqual(status, 200)
+        self.assertTrue(data['invariants_valid'])
+        self.assertEqual(len(data['errors']), 0)
+
 
 if __name__ == '__main__':
     unittest.main()

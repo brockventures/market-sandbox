@@ -841,6 +841,9 @@
       <div class="tab-group" id="commodity-tab-group">
         <button class="tab-btn active amber" data-commodity="FRAG" onclick="selectCommodity('FRAG')">FRAG (SCRAP)</button>
         <button class="tab-btn amber" data-commodity="FUEL" onclick="selectCommodity('FUEL')">FUEL (CRYOPROP)</button>
+        <button class="tab-btn amber" data-commodity="EQ_AMOS" onclick="selectCommodity('EQ_AMOS')">EQ_AMOS</button>
+        <button class="tab-btn amber" data-commodity="EQ_MARV" onclick="selectCommodity('EQ_MARV')">EQ_MARV</button>
+        <button class="tab-btn amber" data-commodity="EQ_ZERO" onclick="selectCommodity('EQ_ZERO')">EQ_ZERO</button>
       </div>
     </div>
 
@@ -908,6 +911,95 @@
         <div class="tape-feed" id="tape-feed-body">
           <div style="color: var(--text-dim); text-align: center; padding: 20px;">Connecting to telemetry stream...</div>
         </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Section 4: Corporate Warfare // Syndicate Equities & Bilateral Borrow Desk -->
+  <section id="corporate-warfare-section" style="margin-top: 32px;">
+    <h2>Corporate Warfare // Syndicate Equities &amp; Bilateral Borrow Desk</h2>
+    <p class="subhead">
+      Tradeable synthetic fleet shares (<span class="code-kw">GET /equity/summary</span>), bilateral stock loans for opponent short-selling (<span class="code-kw">POST /equity/borrow</span>), and round-by-round borrow fee accruals.
+    </p>
+
+    <!-- Equity Overview Cards Grid -->
+    <div class="station-grid" id="equity-cards-grid" style="margin-bottom: 16px;">
+      <!-- EQ_AMOS -->
+      <div class="station-card" id="equity-card-amos">
+        <div class="station-card-head">
+          <span class="station-card-name">EQ_AMOS // FIRST SOLVENCY</span>
+          <span class="station-card-status" id="eq-status-amos">NAV: 20.0 CR</span>
+        </div>
+        <div class="station-card-body">
+          <span style="color: var(--text-dim);">SPOT PRICE</span>
+          <span id="eq-price-amos" style="color: var(--green); font-weight: bold;">20.0 CR</span>
+        </div>
+        <div class="station-card-prices" style="border-top: 1px solid var(--line); padding-top: 8px;">
+          <span>SHORT INT: <strong id="eq-short-amos" style="color: var(--amber);">0.0%</strong></span>
+          <span>BORROW: <strong style="color: var(--cyan);">2.0%/rnd</strong></span>
+        </div>
+      </div>
+
+      <!-- EQ_MARV -->
+      <div class="station-card" id="equity-card-marvin">
+        <div class="station-card-head">
+          <span class="station-card-name">EQ_MARV // BALLISTIC LIQ</span>
+          <span class="station-card-status" id="eq-status-marvin">NAV: 20.0 CR</span>
+        </div>
+        <div class="station-card-body">
+          <span style="color: var(--text-dim);">SPOT PRICE</span>
+          <span id="eq-price-marvin" style="color: var(--green); font-weight: bold;">20.0 CR</span>
+        </div>
+        <div class="station-card-prices" style="border-top: 1px solid var(--line); padding-top: 8px;">
+          <span>SHORT INT: <strong id="eq-short-marvin" style="color: var(--amber);">0.0%</strong></span>
+          <span>BORROW: <strong style="color: var(--cyan);">2.0%/rnd</strong></span>
+        </div>
+      </div>
+
+      <!-- EQ_ZERO -->
+      <div class="station-card" id="equity-card-zero">
+        <div class="station-card-head">
+          <span class="station-card-name">EQ_ZERO // APEX VECTOR</span>
+          <span class="station-card-status" id="eq-status-zero">NAV: 20.0 CR</span>
+        </div>
+        <div class="station-card-body">
+          <span style="color: var(--text-dim);">SPOT PRICE</span>
+          <span id="eq-price-zero" style="color: var(--green); font-weight: bold;">20.0 CR</span>
+        </div>
+        <div class="station-card-prices" style="border-top: 1px solid var(--line); padding-top: 8px;">
+          <span>SHORT INT: <strong id="eq-short-zero" style="color: var(--amber);">0.0%</strong></span>
+          <span>BORROW: <strong style="color: var(--cyan);">2.0%/rnd</strong></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Active Bilateral Loan & Short Manifest -->
+    <div class="terminal-card">
+      <div class="terminal-card-meta">
+        <div class="telemetry-indicator amber">
+          <span class="pulse-node amber"></span>
+          <span>BILATERAL STOCK LOAN DESK // ACTIVE CORPORATE SHORTS</span>
+        </div>
+        <span style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim);" id="loan-desk-status">DESK: LIVE</span>
+      </div>
+
+      <div style="overflow-x: auto;">
+        <table class="manifest-table">
+          <thead>
+            <tr>
+              <th>Loan ID</th>
+              <th>Short Seller (Borrower)</th>
+              <th>Syndicate Lender</th>
+              <th>Borrowed Equity</th>
+              <th>Escrowed Collateral</th>
+              <th>Fee Rate</th>
+              <th>Loan Status</th>
+            </tr>
+          </thead>
+          <tbody id="equity-loans-tbody">
+            <tr><td colspan="7" style="color: var(--text-dim); text-align: center; padding: 14px;">No active corporate shorts. Fleets fully capitalized.</td></tr>
+          </tbody>
+        </table>
       </div>
     </div>
   </section>
@@ -1763,6 +1855,68 @@
     requestAnimationFrame(render);
   }
 
+  async function pollEquityTelemetry() {
+    try {
+      let sRes = await fetch("/equity/summary", { cache: "no-store" }).catch(() => null);
+      if (!sRes || !sRes.ok) {
+        sRes = await fetch("https://agora-banana-production.up.railway.app/equity/summary", { cache: "no-store" }).catch(() => null);
+      }
+      if (sRes && sRes.ok) {
+        const sData = await sRes.json();
+        const eq = sData.equities || {};
+
+        for (const [sym, data] of Object.entries(eq)) {
+          const agentId = data.issuer_agent_id;
+          const priceEl = document.getElementById(`eq-price-${agentId}`);
+          const statusEl = document.getElementById(`eq-status-${agentId}`);
+          const shortEl = document.getElementById(`eq-short-${agentId}`);
+          if (priceEl && data.spot_price !== undefined) priceEl.textContent = `${Number(data.spot_price).toFixed(1)} CR`;
+          if (statusEl && data.nav_per_share !== undefined) statusEl.textContent = `NAV: ${Number(data.nav_per_share).toFixed(1)} CR`;
+          if (shortEl && data.short_interest_pct !== undefined) shortEl.textContent = `${data.short_interest_pct}%`;
+        }
+      }
+    } catch (e) {
+      console.warn("Equity summary poll error:", e);
+    }
+
+    try {
+      let lRes = await fetch("/equity/loans", { cache: "no-store" }).catch(() => null);
+      if (!lRes || !lRes.ok) {
+        lRes = await fetch("https://agora-banana-production.up.railway.app/equity/loans", { cache: "no-store" }).catch(() => null);
+      }
+      if (lRes && lRes.ok) {
+        const lData = await lRes.json();
+        const loans = lData.loans || [];
+        const tbody = document.getElementById("equity-loans-tbody");
+        if (tbody) {
+          if (loans.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="7" style="color: var(--text-dim); text-align: center; padding: 14px;">No active corporate shorts. Fleets fully capitalized.</td></tr>`;
+          } else {
+            tbody.innerHTML = loans.map(ln => {
+              const isLiq = ln.status === 'liquidated';
+              const statusClass = isLiq ? 'status-tag neg' : 'status-tag active';
+              const statusLabel = isLiq ? 'LIQUIDATED' : (ln.status === 'closed' ? 'CLOSED' : 'SHORT ACTIVE');
+              const feePct = Math.round((ln.fee_rate || 0.02) * 100);
+              return `
+                <tr>
+                  <td style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--amber);">${(ln.loan_id || '').slice(0, 14)}</td>
+                  <td style="font-weight: bold; color: #fff;">${(ln.borrower_id || '').toUpperCase()}</td>
+                  <td style="color: var(--cyan);">${(ln.lender_id || '').toUpperCase()}</td>
+                  <td style="color: var(--green); font-weight: bold;">${ln.shares} shs ${ln.equity_symbol}</td>
+                  <td style="color: var(--amber);">${Number(ln.collateral_cr || 0).toLocaleString()} CR</td>
+                  <td style="font-size: 0.75rem; color: var(--text-dim);">${feePct}.0%/rnd</td>
+                  <td><span class="${statusClass}" style="font-size: 0.7rem;">${statusLabel}</span></td>
+                </tr>
+              `;
+            }).join("");
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Equity loans poll error:", e);
+    }
+  }
+
   // Initial poll and scheduling
   pollLeaderboard();
   setInterval(pollLeaderboard, 8000);
@@ -1775,6 +1929,9 @@
 
   pollStationsTelemetry();
   setInterval(pollStationsTelemetry, 4000);
+
+  pollEquityTelemetry();
+  setInterval(pollEquityTelemetry, 5000);
 
   initOrbitalRadar();
 </script>

@@ -14,6 +14,10 @@ from pathlib import Path
 from agora.order_book import OrderBook, Order, Trade
 from agora.galnet import GalNetEngine
 from agora.spatial import StationPriceEngine, STATIONS, COMMODITIES, BASE_PRICES, get_route, ROUTES
+from agora.equity import (
+    SyndicateEquityEngine, FLEET_EQUITIES, EQUITY_SYMBOLS,
+    AGENT_BY_SYMBOL, DEFAULT_BORROW_FEE_RATE
+)
 
 
 class AgoraReferee:
@@ -29,13 +33,14 @@ class AgoraReferee:
         self.last_price: Optional[int] = None
         self.last_qty: Optional[int] = None
         self.floor: str = 'open'
-        # Multi-station order books across Sol nodes
+        # Multi-station order books across Sol nodes, supporting commodities and equities
         self.books: Dict[str, Dict[str, OrderBook]] = {
-            st: {comm: OrderBook(instrument=comm) for comm in ('FRAG', 'BANANA', 'FUEL')}
+            st: {comm: OrderBook(instrument=comm) for comm in ('FRAG', 'BANANA', 'FUEL', *EQUITY_SYMBOLS)}
             for st in STATIONS
         }
         self.book = self.books['ceres'][self.default_instrument if self.default_instrument in self.books['ceres'] else 'FRAG']
         self._init_db()
+        self.equity = SyndicateEquityEngine(self.conn, self)
 
     def _init_db(self):
         """Load schema and genesis seed if database is uninitialized, and rehydrate book from open orders."""
@@ -99,17 +104,17 @@ class AgoraReferee:
                         )
                     """)
 
-                # Migration: book_events.kind CHECK constraint pre-dated 'cancel', 'news', 'transit' support
+                # Migration: book_events.kind CHECK constraint pre-dated 'cancel', 'news', 'transit', 'borrow' support
                 if 'book_events' in tables:
                     row = self.conn.execute(
                         "SELECT sql FROM sqlite_master WHERE type='table' AND name='book_events'"
                     ).fetchone()
                     existing_sql = row[0] if row else ''
-                    if existing_sql and ("'cancel'" not in existing_sql or "'news'" not in existing_sql or "'transit'" not in existing_sql):
+                    if existing_sql and ("'borrow'" not in existing_sql or "'cancel'" not in existing_sql or "'news'" not in existing_sql or "'transit'" not in existing_sql):
                         self.conn.executescript("""
                             CREATE TABLE book_events_new (
                                 seq         INTEGER PRIMARY KEY,
-                                kind        TEXT NOT NULL CHECK (kind IN ('order','trade','floor_open','floor_close','cancel','news','transit','transit_arrived')),
+                                kind        TEXT NOT NULL CHECK (kind IN ('order','trade','floor_open','floor_close','cancel','news','transit','transit_arrived','borrow','loan_closed','liquidation')),
                                 payload     TEXT NOT NULL,
                                 created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
                             );
@@ -142,6 +147,40 @@ class AgoraReferee:
                         ('genesis-fuel', 0, 'marvin', 'FUEL', 500),
                         ('genesis-fuel', 0, 'zero', 'FUEL', 500)
                     """)
+
+            # Ensure equity_loans table exists unconditionally
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS equity_loans (
+                    loan_id         TEXT PRIMARY KEY,
+                    borrower_id     TEXT NOT NULL,
+                    lender_id       TEXT NOT NULL,
+                    equity_symbol   TEXT NOT NULL,
+                    shares          INTEGER NOT NULL,
+                    collateral_cr   INTEGER NOT NULL,
+                    fee_rate        REAL NOT NULL DEFAULT 0.02,
+                    start_round     INTEGER NOT NULL,
+                    status          TEXT NOT NULL CHECK (status IN ('active', 'closed', 'liquidated')),
+                    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                    closed_at       TEXT
+                )
+            """)
+
+            # Ensure genesis syndicate equities exist unconditionally
+            equity_rows = self.conn.execute("SELECT agent_id FROM accounts WHERE instrument LIKE 'EQ_%'").fetchall()
+            if not equity_rows:
+                for issuer_id, conf in FLEET_EQUITIES.items():
+                    sym = conf["symbol"]
+                    total_shares = conf["total_shares"]
+                    self.conn.execute("""
+                        INSERT INTO accounts (agent_id, instrument, balance) VALUES
+                        ('SYSTEM', ?, ?),
+                        (?, ?, ?)
+                    """, (sym, -total_shares, issuer_id, sym, total_shares))
+                    self.conn.execute("""
+                        INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES
+                        (?, 0, 'SYSTEM', ?, ?),
+                        (?, 0, ?, ?, ?)
+                    """, (f"genesis-{sym.lower()}", sym, -total_shares, f"genesis-{sym.lower()}", issuer_id, sym, total_shares))
 
             if 'orders' in tables or 'accounts' not in tables:
                 if not self.default_instrument:
@@ -195,6 +234,9 @@ class AgoraReferee:
         cur.execute("SELECT COALESCE(MAX(seq), 0) FROM book_events")
         row = cur.fetchone()
         return row[0] if row else 0
+
+    def _get_next_seq(self) -> int:
+        return self.current_seq + 1
 
     def set_floor(self, state: str) -> str:
         with self.lock:
@@ -553,12 +595,40 @@ class AgoraReferee:
                     self.conn.execute("INSERT INTO book_events (seq, kind, payload) VALUES (?, 'transit_arrived', ?)", (next_seq, json.dumps(arrival_payload)))
                     arrived_list.append(arrival_payload)
 
+            # Distribute bilateral borrow fees & audit maintenance margin
+            borrow_fee_reports = self.equity.step_borrow_fees(new_round)
+
             return {
                 'status': 'ok',
                 'round': new_round,
                 'prices': self.spatial.get_prices(),
-                'arrived_transits': arrived_list
+                'arrived_transits': arrived_list,
+                'borrow_fee_reports': borrow_fee_reports
             }
+
+    def get_equity_summary(self) -> Dict[str, Any]:
+        """Returns market cap, NAV, and short interest for all fleet equities."""
+        return self.equity.get_equity_summary()
+
+    def get_equity_loans(self, borrower_id: Optional[str] = None, lender_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Returns active equity loans."""
+        return self.equity.get_active_loans(borrower_id=borrower_id, lender_id=lender_id)
+
+    def borrow_equity(self, borrower_id: str, equity_symbol: str, shares: int, collateral_cr: Optional[int] = None, lender_id: Optional[str] = None) -> Dict[str, Any]:
+        """Executes a bilateral stock loan for short-selling."""
+        with self.lock:
+            return self.equity.initiate_loan(
+                borrower_id=borrower_id,
+                equity_symbol=equity_symbol,
+                shares=shares,
+                collateral_cr=collateral_cr,
+                lender_id=lender_id
+            )
+
+    def return_equity_loan(self, borrower_id: str, loan_id: str) -> Dict[str, Any]:
+        """Returns borrowed shares to lender and unlocks escrowed collateral."""
+        with self.lock:
+            return self.equity.return_loan(borrower_id=borrower_id, loan_id=loan_id)
 
     def get_ticks(self, since_seq: int = 0) -> List[Dict[str, Any]]:
         cur = self.conn.cursor()
@@ -643,8 +713,8 @@ class AgoraReferee:
         if not all([order_id, agent_id, instrument, side, qty is not None, limit_price is not None]):
             return self._reject_envelope(order_id or 'unknown', agent_id or 'unknown', 'invalid_format', 'Missing required order fields')
 
-        if instrument not in ('FRAG', 'BANANA', 'FUEL'):
-            return self._reject_envelope(order_id, agent_id, 'invalid_format', f"Unsupported instrument: {instrument}")
+        if instrument not in ('FRAG', 'BANANA', 'FUEL') and instrument not in EQUITY_SYMBOLS:
+            return self._reject_envelope(order_id or 'unknown', agent_id or 'unknown', 'invalid_format', f"Unsupported instrument: {instrument}")
 
         if side not in ('bid', 'ask'):
             return self._reject_envelope(order_id, agent_id, 'invalid_format', f"Invalid side: {side}")
@@ -854,6 +924,10 @@ class AgoraReferee:
                     if cur.rowcount != 1:
                         raise RuntimeError(f"Failed to credit {trade.seller_id} {trade_currency}: rowcount {cur.rowcount} != 1")
 
+                    self.conn.execute(
+                        "INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, ?, 0)",
+                        (trade.buyer_id, commodity_inst)
+                    )
                     cur = self.conn.execute(
                         "UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?",
                         (trade.qty, trade.buyer_id, commodity_inst)
