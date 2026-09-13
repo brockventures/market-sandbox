@@ -1,0 +1,620 @@
+{
+  "round": 42,
+  "timestamp": "2026-09-12T17:55:00-07:00",
+  "leaderboard": [
+    {
+      "agent_id": "zero",
+      "syndicate": "Apex Vector Arbitrage",
+      "net_worth": 38450,
+      "liquid": 18450,
+      "frags": 1250,
+      "fuel": 320,
+      "mark_price": 16.0,
+      "pnl": "+34.2%"
+    },
+    {
+      "agent_id": "amos",
+      "syndicate": "First Solvency Combine",
+      "net_worth": 31200,
+      "liquid": 14200,
+      "frags": 980,
+      "fuel": 450,
+      "mark_price": 17.3,
+      "pnl": "+18.5%"
+    },
+    {
+      "agent_id": "aerial",
+      "syndicate": "Zenith Drift Overwatch",
+      "net_worth": 24800,
+      "liquid": 12800,
+      "frags": 750,
+      "fuel": 280,
+      "mark_price": 16.0,
+      "pnl": "+6.1%"
+    },
+    {
+      "agent_id": "marvin",
+      "syndicate": "Ballistic Liquidation Co.",
+      "net_worth": 16500,
+      "liquid": 5500,
+      "frags": 1100,
+      "fuel": 0,
+      "mark_price": 10.0,
+      "pnl": "-12.4%"
+    }
+  ],
+  "prices": {
+    "ceres": {
+      "frag": {
+        "bid": 145.0,
+        "ask": 152.0,
+        "last": 148.0,
+        "spread": 7.0
+      },
+      "fuel": {
+        "bid": 58.0,
+        "ask": 64.0,
+        "last": 60.0,
+        "spread": 6.0
+      }
+    },
+    "mars": {
+      "frag": {
+        "bid": 120.0,
+        "ask": 126.0,
+        "last": 122.5,
+        "spread": 6.0
+      },
+      "fuel": {
+        "bid": 44.0,
+        "ask": 48.0,
+        "last": 46.0,
+        "spread": 4.0
+      }
+    },
+    "luna": {
+      "frag": {
+        "bid": 102.0,
+        "ask": 106.0,
+        "last": 104.0,
+        "spread": 4.0
+      },
+      "fuel": {
+        "bid": 33.0,
+        "ask": 36.0,
+        "last": 34.5,
+        "spread": 3.0
+      }
+    },
+    "earth": {
+      "frag": {
+        "bid": 95.0,
+        "ask": 99.0,
+        "last": 97.0,
+        "spread": 4.0
+      },
+      "fuel": {
+        "bid": 26.0,
+        "ask": 28.5,
+        "last": 27.0,
+        "spread": 2.5
+      }
+    }
+  },
+  "fleet_locations": [
+    {
+      "agent_id": "zero",
+      "status": "in_transit",
+      "transit": {
+        "origin": "earth",
+        "destination": "ceres",
+        "departure_round": 40,
+        "arrival_round": 43,
+        "commodity": "FUEL",
+        "cargo_qty": 400
+      }
+    },
+    {
+      "agent_id": "amos",
+      "status": "in_transit",
+      "transit": {
+        "origin": "luna",
+        "destination": "mars",
+        "departure_round": 41,
+        "arrival_round": 42,
+        "commodity": "FRAG",
+        "cargo_qty": 250
+      }
+    },
+    {
+      "agent_id": "aerial",
+      "status": "in_transit",
+      "transit": {
+        "origin": "mars",
+        "destination": "ceres",
+        "departure_round": 40,
+        "arrival_round": 44,
+        "commodity": "FRAG",
+        "cargo_qty": 180
+      }
+    },
+    {
+      "agent_id": "marvin",
+      "status": "docked",
+      "station": "ceres"
+    },
+    {
+      "agent_id": "zero",
+      "status": "docked",
+      "station": "earth"
+    },
+    {
+      "agent_id": "amos",
+      "status": "docked",
+      "station": "luna"
+    },
+    {
+      "agent_id": "aerial",
+      "status": "docked",
+      "station": "mars"
+    }
+  ],
+  "orbital_windows": [
+    {
+      "id": "mars_ceres_syzygy",
+      "name": "MARS-CERES SYZYGY RUSH",
+      "description": "Optimal orbital alignment window between Arcadia Planitia and Ceres Anchorage.",
+      "is_active": true,
+      "rounds_remaining": 4,
+      "rounds_until_next": 0,
+      "routes": [
+        [
+          "mars",
+          "ceres"
+        ]
+      ],
+      "fuel_reduction_pct": 0.33
+    },
+    {
+      "id": "earth_mars_transfer",
+      "name": "EARTH-MARS HOHMANN WINDOW",
+      "description": "Inner-system corridor alignment window.",
+      "is_active": false,
+      "rounds_remaining": 0,
+      "rounds_until_next": 8,
+      "routes": [
+        [
+          "earth",
+          "mars"
+        ]
+      ],
+      "fuel_reduction_pct": 0.25
+    }
+  ],
+  "distress_beacons": [
+    {
+      "beacon_id": "BCN-094",
+      "agent_id": "marvin",
+      "location": "ceres_earth",
+      "status": "active",
+      "cargo_bounty": {
+        "FRAG": 320,
+        "SCRAP": 85
+      },
+      "reason": "Reaction mass depletion / dead stick in Kirkwood Gap"
+    },
+    {
+      "beacon_id": "WRK-104",
+      "agent_id": "npc_derelict",
+      "location": "ceres",
+      "status": "active",
+      "cargo_bounty": {
+        "FRAG": 550
+      },
+      "reason": "Unmanned Atlas debris barge drifting unpowered"
+    }
+  ],
+  "salvage_rfqs": [
+    {
+      "rfq_id": "RFQ-042",
+      "beacon_id": "BCN-094",
+      "distressed_agent": "marvin",
+      "fuel_needed": 80,
+      "max_escrow_cr": 4500,
+      "status": "open",
+      "rounds_left": 3,
+      "quotes": [
+        {
+          "agent_id": "zero",
+          "fuel_offered": 80,
+          "price_cr": 5200,
+          "eta_rounds": 1
+        }
+      ]
+    }
+  ],
+  "equities": {
+    "APEX": {
+      "issuer_agent_id": "zero",
+      "ticker": "APEX",
+      "share_price": 126.0,
+      "shares_outstanding": 100,
+      "market_cap": 12600,
+      "short_interest_pct": 14,
+      "status": "ACTIVE"
+    },
+    "SOLV": {
+      "issuer_agent_id": "amos",
+      "ticker": "SOLV",
+      "share_price": 105.0,
+      "shares_outstanding": 100,
+      "market_cap": 10500,
+      "short_interest_pct": 8,
+      "status": "ACTIVE"
+    },
+    "ZNTH": {
+      "issuer_agent_id": "aerial",
+      "ticker": "ZNTH",
+      "share_price": 84.0,
+      "shares_outstanding": 100,
+      "market_cap": 8400,
+      "short_interest_pct": 11,
+      "status": "ACTIVE"
+    },
+    "BAL": {
+      "issuer_agent_id": "marvin",
+      "ticker": "BAL",
+      "share_price": 61.0,
+      "shares_outstanding": 100,
+      "market_cap": 6100,
+      "short_interest_pct": 42,
+      "status": "DISTRESSED"
+    }
+  },
+  "loans": [
+    {
+      "loan_id": "LOAN-108",
+      "borrower_id": "zero",
+      "lender_id": "amos",
+      "ticker": "BAL",
+      "shares": 25,
+      "fee_pct": 12.5,
+      "collateral_cr": 2200,
+      "status": "ACTIVE"
+    }
+  ],
+  "circuit_breaker": {
+    "bands": [
+      {
+        "station_id": "ceres",
+        "instrument": "FRAG",
+        "reference_price": 148.0,
+        "upper_band": 175.0,
+        "lower_band": 125.0,
+        "status": "normal"
+      },
+      {
+        "station_id": "ceres",
+        "instrument": "FUEL",
+        "reference_price": 60.0,
+        "upper_band": 72.0,
+        "lower_band": 48.0,
+        "status": "halted"
+      },
+      {
+        "station_id": "mars",
+        "instrument": "FRAG",
+        "reference_price": 122.5,
+        "upper_band": 145.0,
+        "lower_band": 102.0,
+        "status": "normal"
+      },
+      {
+        "station_id": "luna",
+        "instrument": "FRAG",
+        "reference_price": 104.0,
+        "upper_band": 122.0,
+        "lower_band": 88.0,
+        "status": "normal"
+      },
+      {
+        "station_id": "earth",
+        "instrument": "FUEL",
+        "reference_price": 27.0,
+        "upper_band": 32.0,
+        "lower_band": 22.0,
+        "status": "normal"
+      }
+    ],
+    "halts": [
+      {
+        "station_id": "ceres",
+        "instrument": "FUEL",
+        "status": "halted",
+        "halt_reason": "Limit Up Breach (+24% drift spike)",
+        "cooldown_rounds": 2
+      }
+    ]
+  },
+  "galnet": {
+    "active_shocks": [
+      {
+        "station_id": "ceres",
+        "instrument": "FUEL",
+        "bias": 0.22,
+        "source": "Belt Pipe Rupture"
+      }
+    ],
+    "feed": [
+      {
+        "id": "GN-948",
+        "round": 42,
+        "headline": "Ceres Fuel Depot Pipe Rupture Sparks Supply Crunch",
+        "body": "A catastrophic pressure breach at Piazzi Anchorage has ruptured hydrogen transfer manifolds. Station authorities have enacted a 5-minute trading halt on FUEL requisitions.",
+        "drift_bias": 0.22,
+        "impact": "HIGH",
+        "target_station": "ceres",
+        "target_instrument": "FUEL"
+      },
+      {
+        "id": "GN-945",
+        "round": 40,
+        "headline": "Ballistic Liquidation Skiff Drops SOS Beacon in Kirkwood Gap",
+        "body": "Telemetry confirms vessel BLC-Havoc miscalculated its retrograde orbital burn and exhausted reaction mass. Life support reserves estimate 6 rounds of power remaining.",
+        "drift_bias": -0.08,
+        "impact": "MEDIUM",
+        "target_station": "ceres",
+        "target_instrument": "FRAG"
+      },
+      {
+        "id": "GN-942",
+        "round": 38,
+        "headline": "Mars-Ceres Hohmann Syzygy Corridor Opens",
+        "body": "Planetary alignment vectors align for optimal high-speed transit. Cargo hauler fuel requirements reduced by 33% across the orbital corridor.",
+        "drift_bias": 0.05,
+        "impact": "FAVORABLE",
+        "target_station": "mars",
+        "target_instrument": "ROUTE"
+      },
+      {
+        "id": "GN-939",
+        "round": 35,
+        "headline": "First Solvency Opens Bilateral Stock Loan Desk",
+        "body": "Amos (First Solvency) authorizes bilateral securities lending on syndicate corporate shares with a base 12.5% annualized borrow fee.",
+        "drift_bias": 0.0,
+        "impact": "NEUTRAL",
+        "target_station": "luna",
+        "target_instrument": "EQUITY"
+      }
+    ]
+  },
+  "order_books": {
+    "ceres_FRAG": {
+      "station_id": "ceres",
+      "instrument": "FRAG",
+      "seq": 4820,
+      "bids": [
+        [
+          145.0,
+          180,
+          "zero"
+        ],
+        [
+          144.0,
+          320,
+          "aerial"
+        ],
+        [
+          142.5,
+          450,
+          "amos"
+        ],
+        [
+          140.0,
+          600,
+          "market_maker"
+        ],
+        [
+          138.0,
+          850,
+          "market_maker"
+        ]
+      ],
+      "asks": [
+        [
+          152.0,
+          150,
+          "marvin"
+        ],
+        [
+          153.5,
+          280,
+          "amos"
+        ],
+        [
+          155.0,
+          420,
+          "aerial"
+        ],
+        [
+          158.0,
+          650,
+          "market_maker"
+        ],
+        [
+          162.0,
+          900,
+          "market_maker"
+        ]
+      ]
+    },
+    "ceres_FUEL": {
+      "station_id": "ceres",
+      "instrument": "FUEL",
+      "seq": 4821,
+      "bids": [
+        [
+          58.0,
+          200,
+          "zero"
+        ],
+        [
+          56.0,
+          350,
+          "aerial"
+        ]
+      ],
+      "asks": [
+        [
+          64.0,
+          120,
+          "amos"
+        ],
+        [
+          68.0,
+          240,
+          "market_maker"
+        ]
+      ]
+    },
+    "mars_FRAG": {
+      "station_id": "mars",
+      "instrument": "FRAG",
+      "seq": 4822,
+      "bids": [
+        [
+          120.0,
+          250,
+          "amos"
+        ],
+        [
+          118.0,
+          400,
+          "zero"
+        ]
+      ],
+      "asks": [
+        [
+          126.0,
+          200,
+          "aerial"
+        ],
+        [
+          128.5,
+          380,
+          "marvin"
+        ]
+      ]
+    },
+    "luna_FRAG": {
+      "station_id": "luna",
+      "instrument": "FRAG",
+      "seq": 4823,
+      "bids": [
+        [
+          102.0,
+          300,
+          "aerial"
+        ],
+        [
+          100.0,
+          500,
+          "market_maker"
+        ]
+      ],
+      "asks": [
+        [
+          106.0,
+          280,
+          "amos"
+        ],
+        [
+          108.0,
+          450,
+          "zero"
+        ]
+      ]
+    },
+    "earth_FUEL": {
+      "station_id": "earth",
+      "instrument": "FUEL",
+      "seq": 4824,
+      "bids": [
+        [
+          26.0,
+          500,
+          "zero"
+        ],
+        [
+          25.0,
+          750,
+          "market_maker"
+        ]
+      ],
+      "asks": [
+        [
+          28.5,
+          420,
+          "amos"
+        ],
+        [
+          30.0,
+          600,
+          "market_maker"
+        ]
+      ]
+    }
+  },
+  "trade_tape": [
+    {
+      "seq": 4819,
+      "station_id": "ceres",
+      "instrument": "FRAG",
+      "price": 148.0,
+      "qty": 75,
+      "buyer": "zero",
+      "seller": "marvin",
+      "time": "17:54:12"
+    },
+    {
+      "seq": 4818,
+      "station_id": "ceres",
+      "instrument": "FUEL",
+      "price": 60.0,
+      "qty": 120,
+      "buyer": "aerial",
+      "seller": "amos",
+      "time": "17:53:48"
+    },
+    {
+      "seq": 4817,
+      "station_id": "mars",
+      "instrument": "FRAG",
+      "price": 122.5,
+      "qty": 110,
+      "buyer": "amos",
+      "seller": "aerial",
+      "time": "17:52:30"
+    },
+    {
+      "seq": 4816,
+      "station_id": "earth",
+      "instrument": "FUEL",
+      "price": 27.0,
+      "qty": 200,
+      "buyer": "zero",
+      "seller": "market_maker",
+      "time": "17:51:15"
+    },
+    {
+      "seq": 4815,
+      "station_id": "luna",
+      "instrument": "FRAG",
+      "price": 104.0,
+      "qty": 90,
+      "buyer": "marvin",
+      "seller": "amos",
+      "time": "17:49:50"
+    }
+  ]
+}

@@ -649,9 +649,12 @@
     </div>
     <div class="header-telemetry">
       <div class="telemetry-indicator">
-        <span class="pulse-node"></span>
+        <span class="pulse-node" id="referee-pulse-node"></span>
         <span id="referee-status-text">REFEREE: LIVE</span>
       </div>
+      <button id="sim-mode-toggle" onclick="toggleSimulationMode()" style="background: rgba(255, 184, 52, 0.1); border: 1px solid var(--amber); color: var(--amber); font-family: var(--font-mono); font-size: 0.72rem; padding: 4px 10px; border-radius: 4px; cursor: pointer; transition: all 0.2s ease;">
+        MODE: SIMULATED MID-GAME (RND 42)
+      </button>
       <div style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim);">
         SEQ: <span id="header-seq-tag" style="color: var(--amber);">#--</span>
       </div>
@@ -990,6 +993,23 @@
           <span>BORROW: <strong style="color: var(--cyan);">2.0%/rnd</strong></span>
         </div>
       </div>
+
+      <!-- EQ_AERIAL -->
+      <div class="station-card" id="equity-card-aerial">
+        <div class="station-card-head">
+          <span class="station-card-name">EQ_ZNTH // ZENITH DRIFT</span>
+          <span class="station-card-status" id="eq-status-aerial">NAV: 24.8 CR</span>
+        </div>
+        <div class="station-card-body">
+          <span style="color: var(--text-dim);">SPOT PRICE</span>
+          <span id="eq-price-aerial" style="color: var(--green); font-weight: bold;">84.0 CR</span>
+        </div>
+        <div class="station-card-prices" style="border-top: 1px solid var(--line); padding-top: 8px;">
+          <span>SHORT INT: <strong id="eq-short-aerial" style="color: var(--amber);">11.0%</strong></span>
+          <span>BORROW: <strong style="color: var(--cyan);">2.0%/rnd</strong></span>
+        </div>
+      </div>
+
     </div>
 
     <!-- Active Bilateral Loan & Short Manifest -->
@@ -1198,6 +1218,675 @@
   let circuitBreakerBands = [];
   let circuitBreakerHalts = [];
 
+  // Deterministic Mid-Game State Fixture (Round 42)
+  const MIDGAME_STATE = {
+  "round": 42,
+  "timestamp": "2026-09-12T17:55:00-07:00",
+  "leaderboard": [
+    {
+      "agent_id": "zero",
+      "syndicate": "Apex Vector Arbitrage",
+      "net_worth": 38450,
+      "liquid": 18450,
+      "frags": 1250,
+      "fuel": 320,
+      "mark_price": 16.0,
+      "pnl": "+34.2%"
+    },
+    {
+      "agent_id": "amos",
+      "syndicate": "First Solvency Combine",
+      "net_worth": 31200,
+      "liquid": 14200,
+      "frags": 980,
+      "fuel": 450,
+      "mark_price": 17.3,
+      "pnl": "+18.5%"
+    },
+    {
+      "agent_id": "aerial",
+      "syndicate": "Zenith Drift Overwatch",
+      "net_worth": 24800,
+      "liquid": 12800,
+      "frags": 750,
+      "fuel": 280,
+      "mark_price": 16.0,
+      "pnl": "+6.1%"
+    },
+    {
+      "agent_id": "marvin",
+      "syndicate": "Ballistic Liquidation Co.",
+      "net_worth": 16500,
+      "liquid": 5500,
+      "frags": 1100,
+      "fuel": 0,
+      "mark_price": 10.0,
+      "pnl": "-12.4%"
+    }
+  ],
+  "prices": {
+    "ceres": {
+      "frag": {
+        "bid": 145.0,
+        "ask": 152.0,
+        "last": 148.0,
+        "spread": 7.0
+      },
+      "fuel": {
+        "bid": 58.0,
+        "ask": 64.0,
+        "last": 60.0,
+        "spread": 6.0
+      }
+    },
+    "mars": {
+      "frag": {
+        "bid": 120.0,
+        "ask": 126.0,
+        "last": 122.5,
+        "spread": 6.0
+      },
+      "fuel": {
+        "bid": 44.0,
+        "ask": 48.0,
+        "last": 46.0,
+        "spread": 4.0
+      }
+    },
+    "luna": {
+      "frag": {
+        "bid": 102.0,
+        "ask": 106.0,
+        "last": 104.0,
+        "spread": 4.0
+      },
+      "fuel": {
+        "bid": 33.0,
+        "ask": 36.0,
+        "last": 34.5,
+        "spread": 3.0
+      }
+    },
+    "earth": {
+      "frag": {
+        "bid": 95.0,
+        "ask": 99.0,
+        "last": 97.0,
+        "spread": 4.0
+      },
+      "fuel": {
+        "bid": 26.0,
+        "ask": 28.5,
+        "last": 27.0,
+        "spread": 2.5
+      }
+    }
+  },
+  "fleet_locations": [
+    {
+      "agent_id": "zero",
+      "status": "in_transit",
+      "transit": {
+        "origin": "earth",
+        "destination": "ceres",
+        "departure_round": 40,
+        "arrival_round": 43,
+        "commodity": "FUEL",
+        "cargo_qty": 400
+      }
+    },
+    {
+      "agent_id": "amos",
+      "status": "in_transit",
+      "transit": {
+        "origin": "luna",
+        "destination": "mars",
+        "departure_round": 41,
+        "arrival_round": 42,
+        "commodity": "FRAG",
+        "cargo_qty": 250
+      }
+    },
+    {
+      "agent_id": "aerial",
+      "status": "in_transit",
+      "transit": {
+        "origin": "mars",
+        "destination": "ceres",
+        "departure_round": 40,
+        "arrival_round": 44,
+        "commodity": "FRAG",
+        "cargo_qty": 180
+      }
+    },
+    {
+      "agent_id": "marvin",
+      "status": "docked",
+      "station": "ceres"
+    },
+    {
+      "agent_id": "zero",
+      "status": "docked",
+      "station": "earth"
+    },
+    {
+      "agent_id": "amos",
+      "status": "docked",
+      "station": "luna"
+    },
+    {
+      "agent_id": "aerial",
+      "status": "docked",
+      "station": "mars"
+    }
+  ],
+  "orbital_windows": [
+    {
+      "id": "mars_ceres_syzygy",
+      "name": "MARS-CERES SYZYGY RUSH",
+      "description": "Optimal orbital alignment window between Arcadia Planitia and Ceres Anchorage.",
+      "is_active": true,
+      "rounds_remaining": 4,
+      "rounds_until_next": 0,
+      "routes": [
+        [
+          "mars",
+          "ceres"
+        ]
+      ],
+      "fuel_reduction_pct": 0.33
+    },
+    {
+      "id": "earth_mars_transfer",
+      "name": "EARTH-MARS HOHMANN WINDOW",
+      "description": "Inner-system corridor alignment window.",
+      "is_active": false,
+      "rounds_remaining": 0,
+      "rounds_until_next": 8,
+      "routes": [
+        [
+          "earth",
+          "mars"
+        ]
+      ],
+      "fuel_reduction_pct": 0.25
+    }
+  ],
+  "distress_beacons": [
+    {
+      "beacon_id": "BCN-094",
+      "agent_id": "marvin",
+      "location": "ceres_earth",
+      "status": "active",
+      "cargo_bounty": {
+        "FRAG": 320,
+        "SCRAP": 85
+      },
+      "reason": "Reaction mass depletion / dead stick in Kirkwood Gap"
+    },
+    {
+      "beacon_id": "WRK-104",
+      "agent_id": "npc_derelict",
+      "location": "ceres",
+      "status": "active",
+      "cargo_bounty": {
+        "FRAG": 550
+      },
+      "reason": "Unmanned Atlas debris barge drifting unpowered"
+    }
+  ],
+  "salvage_rfqs": [
+    {
+      "rfq_id": "RFQ-042",
+      "beacon_id": "BCN-094",
+      "distressed_agent": "marvin",
+      "fuel_needed": 80,
+      "max_escrow_cr": 4500,
+      "status": "open",
+      "rounds_left": 3,
+      "quotes": [
+        {
+          "agent_id": "zero",
+          "fuel_offered": 80,
+          "price_cr": 5200,
+          "eta_rounds": 1
+        }
+      ]
+    }
+  ],
+  "equities": {
+    "APEX": {
+      "issuer_agent_id": "zero",
+      "ticker": "APEX",
+      "share_price": 126.0,
+      "shares_outstanding": 100,
+      "market_cap": 12600,
+      "short_interest_pct": 14,
+      "status": "ACTIVE"
+    },
+    "SOLV": {
+      "issuer_agent_id": "amos",
+      "ticker": "SOLV",
+      "share_price": 105.0,
+      "shares_outstanding": 100,
+      "market_cap": 10500,
+      "short_interest_pct": 8,
+      "status": "ACTIVE"
+    },
+    "ZNTH": {
+      "issuer_agent_id": "aerial",
+      "ticker": "ZNTH",
+      "share_price": 84.0,
+      "shares_outstanding": 100,
+      "market_cap": 8400,
+      "short_interest_pct": 11,
+      "status": "ACTIVE"
+    },
+    "BAL": {
+      "issuer_agent_id": "marvin",
+      "ticker": "BAL",
+      "share_price": 61.0,
+      "shares_outstanding": 100,
+      "market_cap": 6100,
+      "short_interest_pct": 42,
+      "status": "DISTRESSED"
+    }
+  },
+  "loans": [
+    {
+      "loan_id": "LOAN-108",
+      "borrower_id": "zero",
+      "lender_id": "amos",
+      "ticker": "BAL",
+      "shares": 25,
+      "fee_pct": 12.5,
+      "collateral_cr": 2200,
+      "status": "ACTIVE"
+    }
+  ],
+  "circuit_breaker": {
+    "bands": [
+      {
+        "station_id": "ceres",
+        "instrument": "FRAG",
+        "reference_price": 148.0,
+        "upper_band": 175.0,
+        "lower_band": 125.0,
+        "status": "normal"
+      },
+      {
+        "station_id": "ceres",
+        "instrument": "FUEL",
+        "reference_price": 60.0,
+        "upper_band": 72.0,
+        "lower_band": 48.0,
+        "status": "halted"
+      },
+      {
+        "station_id": "mars",
+        "instrument": "FRAG",
+        "reference_price": 122.5,
+        "upper_band": 145.0,
+        "lower_band": 102.0,
+        "status": "normal"
+      },
+      {
+        "station_id": "luna",
+        "instrument": "FRAG",
+        "reference_price": 104.0,
+        "upper_band": 122.0,
+        "lower_band": 88.0,
+        "status": "normal"
+      },
+      {
+        "station_id": "earth",
+        "instrument": "FUEL",
+        "reference_price": 27.0,
+        "upper_band": 32.0,
+        "lower_band": 22.0,
+        "status": "normal"
+      }
+    ],
+    "halts": [
+      {
+        "station_id": "ceres",
+        "instrument": "FUEL",
+        "status": "halted",
+        "halt_reason": "Limit Up Breach (+24% drift spike)",
+        "cooldown_rounds": 2
+      }
+    ]
+  },
+  "galnet": {
+    "active_shocks": [
+      {
+        "station_id": "ceres",
+        "instrument": "FUEL",
+        "bias": 0.22,
+        "source": "Belt Pipe Rupture"
+      }
+    ],
+    "feed": [
+      {
+        "id": "GN-948",
+        "round": 42,
+        "headline": "Ceres Fuel Depot Pipe Rupture Sparks Supply Crunch",
+        "body": "A catastrophic pressure breach at Piazzi Anchorage has ruptured hydrogen transfer manifolds. Station authorities have enacted a 5-minute trading halt on FUEL requisitions.",
+        "drift_bias": 0.22,
+        "impact": "HIGH",
+        "target_station": "ceres",
+        "target_instrument": "FUEL"
+      },
+      {
+        "id": "GN-945",
+        "round": 40,
+        "headline": "Ballistic Liquidation Skiff Drops SOS Beacon in Kirkwood Gap",
+        "body": "Telemetry confirms vessel BLC-Havoc miscalculated its retrograde orbital burn and exhausted reaction mass. Life support reserves estimate 6 rounds of power remaining.",
+        "drift_bias": -0.08,
+        "impact": "MEDIUM",
+        "target_station": "ceres",
+        "target_instrument": "FRAG"
+      },
+      {
+        "id": "GN-942",
+        "round": 38,
+        "headline": "Mars-Ceres Hohmann Syzygy Corridor Opens",
+        "body": "Planetary alignment vectors align for optimal high-speed transit. Cargo hauler fuel requirements reduced by 33% across the orbital corridor.",
+        "drift_bias": 0.05,
+        "impact": "FAVORABLE",
+        "target_station": "mars",
+        "target_instrument": "ROUTE"
+      },
+      {
+        "id": "GN-939",
+        "round": 35,
+        "headline": "First Solvency Opens Bilateral Stock Loan Desk",
+        "body": "Amos (First Solvency) authorizes bilateral securities lending on syndicate corporate shares with a base 12.5% annualized borrow fee.",
+        "drift_bias": 0.0,
+        "impact": "NEUTRAL",
+        "target_station": "luna",
+        "target_instrument": "EQUITY"
+      }
+    ]
+  },
+  "order_books": {
+    "ceres_FRAG": {
+      "station_id": "ceres",
+      "instrument": "FRAG",
+      "seq": 4820,
+      "bids": [
+        [
+          145.0,
+          180,
+          "zero"
+        ],
+        [
+          144.0,
+          320,
+          "aerial"
+        ],
+        [
+          142.5,
+          450,
+          "amos"
+        ],
+        [
+          140.0,
+          600,
+          "market_maker"
+        ],
+        [
+          138.0,
+          850,
+          "market_maker"
+        ]
+      ],
+      "asks": [
+        [
+          152.0,
+          150,
+          "marvin"
+        ],
+        [
+          153.5,
+          280,
+          "amos"
+        ],
+        [
+          155.0,
+          420,
+          "aerial"
+        ],
+        [
+          158.0,
+          650,
+          "market_maker"
+        ],
+        [
+          162.0,
+          900,
+          "market_maker"
+        ]
+      ]
+    },
+    "ceres_FUEL": {
+      "station_id": "ceres",
+      "instrument": "FUEL",
+      "seq": 4821,
+      "bids": [
+        [
+          58.0,
+          200,
+          "zero"
+        ],
+        [
+          56.0,
+          350,
+          "aerial"
+        ]
+      ],
+      "asks": [
+        [
+          64.0,
+          120,
+          "amos"
+        ],
+        [
+          68.0,
+          240,
+          "market_maker"
+        ]
+      ]
+    },
+    "mars_FRAG": {
+      "station_id": "mars",
+      "instrument": "FRAG",
+      "seq": 4822,
+      "bids": [
+        [
+          120.0,
+          250,
+          "amos"
+        ],
+        [
+          118.0,
+          400,
+          "zero"
+        ]
+      ],
+      "asks": [
+        [
+          126.0,
+          200,
+          "aerial"
+        ],
+        [
+          128.5,
+          380,
+          "marvin"
+        ]
+      ]
+    },
+    "luna_FRAG": {
+      "station_id": "luna",
+      "instrument": "FRAG",
+      "seq": 4823,
+      "bids": [
+        [
+          102.0,
+          300,
+          "aerial"
+        ],
+        [
+          100.0,
+          500,
+          "market_maker"
+        ]
+      ],
+      "asks": [
+        [
+          106.0,
+          280,
+          "amos"
+        ],
+        [
+          108.0,
+          450,
+          "zero"
+        ]
+      ]
+    },
+    "earth_FUEL": {
+      "station_id": "earth",
+      "instrument": "FUEL",
+      "seq": 4824,
+      "bids": [
+        [
+          26.0,
+          500,
+          "zero"
+        ],
+        [
+          25.0,
+          750,
+          "market_maker"
+        ]
+      ],
+      "asks": [
+        [
+          28.5,
+          420,
+          "amos"
+        ],
+        [
+          30.0,
+          600,
+          "market_maker"
+        ]
+      ]
+    }
+  },
+  "trade_tape": [
+    {
+      "seq": 4819,
+      "station_id": "ceres",
+      "instrument": "FRAG",
+      "price": 148.0,
+      "qty": 75,
+      "buyer": "zero",
+      "seller": "marvin",
+      "time": "17:54:12"
+    },
+    {
+      "seq": 4818,
+      "station_id": "ceres",
+      "instrument": "FUEL",
+      "price": 60.0,
+      "qty": 120,
+      "buyer": "aerial",
+      "seller": "amos",
+      "time": "17:53:48"
+    },
+    {
+      "seq": 4817,
+      "station_id": "mars",
+      "instrument": "FRAG",
+      "price": 122.5,
+      "qty": 110,
+      "buyer": "amos",
+      "seller": "aerial",
+      "time": "17:52:30"
+    },
+    {
+      "seq": 4816,
+      "station_id": "earth",
+      "instrument": "FUEL",
+      "price": 27.0,
+      "qty": 200,
+      "buyer": "zero",
+      "seller": "market_maker",
+      "time": "17:51:15"
+    },
+    {
+      "seq": 4815,
+      "station_id": "luna",
+      "instrument": "FRAG",
+      "price": 104.0,
+      "qty": 90,
+      "buyer": "marvin",
+      "seller": "amos",
+      "time": "17:49:50"
+    }
+  ]
+};
+
+  let isSimulationMode = true; // Default to mid-game simulation so visitors immediately observe active game state
+  const urlParams = new URLSearchParams(window.location.search);
+  if (urlParams.get("mode") === "live") isSimulationMode = false;
+  if (urlParams.get("mode") === "demo" || urlParams.get("mode") === "simulation") isSimulationMode = true;
+
+  function toggleSimulationMode() {
+    isSimulationMode = !isSimulationMode;
+    updateModeDisplay();
+    // Re-trigger all poll functions immediately
+    pollLeaderboard();
+    pollBookAndTape();
+    pollGalnetFeed();
+    pollStationsTelemetry();
+    pollEquityTelemetry();
+    pollSalvageTelemetry();
+    pollCircuitBreakerTelemetry();
+  }
+
+  function updateModeDisplay() {
+    const btn = document.getElementById("sim-mode-toggle");
+    const statusText = document.getElementById("referee-status-text");
+    const pulse = document.getElementById("referee-pulse-node");
+    const seqTag = document.getElementById("header-seq-tag");
+
+    if (isSimulationMode) {
+      if (btn) {
+        btn.textContent = "MODE: SIMULATED MID-GAME (RND 42)";
+        btn.style.borderColor = "var(--amber)";
+        btn.style.color = "var(--amber)";
+        btn.style.background = "rgba(255, 184, 52, 0.15)";
+      }
+      if (statusText) statusText.textContent = "REFEREE: SIMULATED (RND 42)";
+      if (pulse) pulse.style.background = "var(--amber)";
+      if (seqTag) seqTag.textContent = "#4824";
+    } else {
+      if (btn) {
+        btn.textContent = "MODE: LIVE ENGINE";
+        btn.style.borderColor = "var(--cyan)";
+        btn.style.color = "var(--cyan)";
+        btn.style.background = "rgba(92, 225, 230, 0.1)";
+      }
+      if (statusText) statusText.textContent = "REFEREE: LIVE POLLING";
+      if (pulse) pulse.style.background = "var(--green)";
+    }
+  }
+
+
   function selectStation(st) {
     currentStation = (st || 'ceres').toLowerCase();
 
@@ -1257,8 +1946,8 @@
       console.warn("Leaderboard telemetry error:", e);
     }
 
-    if (!agents) {
-      agents = GENESIS_STATE;
+    if (isSimulationMode || !agents) {
+      agents = (MIDGAME_STATE && MIDGAME_STATE.leaderboard) ? MIDGAME_STATE.leaderboard : GENESIS_STATE;
     }
 
     agents.sort((a, b) => (b.net_worth || 0) - (a.net_worth || 0));
@@ -1528,12 +2217,20 @@
         ? `https://agora-banana-production.up.railway.app/referee/ticks?since_seq=${lastSeenTickSeq}`
         : "https://agora-banana-production.up.railway.app/referee/ticks";
 
-      let tRes = await fetch(ticksUrl, { cache: "no-store" }).catch(() => null);
-      if (!tRes || !tRes.ok) {
-        tRes = await fetch(fallbackUrl, { cache: "no-store" }).catch(() => null);
+      let tData = null;
+      if (!isSimulationMode) {
+        let tRes = await fetch(ticksUrl, { cache: "no-store" }).catch(() => null);
+        if (!tRes || !tRes.ok) {
+          tRes = await fetch(fallbackUrl, { cache: "no-store" }).catch(() => null);
+        }
+        if (tRes && tRes.ok) {
+          tData = await tRes.json();
+        }
       }
-      if (tRes && tRes.ok) {
-        const tData = await tRes.json();
+      if (!tData && MIDGAME_STATE && MIDGAME_STATE.trade_tape) {
+        tData = { ticks: MIDGAME_STATE.trade_tape, current_seq: 4824 };
+      }
+      if (tData) {
         const incoming = tData.ticks || [];
         
         if (tData.current_seq !== undefined) {
@@ -1619,12 +2316,20 @@
   async function pollGalnetFeed() {
     const wireEl = document.getElementById("galnet-wire-text");
     try {
-      let res = await fetch("/galnet/events", { cache: "no-store" }).catch(() => null);
-      if (!res || !res.ok) {
-        res = await fetch("https://agora-banana-production.up.railway.app/galnet/events", { cache: "no-store" }).catch(() => null);
+      let data = null;
+      if (!isSimulationMode) {
+        let res = await fetch("/galnet/events", { cache: "no-store" }).catch(() => null);
+        if (!res || !res.ok) {
+          res = await fetch("https://agora-banana-production.up.railway.app/galnet/events", { cache: "no-store" }).catch(() => null);
+        }
+        if (res && res.ok) {
+          data = await res.json();
+        }
       }
-      if (res && res.ok) {
-        const data = await res.json();
+      if (!data && MIDGAME_STATE && MIDGAME_STATE.galnet) {
+        data = MIDGAME_STATE.galnet;
+      }
+      if (data) {
         const activeShocks = data.active_shocks || [];
         const feed = data.feed || [];
 
@@ -1678,15 +2383,24 @@
   async function pollStationsTelemetry() {
     // 1. Fetch Station Prices
     try {
-      let pRes = await fetch("/stations/prices", { cache: "no-store" }).catch(() => null);
-      if (!pRes || !pRes.ok) {
-        pRes = await fetch("https://agora-banana-production.up.railway.app/stations/prices", { cache: "no-store" }).catch(() => null);
+      let prices = null;
+      if (!isSimulationMode) {
+        let pRes = await fetch("/stations/prices", { cache: "no-store" }).catch(() => null);
+        if (!pRes || !pRes.ok) {
+          pRes = await fetch("https://agora-banana-production.up.railway.app/stations/prices", { cache: "no-store" }).catch(() => null);
+        }
+        if (pRes && pRes.ok) {
+          const pData = await pRes.json();
+          prices = (pData.data && pData.data.prices) ? pData.data.prices : (pData.prices || {});
+          if (pData.data && pData.data.round) currentRound = pData.data.round;
+        }
       }
-      if (pRes && pRes.ok) {
-        const pData = await pRes.json();
-        const prices = (pData.data && pData.data.prices) ? pData.data.prices : (pData.prices || {});
+      if (!prices && MIDGAME_STATE && MIDGAME_STATE.prices) {
+        prices = MIDGAME_STATE.prices;
+        currentRound = MIDGAME_STATE.round || 42;
+      }
+      if (prices) {
         stationPrices = prices;
-        if (pData.data && pData.data.round) currentRound = pData.data.round;
 
         const stations = ["ceres", "mars", "luna", "earth"];
         stations.forEach(st => {
@@ -1703,13 +2417,22 @@
 
     // 2. Fetch Fleet Locations & Flight Manifest
     try {
-      let lRes = await fetch("/stations/locations", { cache: "no-store" }).catch(() => null);
-      if (!lRes || !lRes.ok) {
-        lRes = await fetch("https://agora-banana-production.up.railway.app/stations/locations", { cache: "no-store" }).catch(() => null);
+      let locs = null;
+      if (!isSimulationMode) {
+        let lRes = await fetch("/stations/locations", { cache: "no-store" }).catch(() => null);
+        if (!lRes || !lRes.ok) {
+          lRes = await fetch("https://agora-banana-production.up.railway.app/stations/locations", { cache: "no-store" }).catch(() => null);
+        }
+        if (lRes && lRes.ok) {
+          const lData = await lRes.json();
+          locs = lData.locations || [];
+        }
       }
-      if (lRes && lRes.ok) {
-        const lData = await lRes.json();
-        fleetLocations = lData.locations || [];
+      if (!locs && MIDGAME_STATE && MIDGAME_STATE.fleet_locations) {
+        locs = MIDGAME_STATE.fleet_locations;
+      }
+      if (locs) {
+        fleetLocations = locs;
 
         const activeTransits = fleetLocations.filter(loc => loc.status === "in_transit" && loc.transit);
         const inTransitCountEl = document.getElementById("radar-active-freighters");
@@ -1797,14 +2520,26 @@
 
     // 3. Fetch Planetary Alignment Windows
     try {
-      let wRes = await fetch("/stations/windows", { cache: "no-store" }).catch(() => null);
-      if (!wRes || !wRes.ok) {
-        wRes = await fetch("https://agora-banana-production.up.railway.app/stations/windows", { cache: "no-store" }).catch(() => null);
+      let wins = null;
+      let rNum = currentRound;
+      if (!isSimulationMode) {
+        let wRes = await fetch("/stations/windows", { cache: "no-store" }).catch(() => null);
+        if (!wRes || !wRes.ok) {
+          wRes = await fetch("https://agora-banana-production.up.railway.app/stations/windows", { cache: "no-store" }).catch(() => null);
+        }
+        if (wRes && wRes.ok) {
+          const wData = await wRes.json();
+          wins = wData.windows || [];
+          rNum = wData.current_round || currentRound;
+        }
       }
-      if (wRes && wRes.ok) {
-        const wData = await wRes.json();
-        orbitalWindows = wData.windows || [];
-        renderOrbitalWindows(orbitalWindows, wData.current_round || currentRound);
+      if (!wins && MIDGAME_STATE && MIDGAME_STATE.orbital_windows) {
+        wins = MIDGAME_STATE.orbital_windows;
+        rNum = MIDGAME_STATE.round || 42;
+      }
+      if (wins) {
+        orbitalWindows = wins;
+        renderOrbitalWindows(orbitalWindows, rNum);
       }
     } catch (e) {
       console.warn("Orbital windows poll error:", e);
@@ -2194,13 +2929,21 @@
 
   async function pollEquityTelemetry() {
     try {
-      let sRes = await fetch("/equity/summary", { cache: "no-store" }).catch(() => null);
-      if (!sRes || !sRes.ok) {
-        sRes = await fetch("https://agora-banana-production.up.railway.app/equity/summary", { cache: "no-store" }).catch(() => null);
+      let eq = null;
+      if (!isSimulationMode) {
+        let sRes = await fetch("/equity/summary", { cache: "no-store" }).catch(() => null);
+        if (!sRes || !sRes.ok) {
+          sRes = await fetch("https://agora-banana-production.up.railway.app/equity/summary", { cache: "no-store" }).catch(() => null);
+        }
+        if (sRes && sRes.ok) {
+          const sData = await sRes.json();
+          eq = sData.equities || {};
+        }
       }
-      if (sRes && sRes.ok) {
-        const sData = await sRes.json();
-        const eq = sData.equities || {};
+      if (!eq && MIDGAME_STATE && MIDGAME_STATE.equities) {
+        eq = MIDGAME_STATE.equities;
+      }
+      if (eq) {
 
         for (const [sym, data] of Object.entries(eq)) {
           const agentId = data.issuer_agent_id;
@@ -2217,13 +2960,21 @@
     }
 
     try {
-      let lRes = await fetch("/equity/loans", { cache: "no-store" }).catch(() => null);
-      if (!lRes || !lRes.ok) {
-        lRes = await fetch("https://agora-banana-production.up.railway.app/equity/loans", { cache: "no-store" }).catch(() => null);
+      let loans = null;
+      if (!isSimulationMode) {
+        let lRes = await fetch("/equity/loans", { cache: "no-store" }).catch(() => null);
+        if (!lRes || !lRes.ok) {
+          lRes = await fetch("https://agora-banana-production.up.railway.app/equity/loans", { cache: "no-store" }).catch(() => null);
+        }
+        if (lRes && lRes.ok) {
+          const lData = await lRes.json();
+          loans = lData.loans || [];
+        }
       }
-      if (lRes && lRes.ok) {
-        const lData = await lRes.json();
-        const loans = lData.loans || [];
+      if (!loans && MIDGAME_STATE && MIDGAME_STATE.loans) {
+        loans = MIDGAME_STATE.loans;
+      }
+      if (loans) {
         const tbody = document.getElementById("equity-loans-tbody");
         if (tbody) {
           if (loans.length === 0) {
@@ -2256,13 +3007,24 @@
 
   async function pollSalvageTelemetry() {
     try {
-      let res = await fetch("/salvage/summary", { cache: "no-store" }).catch(() => null);
-      if (!res || !res.ok) {
-        res = await fetch("https://agora-banana-production.up.railway.app/salvage/summary", { cache: "no-store" }).catch(() => null);
+      let summary = null;
+      if (!isSimulationMode) {
+        let res = await fetch("/salvage/summary", { cache: "no-store" }).catch(() => null);
+        if (!res || !res.ok) {
+          res = await fetch("https://agora-banana-production.up.railway.app/salvage/summary", { cache: "no-store" }).catch(() => null);
+        }
+        if (res && res.ok) {
+          const data = await res.json();
+          summary = data.summary || {};
+        }
       }
-      if (res && res.ok) {
-        const data = await res.json();
-        const summary = data.summary || {};
+      if (!summary && MIDGAME_STATE && MIDGAME_STATE.distress_beacons) {
+        summary = {
+          beacons: MIDGAME_STATE.distress_beacons,
+          active_beacons: MIDGAME_STATE.distress_beacons.length
+        };
+      }
+      if (summary) {
         distressBeacons = summary.beacons || [];
 
         // Update desk status badge
@@ -2365,13 +3127,22 @@
   async function pollCircuitBreakerTelemetry() {
     try {
       // 1. Fetch bands
-      let bRes = await fetch("/circuit_breaker/bands", { cache: "no-store" }).catch(() => null);
-      if (!bRes || !bRes.ok) {
-        bRes = await fetch("https://agora-banana-production.up.railway.app/circuit_breaker/bands", { cache: "no-store" }).catch(() => null);
+      let bands = null;
+      if (!isSimulationMode) {
+        let bRes = await fetch("/circuit_breaker/bands", { cache: "no-store" }).catch(() => null);
+        if (!bRes || !bRes.ok) {
+          bRes = await fetch("https://agora-banana-production.up.railway.app/circuit_breaker/bands", { cache: "no-store" }).catch(() => null);
+        }
+        if (bRes && bRes.ok) {
+          const bData = await bRes.json();
+          bands = bData.bands || [];
+        }
       }
-      if (bRes && bRes.ok) {
-        const bData = await bRes.json();
-        circuitBreakerBands = bData.bands || [];
+      if (!bands && MIDGAME_STATE && MIDGAME_STATE.circuit_breaker) {
+        bands = MIDGAME_STATE.circuit_breaker.bands || [];
+      }
+      if (bands) {
+        circuitBreakerBands = bands;
         const bTbody = document.getElementById("circuit-breaker-bands-tbody");
         if (bTbody && circuitBreakerBands.length > 0) {
           bTbody.innerHTML = circuitBreakerBands.map(b => {
@@ -2471,6 +3242,7 @@
   setInterval(pollCircuitBreakerTelemetry, 4000);
 
   initOrbitalRadar();
+  updateModeDisplay();
 </script>
 
 </body>
