@@ -18,7 +18,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Optional, Dict
 from agora.referee import AgoraReferee
 from agora.galnet import GalNetEngine
-from agora.spatial import STATIONS, COMMODITIES, ROUTES, get_route
+from agora.spatial import STATIONS, COMMODITIES, ROUTES, get_route, get_alignment_windows
 
 
 def get_configured_tokens() -> Dict[str, str]:
@@ -314,13 +314,15 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
 
             commodity = payload.get('commodity', 'FRAG')
             cargo_qty = payload.get('cargo_qty', 0)
+            perishable = payload.get('perishable')
 
             ref = self.referee or AgoraReferee()
             result = ref.initiate_transit(
                 agent_id=target_agent,
                 destination=destination,
                 commodity=commodity,
-                cargo_qty=cargo_qty
+                cargo_qty=cargo_qty,
+                perishable=perishable
             )
             if result.get('kind') == 'reject':
                 self._send_json(400, result)
@@ -600,6 +602,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                     'galnet_shock': 'POST /galnet/shock',
                     'station_prices': 'GET /stations/prices?station_id=mars&commodity=FRAG',
                     'station_routes': 'GET /stations/routes?origin=ceres&destination=mars',
+                    'station_windows': 'GET /stations/windows',
                     'station_locations': 'GET /stations/locations',
                     'station_transit': 'POST /stations/transit (auth required)',
                     'station_step_round': 'POST /stations/step_round',
@@ -672,25 +675,36 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
         elif path == '/stations/routes':
             origin = query_params.get('origin', [None])[0]
             destination = query_params.get('destination', [None])[0]
+            current_round = ref.current_round
             if origin and destination:
-                route = get_route(origin, destination)
+                route = get_route(origin, destination, current_round)
                 self._send_json(200, {
                     'status': 'ok',
+                    'current_round': current_round,
                     'origin': origin.lower(),
                     'destination': destination.lower(),
                     'route': route
                 })
             else:
                 formatted_routes = [
-                    {'origin': k[0], 'destination': k[1], 'rounds': v['rounds'], 'fuel': v['fuel']}
-                    for k, v in ROUTES.items()
+                    {'origin': k[0], 'destination': k[1], **(get_route(k[0], k[1], current_round) or {})}
+                    for k in ROUTES.keys()
                 ]
                 self._send_json(200, {
                     'status': 'ok',
+                    'current_round': current_round,
                     'stations': STATIONS,
                     'commodities': COMMODITIES,
-                    'routes': formatted_routes
+                    'routes': formatted_routes,
+                    'windows': get_alignment_windows(current_round)
                 })
+        elif path in ('/stations/windows', '/spatial/windows'):
+            current_round = ref.current_round
+            self._send_json(200, {
+                'status': 'ok',
+                'current_round': current_round,
+                'windows': get_alignment_windows(current_round)
+            })
         elif path == '/stations/locations':
             agent_id = query_params.get('agent_id', [None])[0]
             if agent_id:

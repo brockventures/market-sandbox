@@ -665,6 +665,47 @@ class TestAgoraServer(unittest.TestCase):
         self.assertTrue(data['invariants_valid'])
         self.assertEqual(len(data['errors']), 0)
 
+    def test_19_orbital_windows_and_belt_mechanics(self):
+        """Integration test for /stations/windows, alignment route data, and perishable transit."""
+        # 1. Verify /stations/windows
+        status, data = self._get('/stations/windows')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['status'], 'ok')
+        self.assertIn('windows', data)
+        self.assertEqual(len(data['windows']), 3)
+        corridors = {w['corridor_id'] for w in data['windows']}
+        self.assertIn('earth_mars', corridors)
+        self.assertIn('mars_ceres', corridors)
+        self.assertIn('earth_ceres', corridors)
+
+        # 2. Verify /stations/routes returns windows and route properties
+        status, data = self._get('/stations/routes')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['status'], 'ok')
+        self.assertIn('windows', data)
+        ceres_routes = [r for r in data['routes'] if r['origin'] == 'ceres' and r['destination'] == 'mars']
+        self.assertTrue(len(ceres_routes) > 0)
+        r = ceres_routes[0]
+        self.assertTrue(r['is_belt_route'])
+        self.assertEqual(r['toll'], 25)
+        self.assertEqual(r['decay_rate'], 0.05)
+
+        # 3. Step round to 4 (Earth-Mars opposition active)
+        status, data = self._post('/stations/step_round', {'round': 4})
+        self.assertEqual(status, 200)
+
+        # Check /stations/routes during alignment
+        status, data = self._get('/stations/routes?origin=earth&destination=mars')
+        self.assertEqual(status, 200)
+        self.assertTrue(data['route']['is_aligned'])
+        self.assertEqual(data['route']['rounds'], 1)  # Halved from 2 to 1!
+
+        # 4. Verify standing invariants hold completely
+        status, data = self._get('/referee/health')
+        self.assertEqual(status, 200)
+        self.assertTrue(data['invariants_valid'])
+        self.assertEqual(len(data['errors']), 0)
+
 
 if __name__ == '__main__':
     unittest.main()
