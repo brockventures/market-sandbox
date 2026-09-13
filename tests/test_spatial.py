@@ -252,6 +252,48 @@ class TestSpatial(unittest.TestCase):
         assert valid is True
         assert len(errors) == 0
 
+    def test_live_decay_projection_mid_transit(self):
+        """get_vessel_location should project cargo decay while still in_transit,
+        for a live decay meter on the terminal HUD (Issue #35), not just report
+        the settled decayed_qty which only lands on arrival."""
+        from agora.referee import AgoraReferee
+        ref = AgoraReferee()
+
+        # zero starts docked at ceres (default); move to earth first (non-perishable
+        # scrap, 3 rounds) so the return leg earth -> ceres is the belt route under test.
+        res_out = ref.initiate_transit('zero', 'earth', commodity='FRAG', cargo_qty=100, perishable=False)
+        assert res_out['status'] == 'in_transit'
+        ref.step_round(res_out['payload']['arrival_round'])  # lands at earth
+
+        # earth -> ceres: 3-round belt route, 5% decay per round
+        res = ref.initiate_transit('zero', 'ceres', commodity='FRAG', cargo_qty=100, perishable=True)
+        assert res['status'] == 'in_transit'
+        dep_round = res['payload']['departure_round']
+
+        # Not yet moved: 0 rounds elapsed, 0 projected decay
+        loc0 = ref.get_vessel_location('zero')
+        assert loc0['status'] == 'in_transit'
+        t0 = loc0['transit']
+        assert t0['perishable'] is True
+        assert t0['decayed_qty'] == 0  # not settled yet
+        assert t0['projected_decayed_qty'] == 0
+
+        # Advance the round clock without landing the transit (still en route)
+        ref.current_round = dep_round + 1
+        loc1 = ref.get_vessel_location('zero')
+        assert loc1['transit']['projected_decayed_qty'] == 5  # 100 * 0.05 * 1
+
+        ref.current_round = dep_round + 2
+        loc2 = ref.get_vessel_location('zero')
+        assert loc2['transit']['projected_decayed_qty'] == 10  # 100 * 0.05 * 2
+
+        # Non-perishable cargo never projects decay regardless of elapsed rounds
+        ref2 = AgoraReferee()
+        ref2.initiate_transit('amos', 'mars', commodity='FRAG', cargo_qty=50, perishable=False)
+        ref2.current_round = 2
+        loc_durable = ref2.get_vessel_location('amos')
+        assert loc_durable['transit']['perishable'] is False
+        assert loc_durable['transit']['projected_decayed_qty'] == 0
 
 
 if __name__ == "__main__":

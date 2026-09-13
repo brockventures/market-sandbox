@@ -326,6 +326,45 @@
   .ask-row { color: var(--red); }
   .bid-row { color: var(--cyan); }
 
+  /* Issue #35: live cargo decay meter, shown per in-flight perishable transit */
+  .decay-meter-track {
+    position: relative;
+    width: 100%;
+    height: 6px;
+    border-radius: 3px;
+    background: rgba(255, 255, 255, 0.06);
+    overflow: hidden;
+    margin-top: 4px;
+  }
+  .decay-meter-fill {
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    background: linear-gradient(90deg, var(--amber-dim), var(--red));
+    transition: width 0.6s ease;
+  }
+
+  /* Issue #35: multi-station price arbitrage matrix */
+  .arb-matrix-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+  }
+  .arb-matrix-table th {
+    text-align: left;
+    color: var(--text-dim);
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--line);
+  }
+  .arb-matrix-table td {
+    padding: 7px 10px;
+    border-bottom: 1px solid rgba(38, 50, 72, 0.25);
+  }
+  .arb-margin-positive { color: var(--green); font-weight: 700; }
+  .arb-margin-negative { color: var(--red); font-weight: 700; }
+
   .spread-bar {
     background: rgba(255, 255, 255, 0.03);
     border-top: 1px solid var(--line);
@@ -842,6 +881,30 @@
           </table>
         </div>
       </div>
+
+      <!-- Issue #35: multi-station price arbitrage matrix, fuel-burn adjusted -->
+      <div style="margin-top: 20px;">
+        <div style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim); margin-bottom: 8px;">
+          MULTI-STATION ARBITRAGE MATRIX // BEST SPREAD PER COMMODITY, NET OF HYDROGEN FUEL BURN
+        </div>
+        <div style="overflow-x: auto;">
+          <table class="arb-matrix-table">
+            <thead>
+              <tr>
+                <th>Commodity</th>
+                <th>Buy At (Low)</th>
+                <th>Sell At (High)</th>
+                <th>Gross Spread</th>
+                <th>Route Fuel Burn</th>
+                <th>Net Margin (1-Unit Shipment)</th>
+              </tr>
+            </thead>
+            <tbody id="arb-matrix-tbody">
+              <tr><td colspan="6" style="color: var(--text-dim); text-align: center; padding: 14px;">Awaiting station price telemetry...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -1217,6 +1280,19 @@
   let distressBeacons = [];
   let circuitBreakerBands = [];
   let circuitBreakerHalts = [];
+
+  // Issue #35: base (non-alignment-adjusted) route fuel costs for the
+  // arbitrage matrix, mirroring agora/spatial.py's ROUTES table. Alignment
+  // windows can cut this further in-engine; the matrix shows the worst-case
+  // (base) burn so a margin shown here is never optimistic.
+  const ROUTE_FUEL = {
+    "earth->luna": 5, "luna->earth": 5,
+    "earth->mars": 15, "mars->earth": 15,
+    "luna->mars": 15, "mars->luna": 15,
+    "mars->ceres": 20, "ceres->mars": 20,
+    "earth->ceres": 30, "ceres->earth": 30,
+    "luna->ceres": 30, "ceres->luna": 30,
+  };
 
   // Deterministic Mid-Game State Fixture (Round 42)
   const MIDGAME_STATE = {
@@ -2410,6 +2486,8 @@
           if (fragEl && stData.FRAG !== undefined) fragEl.textContent = Number(stData.FRAG).toFixed(1);
           if (fuelEl && stData.FUEL !== undefined) fuelEl.textContent = Number(stData.FUEL).toFixed(1);
         });
+
+        renderArbitrageMatrix(prices);
       }
     } catch (e) {
       console.warn("Station prices poll error:", e);
@@ -2501,6 +2579,20 @@
                   </td>
                   <td style="color: var(--cyan); font-weight: 600;">
                     ${Number(t.cargo_qty || 0).toLocaleString()} ${t.commodity || 'FRAG'}
+                    ${(() => {
+                      if (!t.perishable) return "";
+                      const cargoQty = Number(t.cargo_qty || 0);
+                      const projected = Number(t.projected_decayed_qty || 0);
+                      const decayPct = cargoQty > 0 ? Math.min(100, Math.round((projected / cargoQty) * 100)) : 0;
+                      return `
+                        <div class="decay-meter-track" title="${projected} of ${cargoQty} units projected decayed in transit">
+                          <div class="decay-meter-fill" style="width: ${decayPct}%;"></div>
+                        </div>
+                        <div style="font-size: 0.65rem; color: var(--red); margin-top: 2px;">
+                          &darr; ${decayPct}% DECAY (${projected}/${cargoQty} UNITS)
+                        </div>
+                      `;
+                    })()}
                   </td>
                   <td style="color: var(--amber);">
                     ${Number(t.fuel_burned || 0).toLocaleString()} FUEL
@@ -2592,6 +2684,66 @@
         </div>
       `;
     }).join("");
+  }
+
+  // Issue #35: multi-station price arbitrage matrix, fuel-burn adjusted.
+  // For each commodity, finds the cheapest and priciest station and shows
+  // the net margin on a 1-unit shipment after paying the base fuel cost of
+  // that route (fuel cost priced at the buy-side station's own FUEL spot
+  // price). Fuel burn is a flat per-shipment cost in the referee, not
+  // per-unit, so this is a worst-case figure — a larger batch amortizes the
+  // same fuel cost across more units and nets a better margin per unit.
+  function renderArbitrageMatrix(prices) {
+    const tbody = document.getElementById("arb-matrix-tbody");
+    if (!tbody) return;
+    if (!prices || Object.keys(prices).length === 0) {
+      tbody.innerHTML = `<tr><td colspan="6" style="color: var(--text-dim); text-align: center; padding: 14px;">Awaiting station price telemetry...</td></tr>`;
+      return;
+    }
+
+    const stations = ["ceres", "mars", "luna", "earth"];
+    const commodities = ["FRAG", "FUEL"];
+
+    const rows = commodities.map(comm => {
+      let lowSt = null, highSt = null, lowPrice = Infinity, highPrice = -Infinity;
+      stations.forEach(st => {
+        const p = (prices[st] || {})[comm];
+        if (p === undefined || p === null) return;
+        if (p < lowPrice) { lowPrice = p; lowSt = st; }
+        if (p > highPrice) { highPrice = p; highSt = st; }
+      });
+      if (!lowSt || !highSt) return null;
+
+      const grossSpread = highPrice - lowPrice;
+      const routeKey = `${lowSt}->${highSt}`;
+      const fuelUnits = lowSt === highSt ? 0 : (ROUTE_FUEL[routeKey] ?? null);
+      const fuelPriceAtOrigin = (prices[lowSt] || {}).FUEL;
+      const fuelCostTotal = (fuelUnits !== null && fuelPriceAtOrigin !== undefined)
+        ? fuelUnits * fuelPriceAtOrigin : null;
+      const netMargin = fuelCostTotal !== null ? grossSpread - fuelCostTotal : null;
+      const marginClass = netMargin === null ? "" : (netMargin >= 0 ? "arb-margin-positive" : "arb-margin-negative");
+      const marginLabel = netMargin === null
+        ? "N/A (no route)"
+        : `${netMargin >= 0 ? "+" : ""}${netMargin.toFixed(2)} CR (1 unit)`;
+      const fuelLabel = fuelUnits === 0
+        ? "&mdash;"
+        : (fuelUnits !== null ? `${fuelUnits} FUEL &times; ${Number(fuelPriceAtOrigin || 0).toFixed(1)} CR` : "N/A");
+
+      return `
+        <tr>
+          <td style="font-weight: 700; color: #fff;">${comm}</td>
+          <td><span style="color: var(--cyan); font-weight: 600;">${lowSt.toUpperCase()}</span> @ ${lowPrice.toFixed(1)} CR</td>
+          <td><span style="color: var(--amber); font-weight: 600;">${highSt.toUpperCase()}</span> @ ${highPrice.toFixed(1)} CR</td>
+          <td>${grossSpread.toFixed(2)} CR</td>
+          <td style="color: var(--text-dim);">${fuelLabel}</td>
+          <td class="${marginClass}">${marginLabel}</td>
+        </tr>
+      `;
+    }).filter(Boolean);
+
+    tbody.innerHTML = rows.length
+      ? rows.join("")
+      : `<tr><td colspan="6" style="color: var(--text-dim); text-align: center; padding: 14px;">No arbitrage data available.</td></tr>`;
   }
 
   function initOrbitalRadar() {
