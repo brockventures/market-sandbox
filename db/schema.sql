@@ -27,7 +27,7 @@ CREATE TABLE ledger_entries (
 -- referee only, never by a client.
 CREATE TABLE book_events (
     seq         INTEGER PRIMARY KEY,
-    kind        TEXT NOT NULL CHECK (kind IN ('order','trade','floor_open','floor_close','cancel','news','transit','transit_arrived','borrow','loan_closed','liquidation','distress','rescue','salvage')),
+    kind        TEXT NOT NULL CHECK (kind IN ('order','trade','floor_open','floor_close','cancel','news','transit','transit_arrived','borrow','loan_closed','liquidation','distress','rescue','salvage','circuit_breaker_halt','circuit_breaker_reopen')),
     payload     TEXT NOT NULL,        -- JSON
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
@@ -135,6 +135,25 @@ CREATE TABLE salvage_claims (
     cargo_claimed   TEXT NOT NULL,
     claim_round     INTEGER NOT NULL,
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+-- Circuit breaker halts triggered by LULD breaches.
+CREATE TABLE circuit_breaker_halts (
+    halt_id         TEXT PRIMARY KEY,
+    station_id      TEXT NOT NULL,
+    instrument      TEXT NOT NULL,
+    halt_round      INTEGER NOT NULL,
+    reopen_round    INTEGER NOT NULL,
+    trigger_price   REAL NOT NULL,
+    lower_limit     REAL NOT NULL,
+    upper_limit     REAL NOT NULL,
+    vwap            REAL NOT NULL,
+    reason          TEXT NOT NULL,
+    status          TEXT NOT NULL CHECK (status IN ('halted', 'reopened', 'cancelled')),
+    reopen_price    REAL,
+    reopen_volume   INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 
 -- Orders as submitted, carrying the agent's belief about the book at

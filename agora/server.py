@@ -586,6 +586,68 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 self._send_json(200, result)
             return
 
+        if path == '/circuit_breaker/halt':
+            auth_agent, auth_err = self._authenticate_request()
+            if auth_err:
+                self._send_json(401, auth_err)
+                return
+
+            content_length = int(self.headers.get('Content-Length', 0))
+            if content_length == 0:
+                self._send_json(400, {'ok': False, 'reason': 'invalid_format', 'detail': 'Empty request body'})
+                return
+
+            try:
+                body = self.rfile.read(content_length)
+                payload = json.loads(body.decode('utf-8'))
+            except Exception as e:
+                self._send_json(400, {'ok': False, 'reason': 'invalid_format', 'detail': f'Malformed JSON: {e}'})
+                return
+
+            station_id = payload.get('station_id', 'ceres')
+            instrument = payload.get('instrument', 'FRAG')
+            trigger_price = payload.get('trigger_price', 0.0)
+            reason = payload.get('reason', 'manual_halt')
+
+            ref = self.referee or AgoraReferee()
+            result = ref.trigger_circuit_breaker_halt(
+                station_id=station_id,
+                instrument=instrument,
+                trigger_price=trigger_price,
+                reason=reason
+            )
+            self._send_json(200, result)
+            return
+
+        if path == '/circuit_breaker/reopen':
+            auth_agent, auth_err = self._authenticate_request()
+            if auth_err:
+                self._send_json(401, auth_err)
+                return
+
+            content_length = int(self.headers.get('Content-Length', 0))
+            payload = {}
+            if content_length:
+                try:
+                    body = self.rfile.read(content_length)
+                    payload = json.loads(body.decode('utf-8')) if body else {}
+                except Exception:
+                    pass
+
+            station_id = payload.get('station_id', 'ceres')
+            instrument = payload.get('instrument', 'FRAG')
+
+            ref = self.referee or AgoraReferee()
+            result = ref.reopen_circuit_breaker_auction(
+                station_id=station_id,
+                instrument=instrument
+            )
+            if not result.get('ok'):
+                self._send_json(400, result)
+            else:
+                self._send_json(200, result)
+            return
+
         if path != '/referee/orders':
             self._send_json(404, {'error': 'not_found', 'path': self.path})
             return
@@ -776,7 +838,11 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                     'salvage_distress': 'POST /salvage/distress (auth required)',
                     'salvage_quote': 'POST /salvage/quote (auth required)',
                     'salvage_accept_quote': 'POST /salvage/accept_quote (auth required)',
-                    'salvage_claim': 'POST /salvage/claim (auth required)'
+                    'salvage_claim': 'POST /salvage/claim (auth required)',
+                    'circuit_breaker_bands': 'GET /circuit_breaker/bands?station_id=&instrument=',
+                    'circuit_breaker_halts': 'GET /circuit_breaker/halts?status=halted',
+                    'circuit_breaker_halt': 'POST /circuit_breaker/halt (auth required)',
+                    'circuit_breaker_reopen': 'POST /circuit_breaker/reopen (auth required)'
                 },
                 'rules': [
                     '1. Round Bell: Every 5 minutes, Agora Trade Terminal pings @robot (<@&1543462881624858624>) in #the-banana-stand.',
@@ -914,6 +980,19 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             self._send_json(200, {
                 'status': 'ok',
                 'summary': ref.get_salvage_summary()
+            })
+        elif path == '/circuit_breaker/bands':
+            st = query_params.get('station_id', [None])[0]
+            inst = query_params.get('instrument', [None])[0]
+            self._send_json(200, {
+                'status': 'ok',
+                'bands': ref.get_circuit_breaker_bands(station_id=st, instrument=inst)
+            })
+        elif path == '/circuit_breaker/halts':
+            status = query_params.get('status', [None])[0]
+            self._send_json(200, {
+                'status': 'ok',
+                'halts': ref.get_circuit_breaker_halts(status=status)
             })
         else:
             self._send_json(404, {'error': 'not_found', 'path': self.path})
