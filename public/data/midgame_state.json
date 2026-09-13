@@ -111,7 +111,12 @@
         "departure_round": 40,
         "arrival_round": 43,
         "commodity": "FUEL",
-        "cargo_qty": 400
+        "cargo_qty": 400,
+        "perishable": true,
+        "decay_rate": 0.05,
+        "decayed_qty": 0,
+        "projected_decayed_qty": 40,
+        "fuel_burned": 30
       }
     },
     {

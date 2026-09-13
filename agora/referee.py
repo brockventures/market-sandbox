@@ -338,13 +338,26 @@ class AgoraReferee:
     def get_vessel_location(self, agent_id: str) -> Dict[str, Any]:
         cur = self.conn.cursor()
         cur.execute("""
-            SELECT transit_id, origin, destination, departure_round, arrival_round, commodity, cargo_qty, fuel_burned
+            SELECT transit_id, origin, destination, departure_round, arrival_round, commodity, cargo_qty, fuel_burned,
+                   perishable, decay_rate, decayed_qty
             FROM transits
             WHERE agent_id = ? AND status = 'in_transit'
             ORDER BY departure_round DESC LIMIT 1
         """, (agent_id,))
         tx = cur.fetchone()
         if tx:
+            # decayed_qty is only written on arrival (see step_round); while still
+            # in_transit it sits at its INSERT default of 0. A live meter needs a
+            # projection, so estimate it from elapsed rounds * decay_rate — same
+            # formula step_round uses at settlement, just evaluated early.
+            total_rounds = max(1, tx['arrival_round'] - tx['departure_round'])
+            elapsed_rounds = max(0, min(total_rounds, self.current_round - tx['departure_round']))
+            decay_rate = tx['decay_rate'] or 0.0
+            cargo_qty = tx['cargo_qty'] or 0
+            projected_decayed_qty = (
+                min(cargo_qty, int(round(cargo_qty * decay_rate * elapsed_rounds)))
+                if tx['perishable'] else 0
+            )
             return {
                 'agent_id': agent_id,
                 'station_id': 'in_transit',
@@ -358,7 +371,11 @@ class AgoraReferee:
                     'arrival_round': tx['arrival_round'],
                     'commodity': tx['commodity'],
                     'cargo_qty': tx['cargo_qty'],
-                    'fuel_burned': tx['fuel_burned']
+                    'fuel_burned': tx['fuel_burned'],
+                    'perishable': bool(tx['perishable']),
+                    'decay_rate': decay_rate,
+                    'decayed_qty': tx['decayed_qty'] or 0,
+                    'projected_decayed_qty': projected_decayed_qty
                 }
             }
 
