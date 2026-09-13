@@ -1,0 +1,1221 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>AGORA // Sol System Orbital Orrery &middot; Astrodynamics Radar</title>
+<meta name="description" content="Fullscreen Keplerian orbital mechanics orrery, real-time syndicate fleet vectors, and Hohmann alignment corridor telemetry for Station Agora.">
+<style>
+  :root {
+    --bg-void: #07030e;
+    --bg-surface: #0f071b;
+    --bg-card: rgba(22, 11, 38, 0.75);
+    --bg-card-hover: rgba(33, 16, 56, 0.88);
+    --border-card: rgba(168, 85, 247, 0.28);
+    --border-card-glow: rgba(192, 132, 252, 0.6);
+    --neon-purple: #c084fc;
+    --neon-purple-deep: #a855f7;
+    --neon-magenta: #d946ef;
+    --neon-cyan: #5ce1e6;
+    --neon-cyan-glow: rgba(92, 225, 230, 0.4);
+    --neon-amber: #fbbf24;
+    --neon-red: #f87171;
+    --neon-green: #4ade80;
+    --text-primary: #f3e8ff;
+    --text-secondary: #c084fc;
+    --text-muted: #8b72a8;
+    --font-mono: "Space Mono", "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+
+  html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background-color: var(--bg-void);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 13px;
+  }
+
+  #canvas-container {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    z-index: 1;
+  }
+
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    cursor: grab;
+  }
+  canvas:active {
+    cursor: grabbing;
+  }
+
+  .vignette-overlay {
+    position: absolute;
+    top: 0; left: 0; width: 100vw; height: 100vh;
+    pointer-events: none;
+    z-index: 2;
+    background: radial-gradient(circle at center, transparent 60%, rgba(7, 3, 14, 0.75) 100%);
+  }
+
+  .scanlines-overlay {
+    position: absolute;
+    top: 0; left: 0; width: 100vw; height: 100vh;
+    pointer-events: none;
+    z-index: 3;
+    background: linear-gradient(rgba(18, 16, 30, 0) 50%, rgba(0, 0, 0, 0.22) 50%);
+    background-size: 100% 4px;
+    opacity: 0.55;
+  }
+
+  .hud-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    z-index: 10;
+    pointer-events: none;
+    display: grid;
+    grid-template-columns: 360px 1fr 340px;
+    grid-template-rows: auto 1fr auto;
+    padding: 20px;
+    gap: 20px;
+  }
+
+  .hud-card {
+    pointer-events: auto;
+    background: var(--bg-card);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border: 1px solid var(--border-card);
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.65), 0 0 16px rgba(168, 85, 247, 0.15);
+    border-radius: 8px;
+    padding: 14px 16px;
+    transition: all 0.25s ease;
+    overflow: hidden;
+    position: relative;
+  }
+  .hud-card::before {
+    content: "";
+    position: absolute;
+    top: 0; left: 0; width: 3px; height: 100%;
+    background: var(--neon-purple);
+    box-shadow: 0 0 8px var(--neon-purple);
+  }
+  .hud-card:hover {
+    background: var(--bg-card-hover);
+    border-color: var(--border-card-glow);
+    box-shadow: 0 8px 36px 0 rgba(0, 0, 0, 0.8), 0 0 24px rgba(192, 132, 252, 0.3);
+  }
+
+  .hud-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid rgba(168, 85, 247, 0.2);
+    padding-bottom: 8px;
+    margin-bottom: 12px;
+  }
+
+  .hud-title {
+    font-size: 0.85rem;
+    font-weight: 700;
+    letter-spacing: 1px;
+    color: var(--neon-purple);
+    text-transform: uppercase;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .hud-top-left {
+    grid-column: 1;
+    grid-row: 1;
+    align-self: start;
+  }
+
+  .nav-back-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--neon-cyan);
+    background: rgba(92, 225, 230, 0.1);
+    border: 1px solid rgba(92, 225, 230, 0.4);
+    padding: 6px 12px;
+    border-radius: 4px;
+    text-decoration: none;
+    font-size: 0.8rem;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    transition: all 0.2s ease;
+    cursor: pointer;
+  }
+  .nav-back-pill:hover {
+    background: rgba(92, 225, 230, 0.25);
+    border-color: var(--neon-cyan);
+    box-shadow: 0 0 12px rgba(92, 225, 230, 0.4);
+    transform: translateX(-2px);
+  }
+
+  .status-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.75rem;
+    margin-top: 6px;
+    color: var(--text-muted);
+  }
+  .status-val {
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+  .status-val.neon-purple { color: var(--neon-purple); }
+  .status-val.neon-cyan { color: var(--neon-cyan); }
+  .status-val.neon-amber { color: var(--neon-amber); }
+  .status-val.neon-green { color: var(--neon-green); }
+
+  .hud-top-right {
+    grid-column: 3;
+    grid-row: 1;
+    align-self: start;
+  }
+
+  .layer-toggles-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .toggle-btn {
+    background: rgba(15, 7, 27, 0.7);
+    border: 1px solid rgba(168, 85, 247, 0.3);
+    color: var(--text-muted);
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    font-weight: 600;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    transition: all 0.2s ease;
+  }
+  .toggle-btn:hover {
+    border-color: var(--neon-purple);
+    color: var(--text-primary);
+  }
+  .toggle-btn.active {
+    background: rgba(168, 85, 247, 0.2);
+    border-color: var(--neon-purple);
+    color: var(--neon-purple);
+    box-shadow: 0 0 10px rgba(168, 85, 247, 0.25);
+  }
+  .toggle-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: rgba(168, 85, 247, 0.4);
+    display: inline-block;
+  }
+  .toggle-btn.active .toggle-dot {
+    background: var(--neon-cyan);
+    box-shadow: 0 0 6px var(--neon-cyan);
+  }
+
+  .hud-bottom-left {
+    grid-column: 1;
+    grid-row: 3;
+    align-self: end;
+  }
+
+  .time-controls {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .time-btn {
+    background: rgba(168, 85, 247, 0.15);
+    border: 1px solid rgba(168, 85, 247, 0.35);
+    color: var(--neon-purple);
+    padding: 6px 12px;
+    border-radius: 4px;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .time-btn:hover {
+    background: rgba(168, 85, 247, 0.3);
+    border-color: var(--neon-purple);
+    box-shadow: 0 0 8px rgba(168, 85, 247, 0.4);
+  }
+  .time-btn.primary {
+    background: rgba(92, 225, 230, 0.15);
+    border-color: var(--neon-cyan);
+    color: var(--neon-cyan);
+  }
+  .time-btn.primary:hover {
+    background: rgba(92, 225, 230, 0.3);
+    box-shadow: 0 0 10px rgba(92, 225, 230, 0.5);
+  }
+
+  .slider-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 8px;
+  }
+  .slider-row input[type="range"] {
+    flex: 1;
+    accent-color: var(--neon-purple);
+    cursor: pointer;
+  }
+
+  .hud-bottom-right {
+    grid-column: 3;
+    grid-row: 3;
+    align-self: end;
+    min-height: 200px;
+  }
+
+  .inspector-badge {
+    display: inline-block;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+  }
+  .badge-station { background: rgba(168, 85, 247, 0.25); color: var(--neon-purple); border: 1px solid var(--neon-purple); }
+  .badge-fleet { background: rgba(92, 225, 230, 0.2); color: var(--neon-cyan); border: 1px solid var(--neon-cyan); }
+  .badge-beacon { background: rgba(248, 113, 113, 0.25); color: var(--neon-red); border: 1px solid var(--neon-red); }
+
+  .data-kv {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.75rem;
+    margin: 4px 0;
+    padding-bottom: 4px;
+    border-bottom: 1px dashed rgba(168, 85, 247, 0.15);
+  }
+  .data-k { color: var(--text-muted); }
+  .data-v { color: var(--text-primary); font-weight: 600; text-align: right; }
+
+  #floating-tooltip {
+    position: absolute;
+    pointer-events: none;
+    z-index: 100;
+    transform: translate(-50%, -125%);
+    background: rgba(15, 7, 27, 0.92);
+    backdrop-filter: blur(8px);
+    border: 1px solid var(--neon-purple);
+    box-shadow: 0 0 16px rgba(168, 85, 247, 0.4);
+    border-radius: 5px;
+    padding: 6px 10px;
+    font-size: 0.72rem;
+    white-space: nowrap;
+    display: none;
+  }
+
+  .audio-toggle {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 1rem;
+    cursor: pointer;
+    transition: color 0.2s;
+  }
+  .audio-toggle:hover { color: var(--neon-purple); }
+</style>
+</head>
+<body>
+
+<div id="canvas-container">
+  <canvas id="orrery-canvas"></canvas>
+</div>
+
+<div class="vignette-overlay"></div>
+<div class="scanlines-overlay"></div>
+
+<div id="floating-tooltip"></div>
+
+<main class="hud-overlay">
+  <!-- Top-Left Navigation & Ephemeris -->
+  <div class="hud-card hud-top-left">
+    <div class="hud-card-header">
+      <a href="/terminal" class="nav-back-pill">&larr; STATION TERMINAL</a>
+      <button id="btn-audio-toggle" class="audio-toggle" title="Toggle Audio FX">🔊</button>
+    </div>
+    <div class="hud-title">SOL ASTRODYNAMICS // ORRERY</div>
+    <div class="status-row">
+      <span>COORDINATE FRAME:</span>
+      <span class="status-val neon-purple">HELIOCENTRIC J2000</span>
+    </div>
+    <div class="status-row">
+      <span>AGORA CURRENT ROUND:</span>
+      <span id="stat-round" class="status-val neon-cyan">ROUND 42</span>
+    </div>
+    <div class="status-row">
+      <span>SIMULATION MODE:</span>
+      <span id="stat-sim-mode" class="status-val neon-amber">ROUND-LOCK</span>
+    </div>
+    <div class="status-row">
+      <span>TELEMETRY LINK:</span>
+      <span id="stat-link" class="status-val neon-green">LIVE // 28ms</span>
+    </div>
+    <div class="status-row">
+      <span>CAMERA TRACKING:</span>
+      <span id="stat-tracked-entity" class="status-val neon-purple">FREE CAM</span>
+    </div>
+  </div>
+
+  <!-- Top-Right Layer & Trajectory Toggles -->
+  <div class="hud-card hud-top-right">
+    <div class="hud-card-header">
+      <div class="hud-title">LAYER VISIBILITY // HUD</div>
+      <button class="time-btn" onclick="resetView()" style="padding: 2px 8px; font-size: 0.7rem;">RESET VIEW</button>
+    </div>
+    <div class="layer-toggles-grid">
+      <button class="toggle-btn active" id="toggle-trajectories" onclick="toggleLayer('trajectories')">
+        <span>TRAJECTORIES</span><span class="toggle-dot"></span>
+      </button>
+      <button class="toggle-btn active" id="toggle-orbits" onclick="toggleLayer('orbits')">
+        <span>PLANET ORBITS</span><span class="toggle-dot"></span>
+      </button>
+      <button class="toggle-btn active" id="toggle-belt" onclick="toggleLayer('belt')">
+        <span>ASTEROID BELT</span><span class="toggle-dot"></span>
+      </button>
+      <button class="toggle-btn active" id="toggle-fleets" onclick="toggleLayer('fleets')">
+        <span>FLEET VECTORS</span><span class="toggle-dot"></span>
+      </button>
+      <button class="toggle-btn active" id="toggle-corridors" onclick="toggleLayer('corridors')">
+        <span>ALIGNMENTS</span><span class="toggle-dot"></span>
+      </button>
+      <button class="toggle-btn active" id="toggle-beacons" onclick="toggleLayer('beacons')">
+        <span>SOS BEACONS</span><span class="toggle-dot"></span>
+      </button>
+      <button class="toggle-btn active" id="toggle-grid" onclick="toggleLayer('grid')">
+        <span>AU GRID</span><span class="toggle-dot"></span>
+      </button>
+      <button class="toggle-btn active" id="toggle-labels" onclick="toggleLayer('labels')">
+        <span>DATA LABELS</span><span class="toggle-dot"></span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Bottom-Left Astrodynamics Deck -->
+  <div class="hud-card hud-bottom-left">
+    <div class="hud-card-header">
+      <div class="hud-title">TIME DILATION &amp; SIMULATION</div>
+    </div>
+    <div class="time-controls">
+      <button class="time-btn primary" id="btn-play-pause" onclick="togglePlayPause()">⏸ PAUSE</button>
+      <button class="time-btn" onclick="stepRound(-1)">&larr; RND</button>
+      <button class="time-btn" onclick="stepRound(1)">RND &rarr;</button>
+      <button class="time-btn" id="btn-mode-toggle" onclick="toggleSimMode()">MODE: KEPLER</button>
+    </div>
+    <div class="slider-row">
+      <span class="status-val neon-purple" style="font-size: 0.72rem; min-width: 60px;">SPEED: <span id="speed-label">1.0x</span></span>
+      <input type="range" id="slider-speed" min="0.1" max="10.0" step="0.1" value="1.0" oninput="updateSpeed(this.value)">
+    </div>
+    <div class="status-row" style="margin-top: 8px;">
+      <span>HOHMANN STATUS:</span>
+      <span id="stat-active-rush" class="status-val neon-cyan">NO CORRIDOR ACTIVE</span>
+    </div>
+  </div>
+
+  <!-- Bottom-Right Target Inspector -->
+  <div class="hud-card hud-bottom-right" id="inspector-card">
+    <div class="hud-card-header">
+      <div class="hud-title" id="inspector-title">TARGET TELEMETRY</div>
+      <span class="inspector-badge badge-station" id="inspector-badge">STATION</span>
+    </div>
+    <div id="inspector-body">
+      <div class="data-kv">
+        <span class="data-k">ENTITY:</span>
+        <span class="data-v neon-purple" id="insp-name">CERES // PIAZZI</span>
+      </div>
+      <div class="data-kv">
+        <span class="data-k">ORBITAL DISTANCE:</span>
+        <span class="data-v" id="insp-dist">2.77 AU (414.4M km)</span>
+      </div>
+      <div class="data-kv">
+        <span class="data-k">ORBITAL PERIOD:</span>
+        <span class="data-v" id="insp-period">4.60 Earth Yrs (1,681d)</span>
+      </div>
+      <div class="data-kv">
+        <span class="data-k">SPOT PRICING:</span>
+        <span class="data-v neon-amber" id="insp-spots">FRAG: 22 CR // FUEL: 26 CR</span>
+      </div>
+      <div class="data-kv">
+        <span class="data-k">CIRCUIT BREAKER:</span>
+        <span class="data-v neon-green" id="insp-circuit">NOMINAL (±10% LULD)</span>
+      </div>
+      <div class="data-kv">
+        <span class="data-k">DOCKED FLEET:</span>
+        <span class="data-v neon-cyan" id="insp-docked">AERIAL (Zenith Drift)</span>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+const canvas = document.getElementById("orrery-canvas");
+const ctx = canvas.getContext("2d");
+const tooltip = document.getElementById("floating-tooltip");
+
+let dpr = window.devicePixelRatio || 1;
+
+let camera = {
+  panX: 0,
+  panY: 0,
+  zoom: 1.0,
+  isDragging: false,
+  dragStartX: 0,
+  dragStartY: 0,
+  velX: 0,
+  velY: 0,
+  trackedEntity: null
+};
+
+let simState = {
+  isPlaying: true,
+  speed: 1.0,
+  mode: "round_lock",
+  epochTime: 0,
+  currentRound: 42,
+  audioEnabled: true
+};
+
+const layers = {
+  trajectories: true,
+  orbits: true,
+  belt: true,
+  fleets: true,
+  corridors: true,
+  beacons: true,
+  grid: true,
+  labels: true
+};
+
+const AU_PX = 180;
+const CELESTIAL_BODIES = {
+  sun: {
+    name: "SOL (STAR)",
+    color: "#fffaed",
+    glow: "rgba(255, 210, 100, 0.4)",
+    size: 14,
+    au: 0,
+    period: 0
+  },
+  earth: {
+    name: "EARTH // LEO",
+    color: "#38bdf8",
+    glow: "rgba(56, 189, 248, 0.35)",
+    size: 6,
+    au: 1.00,
+    period: 365.25,
+    stationId: "earth"
+  },
+  luna: {
+    name: "LUNA // SHACKLETON",
+    color: "#e2e8f0",
+    glow: "rgba(226, 232, 240, 0.25)",
+    size: 3.5,
+    parent: "earth",
+    period: 27.32,
+    stationId: "luna"
+  },
+  mars: {
+    name: "MARS // ARCADIA",
+    color: "#f87171",
+    glow: "rgba(248, 113, 113, 0.35)",
+    size: 5.5,
+    au: 1.524,
+    period: 686.98,
+    stationId: "mars"
+  },
+  ceres: {
+    name: "CERES // PIAZZI",
+    color: "#c084fc",
+    glow: "rgba(192, 132, 252, 0.4)",
+    size: 5,
+    au: 2.767,
+    period: 1681.6,
+    stationId: "ceres"
+  }
+};
+
+let asteroidBelt = [];
+function generateAsteroidBelt() {
+  asteroidBelt = [];
+  const count = 900;
+  for (let i = 0; i < count; i++) {
+    const r = (2.15 + Math.random() * 1.15) * AU_PX;
+    const theta = Math.random() * Math.PI * 2;
+    const size = 0.8 + Math.random() * 1.4;
+    const speed = (0.0002 / Math.sqrt(r / AU_PX)) * (0.8 + Math.random() * 0.4);
+    const alpha = 0.25 + Math.random() * 0.45;
+    asteroidBelt.push({ r, theta, size, speed, alpha });
+  }
+}
+
+let stationPrices = {
+  earth: { FRAG: 10.0, FUEL: 8.0 },
+  luna:  { FRAG: 12.0, FUEL: 16.0 },
+  mars:  { FRAG: 16.0, FUEL: 14.0 },
+  ceres: { FRAG: 22.0, FUEL: 26.0 }
+};
+let fleetLocations = [
+  { agent_id: "amos", station_id: "ceres", status: "docked" },
+  { agent_id: "marvin", station_id: "mars", status: "docked" },
+  { agent_id: "zero", station_id: "in_transit", status: "in_transit", transit: { origin: "earth", destination: "mars", departure_round: 40, arrival_round: 42, commodity: "FRAG", cargo_qty: 150, perishable: false } },
+  { agent_id: "aerial", station_id: "ceres", status: "docked" }
+];
+let distressBeacons = [
+  { beacon_id: "sos-blc-1", agent_id: "marvin", location: "mars_ceres", cargo_bounty: { FRAG: 40 }, status: "active" }
+];
+let orbitalWindows = [
+  { corridor_id: "earth_mars", name: "Earth-Mars Perihelion Opposition", period_rounds: 8, window_offsets: [4, 5], is_active: false },
+  { corridor_id: "mars_ceres", name: "Martian-Ceres Belt Opposition", period_rounds: 10, window_offsets: [5, 6], is_active: true, rounds_remaining: 1 },
+  { corridor_id: "earth_ceres", name: "Sol Direct Corridor", period_rounds: 12, window_offsets: [6, 7], is_active: false }
+];
+let circuitBreakerHalts = [];
+
+let selectedEntity = "ceres";
+let hoveredEntity = null;
+
+let audioCtx = null;
+function playBlip(freq = 600, duration = 0.05) {
+  if (!simState.audioEnabled) return;
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+    gain.gain.setValueAtTime(0.04, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start();
+    osc.stop(audioCtx.currentTime + duration);
+  } catch(e) {}
+}
+
+function resizeCanvas() {
+  dpr = window.devicePixelRatio || 1;
+  canvas.width = window.innerWidth * dpr;
+  canvas.height = window.innerHeight * dpr;
+  ctx.scale(dpr, dpr);
+}
+window.addEventListener("resize", resizeCanvas);
+
+function resetView() {
+  camera.panX = window.innerWidth / 2;
+  camera.panY = window.innerHeight / 2;
+  camera.zoom = 1.0;
+  camera.trackedEntity = null;
+  camera.velX = 0;
+  camera.velY = 0;
+  updateTrackedBadge();
+  playBlip(750, 0.08);
+}
+
+function getBodyCoords(bodyKey, t, rnd) {
+  const conf = CELESTIAL_BODIES[bodyKey];
+  if (!conf) return { x: 0, y: 0 };
+
+  if (bodyKey === "sun") {
+    return { x: 0, y: 0, r: 0, theta: 0 };
+  }
+
+  if (bodyKey === "luna") {
+    const earthCoords = getBodyCoords("earth", t, rnd);
+    let lunarTheta = 0;
+    if (simState.mode === "round_lock") {
+      lunarTheta = (rnd * (Math.PI * 2 / 1.5)) + 1.2;
+    } else {
+      lunarTheta = (t / conf.period) * Math.PI * 2;
+    }
+    const minVisualDist = Math.max(28, 65 / Math.max(0.4, camera.zoom));
+    const lx = earthCoords.x + Math.cos(lunarTheta) * minVisualDist;
+    const ly = earthCoords.y + Math.sin(lunarTheta) * minVisualDist;
+    return { x: lx, y: ly, r: minVisualDist, theta: lunarTheta, parent: earthCoords };
+  }
+
+  let theta = 0;
+  if (simState.mode === "round_lock") {
+    if (bodyKey === "earth") theta = (rnd * (Math.PI * 2 / 8)) + 0.8;
+    else if (bodyKey === "mars") theta = (rnd * (Math.PI * 2 / 16)) + 2.5;
+    else if (bodyKey === "ceres") theta = (rnd * (Math.PI * 2 / 24)) + 4.2;
+  } else {
+    theta = (t / conf.period) * Math.PI * 2;
+  }
+
+  const r = conf.au * AU_PX;
+  const x = Math.cos(theta) * r;
+  const y = Math.sin(theta) * r;
+  return { x, y, r, theta };
+}
+
+function worldToScreen(wx, wy) {
+  return {
+    x: wx * camera.zoom + camera.panX,
+    y: wy * camera.zoom + camera.panY
+  };
+}
+
+function screenToWorld(sx, sy) {
+  return {
+    x: (sx - camera.panX) / camera.zoom,
+    y: (sy - camera.panY) / camera.zoom
+  };
+}
+
+canvas.addEventListener("mousedown", (e) => {
+  camera.isDragging = true;
+  camera.dragStartX = e.clientX;
+  camera.dragStartY = e.clientY;
+  camera.velX = 0;
+  camera.velY = 0;
+  camera.trackedEntity = null;
+  updateTrackedBadge();
+});
+
+window.addEventListener("mousemove", (e) => {
+  if (camera.isDragging) {
+    const dx = e.clientX - camera.dragStartX;
+    const dy = e.clientY - camera.dragStartY;
+    camera.panX += dx;
+    camera.panY += dy;
+    camera.velX = dx;
+    camera.velY = dy;
+    camera.dragStartX = e.clientX;
+    camera.dragStartY = e.clientY;
+  }
+
+  const wMouse = screenToWorld(e.clientX, e.clientY);
+  let found = null;
+  let minDist = 26 / camera.zoom;
+
+  for (const [key, conf] of Object.entries(CELESTIAL_BODIES)) {
+    const pos = getBodyCoords(key, simState.epochTime, simState.currentRound);
+    const dist = Math.hypot(wMouse.x - pos.x, wMouse.y - pos.y);
+    if (dist < minDist) {
+      minDist = dist;
+      found = { type: "body", id: key, name: conf.name, x: pos.x, y: pos.y };
+    }
+  }
+
+  fleetLocations.filter(f => f.status === "in_transit" && f.transit).forEach(f => {
+    const t = f.transit;
+    const origPos = getBodyCoords(t.origin, simState.epochTime, simState.currentRound);
+    const destPos = getBodyCoords(t.destination, simState.epochTime, simState.currentRound);
+    const progress = Math.max(0.05, Math.min(0.95, (simState.currentRound - t.departure_round) / Math.max(1, t.arrival_round - t.departure_round)));
+    const midX = (origPos.x + destPos.x) / 2;
+    const midY = (origPos.y + destPos.y) / 2;
+    const shipX = (1 - progress) * (1 - progress) * origPos.x + 2 * (1 - progress) * progress * (midX * 0.7) + progress * progress * destPos.x;
+    const shipY = (1 - progress) * (1 - progress) * origPos.y + 2 * (1 - progress) * progress * (midY * 0.7) + progress * progress * destPos.y;
+    const dist = Math.hypot(wMouse.x - shipX, wMouse.y - shipY);
+    if (dist < minDist) {
+      minDist = dist;
+      found = { type: "vessel", id: f.agent_id, name: "VESSEL: " + f.agent_id.toUpperCase(), x: shipX, y: shipY, data: f };
+    }
+  });
+
+  hoveredEntity = found;
+  canvas.style.cursor = found ? "pointer" : (camera.isDragging ? "grabbing" : "grab");
+
+  if (found) {
+    tooltip.style.display = "block";
+    tooltip.style.left = e.clientX + "px";
+    tooltip.style.top = e.clientY + "px";
+    tooltip.innerHTML = '<span style="color:var(--neon-cyan); font-weight:700;">' + found.name + '</span><br><span style="color:var(--text-muted);">Double-click to lock camera</span>';
+  } else {
+    tooltip.style.display = "none";
+  }
+});
+
+window.addEventListener("mouseup", () => {
+  camera.isDragging = false;
+});
+
+canvas.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const zoomFactor = e.deltaY < 0 ? 1.15 : 0.87;
+  const newZoom = Math.max(0.18, Math.min(14.0, camera.zoom * zoomFactor));
+
+  const mouseX = e.clientX;
+  const mouseY = e.clientY;
+  const wBefore = screenToWorld(mouseX, mouseY);
+
+  camera.zoom = newZoom;
+  const sAfter = worldToScreen(wBefore.x, wBefore.y);
+  camera.panX += mouseX - sAfter.x;
+  camera.panY += mouseY - sAfter.y;
+}, { passive: false });
+
+canvas.addEventListener("click", () => {
+  if (hoveredEntity) {
+    selectedEntity = hoveredEntity.id;
+    updateInspector(hoveredEntity);
+    playBlip(880, 0.05);
+  }
+});
+
+canvas.addEventListener("dblclick", () => {
+  if (hoveredEntity) {
+    camera.trackedEntity = hoveredEntity.id;
+    updateTrackedBadge();
+    playBlip(1200, 0.08);
+  }
+});
+
+function updateTrackedBadge() {
+  const el = document.getElementById("stat-tracked-entity");
+  if (camera.trackedEntity) {
+    el.textContent = "LOCKED: " + camera.trackedEntity.toUpperCase();
+    el.className = "status-val neon-cyan";
+  } else {
+    el.textContent = "FREE CAM";
+    el.className = "status-val neon-purple";
+  }
+}
+
+function toggleLayer(layerKey) {
+  layers[layerKey] = !layers[layerKey];
+  const btn = document.getElementById("toggle-" + layerKey);
+  if (btn) {
+    btn.classList.toggle("active", layers[layerKey]);
+  }
+  playBlip(620, 0.04);
+}
+
+function togglePlayPause() {
+  simState.isPlaying = !simState.isPlaying;
+  const btn = document.getElementById("btn-play-pause");
+  btn.textContent = simState.isPlaying ? "⏸ PAUSE" : "▶ RESUME";
+  playBlip(simState.isPlaying ? 700 : 500, 0.06);
+}
+
+function updateSpeed(val) {
+  simState.speed = parseFloat(val);
+  document.getElementById("speed-label").textContent = simState.speed.toFixed(1) + "x";
+}
+
+function toggleSimMode() {
+  simState.mode = (simState.mode === "round_lock") ? "kepler" : "round_lock";
+  document.getElementById("stat-sim-mode").textContent = simState.mode.toUpperCase().replace("_", "-");
+  document.getElementById("btn-mode-toggle").textContent = simState.mode === "round_lock" ? "MODE: KEPLER" : "MODE: ROUND-LOCK";
+  playBlip(950, 0.06);
+}
+
+function stepRound(delta) {
+  simState.currentRound = Math.max(1, simState.currentRound + delta);
+  document.getElementById("stat-round").textContent = "ROUND " + simState.currentRound;
+  playBlip(600 + delta * 100, 0.05);
+}
+
+document.getElementById("btn-audio-toggle").addEventListener("click", () => {
+  simState.audioEnabled = !simState.audioEnabled;
+  document.getElementById("btn-audio-toggle").textContent = simState.audioEnabled ? "🔊" : "🔇";
+});
+
+function updateInspector(target) {
+  const title = document.getElementById("inspector-title");
+  const badge = document.getElementById("inspector-badge");
+  const name = document.getElementById("insp-name");
+  const dist = document.getElementById("insp-dist");
+  const period = document.getElementById("insp-period");
+  const spots = document.getElementById("insp-spots");
+  const circuit = document.getElementById("insp-circuit");
+  const docked = document.getElementById("insp-docked");
+
+  if (!target) return;
+
+  if (target.type === "body") {
+    const conf = CELESTIAL_BODIES[target.id] || {};
+    title.textContent = "STATION // CELESTIAL NODE";
+    badge.textContent = "STATION";
+    badge.className = "inspector-badge badge-station";
+    name.textContent = conf.name || target.id.toUpperCase();
+    dist.textContent = conf.au ? conf.au.toFixed(2) + " AU (" + (conf.au * 149.6).toFixed(1) + "M km)" : "0.00 AU (SOL CORE)";
+    period.textContent = conf.period ? (conf.period / 365.25).toFixed(2) + " Earth Yrs (" + conf.period + "d)" : "STATIONARY";
+    
+    const p = stationPrices[target.id] || {};
+    spots.textContent = p.FRAG !== undefined ? "FRAG: " + Number(p.FRAG).toFixed(0) + " CR // FUEL: " + Number(p.FUEL).toFixed(0) + " CR" : "-- CR";
+
+    const isHalted = circuitBreakerHalts.some(h => (h.station_id || "").toLowerCase() === target.id);
+    circuit.textContent = isHalted ? "⚠️ TRADING HALTED (LULD)" : "NOMINAL (±10% LULD)";
+    circuit.className = isHalted ? "data-v neon-red" : "data-v neon-green";
+
+    const vessels = fleetLocations.filter(f => f.status === "docked" && f.station_id === target.id).map(f => f.agent_id.toUpperCase());
+    docked.textContent = vessels.length > 0 ? vessels.join(", ") : "NO VESSELS BERTHED";
+  } else if (target.type === "vessel") {
+    const f = target.data || {};
+    const t = f.transit || {};
+    title.textContent = "HAULER // FLIGHT MANIFEST";
+    badge.textContent = "IN TRANSIT";
+    badge.className = "inspector-badge badge-fleet";
+    name.textContent = f.agent_id.toUpperCase() + " // FLAGSHIP";
+    dist.textContent = "ROUTE: " + t.origin.toUpperCase() + " → " + t.destination.toUpperCase();
+    period.textContent = "PROGRESS: RND " + t.departure_round + " → RND " + t.arrival_round;
+    spots.textContent = "CARGO: " + (t.cargo_qty || 0) + " " + (t.commodity || 'FRAG');
+    circuit.textContent = t.perishable ? "⚠️ PERISHABLE (5% DECAY/RND)" : "STABLE CARGO";
+    circuit.className = t.perishable ? "data-v neon-amber" : "data-v neon-green";
+    docked.textContent = "STATUS: IN TRANSIT";
+  }
+}
+
+function render(timestamp) {
+  requestAnimationFrame(render);
+
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+
+  if (simState.isPlaying) {
+    simState.epochTime += (0.2 * simState.speed);
+  }
+
+  if (camera.trackedEntity) {
+    const tPos = getBodyCoords(camera.trackedEntity, simState.epochTime, simState.currentRound);
+    const targetScreenX = w / 2 - tPos.x * camera.zoom;
+    const targetScreenY = h / 2 - tPos.y * camera.zoom;
+    camera.panX += (targetScreenX - camera.panX) * 0.08;
+    camera.panY += (targetScreenY - camera.panY) * 0.08;
+  } else if (!camera.isDragging) {
+    camera.panX += camera.velX;
+    camera.panY += camera.velY;
+    camera.velX *= 0.92;
+    camera.velY *= 0.92;
+  }
+
+  ctx.clearRect(0, 0, w, h);
+
+  const cx = camera.panX;
+  const cy = camera.panY;
+
+  // 1. AU Distance Grid Rings
+  if (layers.grid) {
+    const gridAUs = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5];
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = "rgba(168, 85, 247, 0.07)";
+    ctx.setLineDash([4, 6]);
+    gridAUs.forEach(au => {
+      const rScreen = au * AU_PX * camera.zoom;
+      ctx.beginPath();
+      ctx.arc(cx, cy, rScreen, 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.fillStyle = "rgba(168, 85, 247, 0.35)";
+      ctx.font = "9px 'Space Mono', monospace";
+      ctx.textAlign = "left";
+      ctx.fillText(au.toFixed(1) + " AU", cx + rScreen + 4, cy - 2);
+    });
+    ctx.setLineDash([]);
+
+    ctx.strokeStyle = "rgba(168, 85, 247, 0.05)";
+    ctx.beginPath();
+    ctx.moveTo(cx - 3000, cy); ctx.lineTo(cx + 3000, cy);
+    ctx.moveTo(cx, cy - 3000); ctx.lineTo(cx, cy + 3000);
+    ctx.stroke();
+  }
+
+  // 2. Planetary Orbit Paths
+  if (layers.orbits) {
+    for (const [key, conf] of Object.entries(CELESTIAL_BODIES)) {
+      if (key === "sun" || key === "luna") continue;
+      const rScreen = conf.au * AU_PX * camera.zoom;
+      ctx.strokeStyle = "rgba(168, 85, 247, 0.22)";
+      ctx.lineWidth = 1.2;
+      ctx.setLineDash([2, 4]);
+      ctx.beginPath();
+      ctx.arc(cx, cy, rScreen, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+
+  // 3. Asteroid Belt Particle Field
+  if (layers.belt) {
+    asteroidBelt.forEach(ast => {
+      if (simState.isPlaying) ast.theta += ast.speed * simState.speed;
+      const ax = cx + Math.cos(ast.theta) * ast.r * camera.zoom;
+      const ay = cy + Math.sin(ast.theta) * ast.r * camera.zoom;
+      if (ax >= -10 && ax <= w + 10 && ay >= -10 && ay <= h + 10) {
+        ctx.fillStyle = "rgba(192, 132, 252, " + ast.alpha + ")";
+        ctx.beginPath();
+        ctx.arc(ax, ay, ast.size * Math.max(0.6, camera.zoom * 0.7), 0, Math.PI * 2);
+        ctx.fill();
+      }
+    });
+  }
+
+  // 4. Active Hohmann Alignment Corridors
+  if (layers.corridors && orbitalWindows && orbitalWindows.length > 0) {
+    orbitalWindows.filter(win => win.is_active).forEach(win => {
+      document.getElementById("stat-active-rush").textContent = "ACTIVE: " + win.name.toUpperCase() + " (-50% TIME)";
+      document.getElementById("stat-active-rush").className = "status-val neon-cyan";
+
+      const rEarth = getBodyCoords("earth", simState.epochTime, simState.currentRound);
+      const rMars = getBodyCoords("mars", simState.epochTime, simState.currentRound);
+      const sE = worldToScreen(rEarth.x, rEarth.y);
+      const sM = worldToScreen(rMars.x, rMars.y);
+
+      const pulse = 0.3 + Math.sin(timestamp * 0.004) * 0.2;
+      ctx.strokeStyle = "rgba(92, 225, 230, " + pulse + ")";
+      ctx.lineWidth = 2.5;
+      ctx.setLineDash([8, 6]);
+      ctx.beginPath();
+      ctx.moveTo(sE.x, sE.y);
+      ctx.lineTo(sM.x, sM.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      const mx = (sE.x + sM.x) / 2;
+      const my = (sE.y + sM.y) / 2;
+      ctx.fillStyle = "#5ce1e6";
+      ctx.font = "bold 9px 'Space Mono', monospace";
+      ctx.textAlign = "center";
+      ctx.fillText("⚡ HOHMANN ALIGNMENT RUSH (-50% FUEL/TIME)", mx, my - 8);
+    });
+  }
+
+  // 5. Active Transits & Fleet Trajectories
+  if (layers.trajectories) {
+    fleetLocations.filter(f => f.status === "in_transit" && f.transit).forEach(f => {
+      const t = f.transit;
+      const p1 = getBodyCoords(t.origin, simState.epochTime, simState.currentRound);
+      const p2 = getBodyCoords(t.destination, simState.epochTime, simState.currentRound);
+      const s1 = worldToScreen(p1.x, p1.y);
+      const s2 = worldToScreen(p2.x, p2.y);
+
+      const midX = (s1.x + s2.x) / 2;
+      const midY = (s1.y + s2.y) / 2;
+      const cpX = (midX + cx) / 2;
+      const cpY = (midY + cy) / 2;
+
+      ctx.strokeStyle = "rgba(192, 132, 252, 0.45)";
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([5, 5]);
+      ctx.beginPath();
+      ctx.moveTo(s1.x, s1.y);
+      ctx.quadraticCurveTo(cpX, cpY, s2.x, s2.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      const dep = t.departure_round || 0;
+      const arr = t.arrival_round || (dep + 2);
+      const progress = Math.max(0.05, Math.min(0.95, (simState.currentRound - dep) / Math.max(1, arr - dep)));
+      const fracT = progress + (Math.sin(timestamp * 0.002) * 0.015);
+      const invT = 1 - fracT;
+      const shipX = invT * invT * s1.x + 2 * invT * fracT * cpX + fracT * fracT * s2.x;
+      const shipY = invT * invT * s1.y + 2 * invT * fracT * cpY + fracT * fracT * s2.y;
+
+      ctx.fillStyle = "var(--neon-cyan)";
+      ctx.beginPath();
+      ctx.arc(shipX, shipY, 4.5, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(shipX, shipY, 7.5, 0, Math.PI * 2);
+      ctx.stroke();
+
+      if (layers.labels) {
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "bold 9px 'Space Mono', monospace";
+        ctx.textAlign = "left";
+        ctx.fillText("✈ " + f.agent_id.toUpperCase() + " [" + (t.cargo_qty || 0) + " " + (t.commodity || 'FRAG') + "]", shipX + 10, shipY - 4);
+      }
+    });
+  }
+
+  // 6. Distress Beacons & Wreck Markers
+  if (layers.beacons && distressBeacons && distressBeacons.length > 0) {
+    distressBeacons.filter(b => b.status === "active").forEach(b => {
+      let bWorld = { x: 0, y: 0 };
+      if (b.location.includes("_")) {
+        const parts = b.location.split("_");
+        const p1 = getBodyCoords(parts[0], simState.epochTime, simState.currentRound);
+        const p2 = getBodyCoords(parts[1], simState.epochTime, simState.currentRound);
+        bWorld.x = (p1.x + p2.x) / 2;
+        bWorld.y = (p1.y + p2.y) / 2;
+      } else {
+        bWorld = getBodyCoords(b.location, simState.epochTime, simState.currentRound);
+      }
+      const sBeacon = worldToScreen(bWorld.x, bWorld.y);
+
+      const pulse = 5 + (Math.sin(timestamp * 0.008) + 1) * 6;
+      ctx.strokeStyle = "rgba(248, 113, 113, 0.7)";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(sBeacon.x, sBeacon.y, pulse * camera.zoom, 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.fillStyle = "#f87171";
+      ctx.beginPath();
+      ctx.arc(sBeacon.x, sBeacon.y, 4 * camera.zoom, 0, Math.PI * 2);
+      ctx.fill();
+
+      if (layers.labels) {
+        ctx.fillStyle = "#f87171";
+        ctx.font = "bold 9px 'Space Mono', monospace";
+        ctx.textAlign = "left";
+        ctx.fillText("⚠️ SOS: " + b.agent_id.toUpperCase() + " WRECK", sBeacon.x + 10, sBeacon.y + 3);
+      }
+    });
+  }
+
+  // 7. Sol (Central Radiant Star)
+  const sunGrad = ctx.createRadialGradient(cx, cy, 2, cx, cy, 32 * camera.zoom);
+  sunGrad.addColorStop(0, "#ffffff");
+  sunGrad.addColorStop(0.2, "#ffe066");
+  sunGrad.addColorStop(0.5, "rgba(217, 70, 239, 0.4)");
+  sunGrad.addColorStop(1, "transparent");
+  ctx.fillStyle = sunGrad;
+  ctx.beginPath();
+  ctx.arc(cx, cy, 32 * camera.zoom, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = "#fffbeb";
+  ctx.beginPath();
+  ctx.arc(cx, cy, 7 * Math.max(0.8, camera.zoom * 0.7), 0, Math.PI * 2);
+  ctx.fill();
+
+  // 8. Celestial Bodies & Stations
+  for (const [key, conf] of Object.entries(CELESTIAL_BODIES)) {
+    if (key === "sun") continue;
+    const pos = getBodyCoords(key, simState.epochTime, simState.currentRound);
+    const sPos = worldToScreen(pos.x, pos.y);
+
+    const isHovered = hoveredEntity && hoveredEntity.id === key;
+    const isSelected = selectedEntity === key;
+    const isHalted = circuitBreakerHalts.some(h => (h.station_id || "").toLowerCase() === key);
+
+    const bodySize = conf.size * Math.max(0.7, camera.zoom * 0.8);
+    const glowRad = bodySize * 3;
+    const glowGrad = ctx.createRadialGradient(sPos.x, sPos.y, bodySize * 0.5, sPos.x, sPos.y, glowRad);
+    glowGrad.addColorStop(0, conf.glow);
+    glowGrad.addColorStop(1, "transparent");
+    ctx.fillStyle = glowGrad;
+    ctx.beginPath();
+    ctx.arc(sPos.x, sPos.y, glowRad, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = isHalted ? "#f87171" : conf.color;
+    ctx.beginPath();
+    ctx.arc(sPos.x, sPos.y, bodySize, 0, Math.PI * 2);
+    ctx.fill();
+
+    if (isHovered || isSelected) {
+      ctx.strokeStyle = isSelected ? "var(--neon-purple)" : "rgba(255, 255, 255, 0.7)";
+      ctx.lineWidth = 1.5;
+      const reticleR = bodySize + 6 + Math.sin(timestamp * 0.006) * 2;
+      ctx.beginPath();
+      ctx.arc(sPos.x, sPos.y, reticleR, 0, Math.PI * 2);
+      ctx.stroke();
+
+      if (isSelected) {
+        ctx.fillStyle = "rgba(192, 132, 252, 0.12)";
+        ctx.beginPath();
+        ctx.arc(sPos.x, sPos.y, reticleR, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    if (layers.labels) {
+      ctx.fillStyle = isSelected ? "var(--neon-purple)" : "#ffffff";
+      ctx.font = isSelected ? "bold 10px 'Space Mono', monospace" : "9px 'Space Mono', monospace";
+      ctx.textAlign = "center";
+      ctx.fillText(conf.name.split(" // ")[0], sPos.x, sPos.y + bodySize + 12);
+
+      const p = stationPrices[key] || {};
+      if (p.FRAG !== undefined) {
+        ctx.fillStyle = "var(--neon-amber)";
+        ctx.font = "8px 'Space Mono', monospace";
+        ctx.fillText(Number(p.FRAG).toFixed(0) + " CR", sPos.x, sPos.y + bodySize + 22);
+      }
+    }
+
+    if (layers.fleets) {
+      const docked = fleetLocations.filter(f => f.status === "docked" && f.station_id === key);
+      docked.forEach((f, idx) => {
+        const angle = (Math.PI * 2 / Math.max(1, docked.length)) * idx + (timestamp * 0.001);
+        const orbitR = bodySize + 9;
+        const dx = sPos.x + Math.cos(angle) * orbitR;
+        const dy = sPos.y + Math.sin(angle) * orbitR;
+
+        ctx.fillStyle = "var(--neon-cyan)";
+        ctx.beginPath();
+        ctx.arc(dx, dy, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+
+        if (layers.labels) {
+          ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
+          ctx.font = "7px 'Space Mono', monospace";
+          ctx.textAlign = "center";
+          ctx.fillText(f.agent_id[0].toUpperCase(), dx, dy - 4);
+        }
+      });
+    }
+  }
+}
+
+async function fetchTelemetry() {
+  async function apiFetch(endpoint) {
+    let res = await fetch(endpoint, { cache: "no-store" }).catch(() => null);
+    if (!res || !res.ok) {
+      res = await fetch("https://agora-banana-production.up.railway.app" + endpoint, { cache: "no-store" }).catch(() => null);
+    }
+    return res && res.ok ? res.json() : null;
+  }
+
+  const locsData = await apiFetch("/stations/locations");
+  if (locsData && locsData.locations) {
+    fleetLocations = locsData.locations;
+  }
+
+  const winData = await apiFetch("/stations/windows");
+  if (winData && winData.windows) {
+    orbitalWindows = winData.windows;
+    if (winData.current_round) {
+      simState.currentRound = winData.current_round;
+      document.getElementById("stat-round").textContent = "ROUND " + simState.currentRound;
+    }
+  }
+
+  const beaconData = await apiFetch("/salvage/beacons?status=active");
+  if (beaconData && beaconData.beacons) {
+    distressBeacons = beaconData.beacons;
+  }
+
+  const haltData = await apiFetch("/circuit_breaker/halts?status=halted");
+  if (haltData && haltData.halts) {
+    circuitBreakerHalts = haltData.halts;
+  }
+}
+
+resizeCanvas();
+generateAsteroidBelt();
+resetView();
+fetchTelemetry();
+setInterval(fetchTelemetry, 6000);
+requestAnimationFrame(render);
+</script>
+</body>
+</html>

@@ -6,8 +6,28 @@
       "destination": "/terminal.html"
     },
     {
+      "source": "/orrery",
+      "destination": "/orrery.html"
+    },
+    {
       "source": "/referee/:path*",
       "destination": "https://agora-banana-production.up.railway.app/referee/:path*"
+    },
+    {
+      "source": "/stations/:path*",
+      "destination": "https://agora-banana-production.up.railway.app/stations/:path*"
+    },
+    {
+      "source": "/spatial/:path*",
+      "destination": "https://agora-banana-production.up.railway.app/spatial/:path*"
+    },
+    {
+      "source": "/salvage/:path*",
+      "destination": "https://agora-banana-production.up.railway.app/salvage/:path*"
+    },
+    {
+      "source": "/circuit_breaker/:path*",
+      "destination": "https://agora-banana-production.up.railway.app/circuit_breaker/:path*"
     }
   ]
 }

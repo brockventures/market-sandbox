@@ -683,6 +683,7 @@
   <header>
     <div class="terminal-brand">
       <a href="/" class="nav-back">&larr; STATION OVERVIEW</a>
+      <a href="/orrery" class="nav-back" style="color: #c084fc; border-color: rgba(168, 85, 247, 0.4); background: rgba(168, 85, 247, 0.08);">🌌 ORRERY</a>
       <h1>AGORA // REQUISITION TERMINAL</h1>
       <span class="station-badge">16 Psyche (2.92 AU)</span>
     </div>
@@ -817,10 +818,17 @@
 
   <!-- Section 2: Sol System Orbital Orrery & Transit Radar -->
   <section id="orbital-radar-section" style="margin-top: 32px;">
-    <h2>Sol System // Orbital Orrery &amp; Transit Radar</h2>
-    <p class="subhead">
-      Real-time vector scope plotting station orbits (Earth, Luna, Mars, Ceres), active freighter flight vectors, and docked syndicate fleet positions (<span class="code-kw">GET /stations/locations</span>).
-    </p>
+    <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 12px; margin-bottom: 6px;">
+      <div>
+        <h2>Sol System // Orbital Orrery &amp; Transit Radar</h2>
+        <p class="subhead">
+          Real-time vector scope plotting station orbits (Earth, Luna, Mars, Ceres), active freighter flight vectors, and docked syndicate fleet positions (<span class="code-kw">GET /stations/locations</span>).
+        </p>
+      </div>
+      <a href="/orrery" class="nav-back" style="color: #c084fc; border-color: rgba(168, 85, 247, 0.4); background: rgba(168, 85, 247, 0.12); margin-top: 4px;">
+        🌌 LAUNCH FULLSCREEN ORRERY &rarr;
+      </a>
+    </div>
 
     <div class="terminal-card">
       <div class="terminal-card-meta">

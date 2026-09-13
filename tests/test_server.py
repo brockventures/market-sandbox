@@ -601,11 +601,21 @@ class TestAgoraServer(unittest.TestCase):
             self.assertIn('text/html', resp.headers.get('Content-Type', ''))
             body = resp.read().decode('utf-8')
             self.assertIn('Sol System // Orbital Orrery &amp; Transit Radar', body)
-            self.assertIn('LIQUIDITY DEPTH MOUNTAINS', body)
-            self.assertIn('drawDepthMountain', body)
-            self.assertIn('initOrbitalRadar', body)
-            self.assertIn('DYNAMIC LULD CIRCUIT BREAKERS', body)
-            self.assertIn('pollCircuitBreakerTelemetry', body)
+            self.assertIn('LAUNCH FULLSCREEN ORRERY', body)
+
+    def test_orrery_standalone_endpoint(self):
+        """Verify /orrery and /orrery.html serve public/orrery.html."""
+        for path in ('/orrery', '/orrery.html'):
+            url = f"{self.base_url}{path}"
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                self.assertEqual(resp.status, 200)
+                self.assertIn('text/html', resp.headers.get('Content-Type', ''))
+                body = resp.read().decode('utf-8')
+                self.assertIn('SOL ASTRODYNAMICS // ORRERY', body)
+                self.assertIn('orrery-canvas', body)
+                self.assertIn('TIME DILATION &amp; SIMULATION', body)
+                self.assertIn('HELIOCENTRIC J2000', body)
 
     def test_18_equity_endpoints_and_borrow_flow(self):
         """Integration test for /equity/summary, /equity/loans, /equity/borrow, and /equity/return."""

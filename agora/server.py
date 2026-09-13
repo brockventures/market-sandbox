@@ -714,6 +714,18 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 self.wfile.write(content)
                 return
 
+        if path in ('/orrery', '/orrery.html'):
+            orrery_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'public', 'orrery.html')
+            if os.path.exists(orrery_path):
+                with open(orrery_path, 'rb') as f:
+                    content = f.read()
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.send_header('Content-Length', str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+                return
+
         if path == '/referee/health':
             valid, errors = ref.verify_ledger_invariants()
             status_code = 200 if valid else 500
