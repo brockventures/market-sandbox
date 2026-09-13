@@ -424,7 +424,7 @@
     background: rgba(255, 184, 52, 0.05);
     border: 1px solid rgba(255, 184, 52, 0.3);
     border-radius: 6px;
-    padding: 12px 16px;
+    padding: 10px 16px;
     display: flex;
     align-items: center;
     gap: 16px;
@@ -444,6 +444,7 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
+    flex-shrink: 0;
   }
 
   .galnet-ticker-text {
@@ -452,24 +453,169 @@
     color: var(--amber);
     white-space: nowrap;
     overflow: hidden;
-    text-overflow: ellipsis;
+    flex: 1;
+    min-width: 0;
   }
 
-  .galnet-ticker-text .meta {
+  .galnet-marquee-track {
+    overflow: hidden;
+    width: 100%;
+    position: relative;
+    mask-image: linear-gradient(to right, transparent, black 1.5%, black 98.5%, transparent);
+    -webkit-mask-image: linear-gradient(to right, transparent, black 1.5%, black 98.5%, transparent);
+  }
+
+  .galnet-marquee-content {
+    display: inline-flex;
+    align-items: center;
+    gap: 28px;
+    white-space: nowrap;
+    animation: galnetTickerScroll 45s linear infinite;
+  }
+
+  .galnet-marquee-content:hover {
+    animation-play-state: paused;
+    cursor: default;
+  }
+
+  @keyframes galnetTickerScroll {
+    0% { transform: translateX(0%); }
+    100% { transform: translateX(-50%); }
+  }
+
+  .galnet-bulletin-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+  }
+
+  .galnet-meta {
     color: var(--text-dim);
-    margin-right: 8px;
-  }
-
-  .galnet-ticker-text .bias-pos {
-    color: var(--green);
     font-weight: bold;
-    margin-left: 6px;
   }
 
-  .galnet-ticker-text .bias-neg {
+  .galnet-separator {
+    color: var(--amber);
+    opacity: 0.6;
+    margin: 0 4px;
+  }
+
+  .galnet-impact-badge {
+    font-size: 0.65rem;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 3px;
+    letter-spacing: 0.05em;
+  }
+
+  .galnet-impact-badge.high {
+    background: rgba(255, 77, 77, 0.25);
+    border: 1px solid var(--red);
     color: var(--red);
+  }
+
+  .galnet-impact-badge.med {
+    background: rgba(255, 184, 52, 0.25);
+    border: 1px solid var(--amber);
+    color: var(--amber);
+  }
+
+  .galnet-impact-badge.low {
+    background: rgba(92, 225, 230, 0.25);
+    border: 1px solid var(--cyan);
+    color: var(--cyan);
+  }
+
+  .galnet-drift-badge {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
     font-weight: bold;
-    margin-left: 6px;
+    padding: 1px 6px;
+    border-radius: 2px;
+  }
+
+  .galnet-drift-badge.pos {
+    background: rgba(0, 230, 153, 0.15);
+    color: var(--green);
+    border: 1px solid rgba(0, 230, 153, 0.4);
+  }
+
+  .galnet-drift-badge.neg {
+    background: rgba(255, 77, 77, 0.15);
+    color: var(--red);
+    border: 1px solid rgba(255, 77, 77, 0.4);
+  }
+
+  .luld-nominal-badge {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    color: var(--cyan);
+    background: rgba(92, 225, 230, 0.08);
+    border: 1px solid rgba(92, 225, 230, 0.25);
+    padding: 2px 7px;
+    border-radius: 3px;
+  }
+
+  .luld-active-badge {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    color: var(--green);
+    background: rgba(0, 230, 153, 0.12);
+    border: 1px solid rgba(0, 230, 153, 0.4);
+    padding: 2px 7px;
+    border-radius: 3px;
+  }
+
+  .luld-halted-badge {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    color: var(--red);
+    background: rgba(255, 77, 77, 0.2);
+    border: 1px solid var(--red);
+    padding: 2px 7px;
+    border-radius: 3px;
+    animation: haltPulse 1.4s infinite ease-in-out;
+  }
+
+  @keyframes haltPulse {
+    0%, 100% {
+      opacity: 1;
+      box-shadow: 0 0 10px rgba(255, 77, 77, 0.5);
+    }
+    50% {
+      opacity: 0.6;
+      box-shadow: 0 0 2px rgba(255, 77, 77, 0.2);
+    }
+  }
+
+  .halt-alert-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: #fff;
+    background: rgba(255, 77, 77, 0.25);
+    border: 1px solid var(--red);
+    padding: 2px 8px;
+    border-radius: 4px;
+    animation: haltPulse 1.4s infinite ease-in-out;
+    letter-spacing: 0.05em;
+  }
+
+  .station-card.station-halted {
+    border-color: rgba(255, 77, 77, 0.6) !important;
+    background: rgba(255, 77, 77, 0.06) !important;
+  }
+
+  .station-card.station-halted .station-card-status {
+    color: var(--red) !important;
+    border-color: var(--red) !important;
+    background: rgba(255, 77, 77, 0.2) !important;
+    animation: haltPulse 1.5s infinite ease-in-out;
   }
 
   /* Sol Orbital Stations Grid */
@@ -684,6 +830,7 @@
     <div class="terminal-brand">
       <a href="/" class="nav-back">&larr; STATION OVERVIEW</a>
       <a href="/orrery" class="nav-back" style="color: #c084fc; border-color: rgba(168, 85, 247, 0.4); background: rgba(168, 85, 247, 0.08);">🌌 ORRERY</a>
+      <a href="/patch-notes" class="nav-back" style="color: var(--amber); border-color: var(--amber-dim); background: rgba(255, 184, 52, 0.08);">&bull; PATCH NOTES</a>
       <h1>AGORA // REQUISITION TERMINAL</h1>
       <span class="station-badge">16 Psyche (2.92 AU)</span>
     </div>
@@ -943,8 +1090,14 @@
     <!-- Liquidity Depth Mountain Canvas -->
     <div style="background: var(--bg-card); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; margin-bottom: 16px;">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-        <span style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim);">LIQUIDITY DEPTH MOUNTAINS // CUMULATIVE BID VS ASK SURFACE</span>
-        <span style="font-family: var(--font-mono); font-size: 0.72rem; color: var(--cyan);" id="depth-summary-tag">STATION: CERES // FRAG</span>
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim);">LIQUIDITY DEPTH MOUNTAINS // CUMULATIVE BID VS ASK SURFACE</span>
+          <span id="depth-luld-status-badge" class="luld-nominal-badge">LULD: NOMINAL</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span id="market-halt-badge" class="halt-alert-badge" style="display: none;">⚠️ TRADING HALTED</span>
+          <span style="font-family: var(--font-mono); font-size: 0.72rem; color: var(--cyan);" id="depth-summary-tag">STATION: CERES // FRAG</span>
+        </div>
       </div>
       <canvas id="depth-mountain-canvas" width="1140" height="110" style="display: block; width: 100%; height: 110px; background: rgba(0,0,0,0.35); border-radius: 4px;"></canvas>
     </div>
@@ -2083,6 +2236,43 @@
 
     ctx.clearRect(0, 0, w, h);
 
+    // Dynamic LULD bands & active halt lookup
+    const activeBand = (circuitBreakerBands || []).find(b =>
+      (b.station_id || '').toLowerCase() === currentStation.toLowerCase() &&
+      (b.instrument || '').toUpperCase() === currentCommodity.toUpperCase()
+    );
+    const activeHalt = (circuitBreakerHalts || []).find(h =>
+      (h.station_id || '').toLowerCase() === currentStation.toLowerCase() &&
+      (h.instrument || '').toUpperCase() === currentCommodity.toUpperCase() &&
+      h.status === 'halted'
+    );
+    const isHalted = !!activeHalt || (activeBand && activeBand.status === 'halted');
+
+    // Update DOM Badges
+    const haltBadge = document.getElementById("market-halt-badge");
+    const luldStatusBadge = document.getElementById("depth-luld-status-badge");
+    if (haltBadge) {
+      if (isHalted) {
+        const cdRounds = (activeHalt && (activeHalt.cooldown_rounds_remaining != null ? activeHalt.cooldown_rounds_remaining : activeHalt.cooldown_rounds)) || 2;
+        haltBadge.style.display = "inline-flex";
+        haltBadge.innerHTML = `⚠️ TRADING HALTED // REOPEN IN <span id="halt-countdown-tag" style="margin-left:4px;">${cdRounds} ROUNDS</span>`;
+      } else {
+        haltBadge.style.display = "none";
+      }
+    }
+    if (luldStatusBadge) {
+      if (isHalted) {
+        luldStatusBadge.className = "luld-halted-badge";
+        luldStatusBadge.textContent = "LULD: ⚠️ LIMIT HALT";
+      } else if (activeBand) {
+        luldStatusBadge.className = "luld-active-badge";
+        luldStatusBadge.textContent = "LULD: DYNAMIC BANDS ACTIVE (±10%)";
+      } else {
+        luldStatusBadge.className = "luld-nominal-badge";
+        luldStatusBadge.textContent = "LULD: NOMINAL";
+      }
+    }
+
     // Subtle CRT background grid
     ctx.strokeStyle = "rgba(255, 255, 255, 0.05)";
     ctx.lineWidth = 1;
@@ -2101,14 +2291,6 @@
 
     const rawBids = (book && book.bids) ? [...book.bids] : [];
     const rawAsks = (book && book.asks) ? [...book.asks] : [];
-
-    if (rawBids.length === 0 && rawAsks.length === 0) {
-      ctx.fillStyle = "rgba(255, 255, 255, 0.3)";
-      ctx.font = "11px 'Space Mono', monospace";
-      ctx.textAlign = "center";
-      ctx.fillText(`NO RESTING LIQUIDITY AT ${currentStation.toUpperCase()} // ${currentCommodity}`, w / 2, h / 2 + 4);
-      return;
-    }
 
     rawBids.sort((a, b) => b.limit_price - a.limit_price);
     rawAsks.sort((a, b) => a.limit_price - b.limit_price);
@@ -2130,64 +2312,71 @@
     const maxDepth = Math.max(bTotal, aTotal, 50);
     const midX = w / 2;
     const paddingBottom = 16;
-    const graphH = h - paddingBottom - 18;
+    const graphH = h - paddingBottom - 22;
 
-    // Draw Bids Mountain (Green) on Left side
-    if (cumBids.length > 0) {
-      ctx.beginPath();
-      ctx.moveTo(midX - 10, h - paddingBottom);
+    if (rawBids.length === 0 && rawAsks.length === 0) {
+      ctx.fillStyle = "rgba(255, 255, 255, 0.3)";
+      ctx.font = "11px 'Space Mono', monospace";
+      ctx.textAlign = "center";
+      ctx.fillText(`NO RESTING LIQUIDITY AT ${currentStation.toUpperCase()} // ${currentCommodity}`, w / 2, h / 2 + 4);
+    } else {
+      // Draw Bids Mountain (Green) on Left side
+      if (cumBids.length > 0) {
+        ctx.beginPath();
+        ctx.moveTo(midX - 10, h - paddingBottom);
 
-      const stepW = (midX - 30) / cumBids.length;
-      for (let i = 0; i < cumBids.length; i++) {
-        const x = midX - 10 - (i * stepW);
-        const y = h - paddingBottom - (cumBids[i].cumQty / maxDepth) * graphH;
-        ctx.lineTo(x, y);
-        const nextX = midX - 10 - ((i + 1) * stepW);
-        ctx.lineTo(nextX, y);
+        const stepW = (midX - 30) / cumBids.length;
+        for (let i = 0; i < cumBids.length; i++) {
+          const x = midX - 10 - (i * stepW);
+          const y = h - paddingBottom - (cumBids[i].cumQty / maxDepth) * graphH;
+          ctx.lineTo(x, y);
+          const nextX = midX - 10 - ((i + 1) * stepW);
+          ctx.lineTo(nextX, y);
+        }
+        ctx.lineTo(midX - 10 - cumBids.length * stepW, h - paddingBottom);
+        ctx.closePath();
+
+        ctx.fillStyle = "rgba(0, 230, 153, 0.16)";
+        ctx.fill();
+        ctx.strokeStyle = "rgba(0, 230, 153, 0.85)";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        // Bid volume label
+        ctx.fillStyle = "var(--green)";
+        ctx.font = "10px 'Space Mono', monospace";
+        ctx.textAlign = "right";
+        ctx.fillText(`${bTotal.toLocaleString()} ${currentCommodity} BID DEPTH`, midX - 25, 28);
       }
-      ctx.lineTo(midX - 10 - cumBids.length * stepW, h - paddingBottom);
-      ctx.closePath();
 
-      ctx.fillStyle = "rgba(0, 230, 153, 0.16)";
-      ctx.fill();
-      ctx.strokeStyle = "rgba(0, 230, 153, 0.85)";
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
+      // Draw Asks Mountain (Amber) on Right side
+      if (cumAsks.length > 0) {
+        ctx.beginPath();
+        ctx.moveTo(midX + 10, h - paddingBottom);
 
-      // Bid volume label
-      ctx.fillStyle = "var(--green)";
-      ctx.font = "10px 'Space Mono', monospace";
-      ctx.textAlign = "right";
-      ctx.fillText(`${bTotal.toLocaleString()} ${currentCommodity} BID DEPTH`, midX - 25, 16);
-    }
+        const stepW = (midX - 30) / cumAsks.length;
+        for (let i = 0; i < cumAsks.length; i++) {
+          const x = midX + 10 + (i * stepW);
+          const y = h - paddingBottom - (cumAsks[i].cumQty / maxDepth) * graphH;
+          ctx.lineTo(x, y);
+          const nextX = midX + 10 + ((i + 1) * stepW);
+          ctx.lineTo(nextX, y);
+        }
+        ctx.lineTo(midX + 10 + cumAsks.length * stepW, h - paddingBottom);
+        ctx.closePath();
 
-    // Draw Asks Mountain (Amber) on Right side
-    if (cumAsks.length > 0) {
-      ctx.beginPath();
-      ctx.moveTo(midX + 10, h - paddingBottom);
+        ctx.fillStyle = "rgba(255, 184, 52, 0.16)";
+        ctx.fill();
+        ctx.strokeStyle = "rgba(255, 184, 52, 0.85)";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
 
-      const stepW = (midX - 30) / cumAsks.length;
-      for (let i = 0; i < cumAsks.length; i++) {
-        const x = midX + 10 + (i * stepW);
-        const y = h - paddingBottom - (cumAsks[i].cumQty / maxDepth) * graphH;
-        ctx.lineTo(x, y);
-        const nextX = midX + 10 + ((i + 1) * stepW);
-        ctx.lineTo(nextX, y);
+        // Ask volume label
+        ctx.fillStyle = "var(--amber)";
+        ctx.font = "10px 'Space Mono', monospace";
+        ctx.textAlign = "left";
+        ctx.fillText(`${aTotal.toLocaleString()} ${currentCommodity} ASK DEPTH`, midX + 25, 28);
       }
-      ctx.lineTo(midX + 10 + cumAsks.length * stepW, h - paddingBottom);
-      ctx.closePath();
-
-      ctx.fillStyle = "rgba(255, 184, 52, 0.16)";
-      ctx.fill();
-      ctx.strokeStyle = "rgba(255, 184, 52, 0.85)";
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-
-      // Ask volume label
-      ctx.fillStyle = "var(--amber)";
-      ctx.font = "10px 'Space Mono', monospace";
-      ctx.textAlign = "left";
-      ctx.fillText(`${aTotal.toLocaleString()} ${currentCommodity} ASK DEPTH`, midX + 25, 16);
     }
 
     // Midpoint spread gap indicator
@@ -2210,6 +2399,93 @@
     ctx.font = "8px 'Space Mono', monospace";
     ctx.textAlign = "center";
     ctx.fillText("SPREAD MIDPOINT", midX, h - 3);
+
+    // Render Dynamic LULD Volatility Bands Over Canvas
+    if (activeBand) {
+      const vwap = activeBand.vwap != null ? activeBand.vwap : activeBand.reference_price;
+      const lowerLimit = activeBand.lower_limit != null ? activeBand.lower_limit : activeBand.lower_band;
+      const upperLimit = activeBand.upper_limit != null ? activeBand.upper_limit : activeBand.upper_band;
+
+      // Lower LULD band boundary
+      const lowerX = Math.max(70, Math.round(midX * 0.28));
+      ctx.save();
+      ctx.setLineDash([4, 3]);
+      ctx.strokeStyle = "rgba(0, 230, 153, 0.75)";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(lowerX, 22);
+      ctx.lineTo(lowerX, h - paddingBottom);
+      ctx.stroke();
+
+      // Lower band warning zone tint
+      ctx.fillStyle = "rgba(0, 230, 153, 0.04)";
+      ctx.fillRect(0, 22, lowerX, h - paddingBottom - 22);
+
+      ctx.fillStyle = "var(--green)";
+      ctx.font = "9px 'Space Mono', monospace";
+      ctx.textAlign = "center";
+      ctx.fillText(`LOWER LULD: ${Number(lowerLimit).toFixed(1)} CR`, lowerX, 14);
+      ctx.restore();
+
+      // Upper LULD band boundary
+      const upperX = Math.min(w - 70, Math.round(midX + (w - midX) * 0.72));
+      ctx.save();
+      ctx.setLineDash([4, 3]);
+      ctx.strokeStyle = "rgba(255, 77, 77, 0.75)";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(upperX, 22);
+      ctx.lineTo(upperX, h - paddingBottom);
+      ctx.stroke();
+
+      // Upper band warning zone tint
+      ctx.fillStyle = "rgba(255, 77, 77, 0.04)";
+      ctx.fillRect(upperX, 22, w - upperX, h - paddingBottom - 22);
+
+      ctx.fillStyle = "var(--red)";
+      ctx.font = "9px 'Space Mono', monospace";
+      ctx.textAlign = "center";
+      ctx.fillText(`UPPER LULD: ${Number(upperLimit).toFixed(1)} CR`, upperX, 14);
+      ctx.restore();
+
+      // Reference VWAP indicator
+      ctx.save();
+      ctx.fillStyle = "rgba(92, 225, 230, 0.9)";
+      ctx.font = "9px 'Space Mono', monospace";
+      ctx.textAlign = "center";
+      ctx.fillText(`LULD REF VWAP: ${Number(vwap).toFixed(1)} CR (±10%)`, midX, 14);
+      ctx.restore();
+    }
+
+    // Render Trading Halt Warning Overlay if station is halted
+    if (isHalted) {
+      ctx.save();
+      ctx.fillStyle = "rgba(255, 77, 77, 0.16)";
+      ctx.fillRect(0, 0, w, h);
+      ctx.strokeStyle = "rgba(255, 77, 77, 0.85)";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(4, 4, w - 8, h - 8);
+
+      const bannerW = 440;
+      const bannerH = 46;
+      ctx.fillStyle = "rgba(18, 5, 5, 0.94)";
+      ctx.fillRect(midX - (bannerW / 2), (h / 2) - (bannerH / 2), bannerW, bannerH);
+      ctx.strokeStyle = "var(--red)";
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(midX - (bannerW / 2), (h / 2) - (bannerH / 2), bannerW, bannerH);
+
+      ctx.fillStyle = "#ff4d4d";
+      ctx.font = "bold 11px 'Space Mono', monospace";
+      ctx.textAlign = "center";
+      ctx.fillText(`⚠️ TRADING HALTED // ${currentStation.toUpperCase()} ${currentCommodity}`, midX, (h / 2) - 4);
+
+      const haltReason = (activeHalt && activeHalt.halt_reason) ? activeHalt.halt_reason : "Limit Up/Down Breach";
+      const cdRounds = (activeHalt && (activeHalt.cooldown_rounds_remaining != null ? activeHalt.cooldown_rounds_remaining : activeHalt.cooldown_rounds)) || 2;
+      ctx.font = "9px 'Space Mono', monospace";
+      ctx.fillStyle = "var(--amber)";
+      ctx.fillText(`${haltReason.toUpperCase()} • AUCTION REOPEN IN ${cdRounds} ROUNDS`, midX, (h / 2) + 14);
+      ctx.restore();
+    }
   }
 
   async function pollBookAndTape() {
@@ -2418,15 +2694,36 @@
         const feed = data.feed || [];
 
         if (feed.length > 0 && wireEl) {
-          const latest = feed[0];
-          const biasVal = Math.abs(Math.round((latest.drift_bias || 0) * 100));
-          const sign = (latest.drift_bias || 0) > 0 ? `+${biasVal}%` : `-${biasVal}%`;
-          const biasClass = (latest.drift_bias || 0) > 0 ? "bias-pos" : "bias-neg";
+          const itemsHtml = feed.map(item => {
+            const round = item.round || currentRound || 42;
+            const st = (item.target_station || item.station_id || '').toUpperCase();
+            const inst = (item.target_instrument || item.commodity || '').toUpperCase();
+            const bias = item.drift_bias != null ? item.drift_bias : 0;
+            const biasVal = Math.abs(Math.round(bias * 100));
+            const sign = bias >= 0 ? `+${biasVal}%` : `-${biasVal}%`;
+            const biasClass = bias >= 0 ? "pos" : "neg";
+            const impact = (item.impact || (Math.abs(bias) >= 0.2 ? "HIGH" : (Math.abs(bias) >= 0.1 ? "MED" : "LOW"))).toUpperCase();
+            const impactClass = impact.toLowerCase();
+
+            return `
+              <span class="galnet-bulletin-item">
+                <span class="galnet-meta">[RND #${round} // ${st} // ${inst}]</span>
+                <span class="galnet-impact-badge ${impactClass}">${impact} IMPACT</span>
+                <span class="galnet-drift-badge ${biasClass}">${sign} DRIFT BIAS</span>
+                <strong style="color: #fff;">${item.headline}</strong> &mdash; 
+                <span style="color: var(--text-dim);">${item.body}</span>
+              </span>
+            `;
+          }).join('<span class="galnet-separator">✦</span>');
+
           wireEl.innerHTML = `
-            <span class="meta">[ROUND #${latest.round || 1} // ${(latest.station_id || '').toUpperCase()} // ${(latest.commodity || '').toUpperCase()}]</span>
-            <strong>${latest.headline}</strong> &mdash; 
-            <span>${latest.body}</span>
-            <span class="${biasClass}">(${sign} Drift Bias)</span>
+            <div class="galnet-marquee-track">
+              <div class="galnet-marquee-content">
+                ${itemsHtml}
+                <span class="galnet-separator">✦</span>
+                ${itemsHtml}
+              </div>
+            </div>
           `;
         }
 
@@ -3325,13 +3622,39 @@
       }
 
       // 2. Fetch halts
-      let hRes = await fetch("/circuit_breaker/halts", { cache: "no-store" }).catch(() => null);
-      if (!hRes || !hRes.ok) {
-        hRes = await fetch("https://agora-banana-production.up.railway.app/circuit_breaker/halts", { cache: "no-store" }).catch(() => null);
+      let halts = null;
+      if (!isSimulationMode) {
+        let hRes = await fetch("/circuit_breaker/halts", { cache: "no-store" }).catch(() => null);
+        if (!hRes || !hRes.ok) {
+          hRes = await fetch("https://agora-banana-production.up.railway.app/circuit_breaker/halts", { cache: "no-store" }).catch(() => null);
+        }
+        if (hRes && hRes.ok) {
+          const hData = await hRes.json();
+          halts = hData.halts || [];
+        }
       }
-      if (hRes && hRes.ok) {
-        const hData = await hRes.json();
-        circuitBreakerHalts = hData.halts || [];
+      if (!halts && MIDGAME_STATE && MIDGAME_STATE.circuit_breaker) {
+        halts = MIDGAME_STATE.circuit_breaker.halts || [];
+      }
+      if (halts) {
+        circuitBreakerHalts = halts;
+
+        // Update Sol station cards with halt status
+        const stations = ["ceres", "mars", "luna", "earth"];
+        stations.forEach(st => {
+          const cardEl = document.getElementById(`station-card-${st}`);
+          const statusEl = document.getElementById(`drift-status-${st}`);
+          const stHalt = circuitBreakerHalts.find(h =>
+            (h.station_id || "").toLowerCase() === st && h.status === "halted"
+          );
+          if (cardEl) {
+            cardEl.classList.toggle("station-halted", !!stHalt);
+          }
+          if (statusEl && stHalt) {
+            statusEl.textContent = `⚠️ HALTED (${(stHalt.instrument || '').toUpperCase()})`;
+            statusEl.className = "station-card-status halt-pulse";
+          }
+        });
 
         const activeHalts = circuitBreakerHalts.filter(h => h.status === "halted");
         const deskStatus = document.getElementById("circuit-breaker-desk-status");

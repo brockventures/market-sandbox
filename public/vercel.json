@@ -10,6 +10,10 @@
       "destination": "/orrery.html"
     },
     {
+      "source": "/patch-notes",
+      "destination": "/patch-notes.html"
+    },
+    {
       "source": "/referee/:path*",
       "destination": "https://agora-banana-production.up.railway.app/referee/:path*"
     },

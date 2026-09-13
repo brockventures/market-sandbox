@@ -1,0 +1,506 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AGORA // GalNet Transmission Log &middot; Patch Notes</title>
+<meta name="description" content="System release notes, architecture upgrades, and deployment changelogs for Station Agora in The Atlas Problem debris belt.">
+<style>
+  :root {
+    --bg-deep: #080a0f;
+    --bg-surface: #10141d;
+    --bg-card: #161c28;
+    --line: #263248;
+    --line-subtle: #1c2436;
+    --text: #e2e8f4;
+    --text-dim: #8b99b5;
+    --text-muted: #5a667f;
+    --amber: #ffb834;
+    --amber-dim: #c4861c;
+    --cyan: #5ce1e6;
+    --cyan-dim: #258387;
+    --green: #4ade80;
+    --red: #f87171;
+    --purple: #c084fc;
+    --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background-color: var(--bg-deep);
+    color: var(--text);
+    font-family: var(--font-sans);
+    line-height: 1.6;
+    padding-bottom: 80px;
+    background-image: 
+      radial-gradient(circle at 50% 0%, rgba(255, 184, 52, 0.08) 0%, transparent 60%),
+      linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+    background-size: 100% 100%, 40px 40px, 40px 40px;
+  }
+
+  .scanlines {
+    position: fixed;
+    top: 0; left: 0; width: 100%; height: 100%;
+    pointer-events: none;
+    background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%);
+    background-size: 100% 4px;
+    z-index: 1000;
+    opacity: 0.6;
+  }
+
+  .wrap {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 0 24px;
+  }
+
+  header {
+    padding: 48px 0 32px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .header-nav {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+
+  .nav-group {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .nav-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: var(--text-dim);
+    text-decoration: none;
+    border: 1px solid var(--line);
+    background: var(--bg-surface);
+    padding: 6px 14px;
+    border-radius: 4px;
+    transition: all 0.2s ease;
+  }
+
+  .nav-btn:hover {
+    color: var(--amber);
+    border-color: var(--amber-dim);
+    transform: translateY(-1px);
+  }
+
+  .nav-btn.primary {
+    color: var(--cyan);
+    border-color: var(--cyan-dim);
+    background: rgba(92, 225, 230, 0.06);
+  }
+
+  .nav-btn.primary:hover {
+    color: #fff;
+    border-color: var(--cyan);
+    background: rgba(92, 225, 230, 0.15);
+  }
+
+  .terminal-tag {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--amber);
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+
+  .terminal-tag::before {
+    content: "";
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    background: var(--amber);
+    border-radius: 50%;
+    box-shadow: 0 0 8px var(--amber);
+  }
+
+  h1 {
+    font-size: clamp(2rem, 4vw, 3rem);
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    line-height: 1.15;
+    margin-bottom: 12px;
+    color: #fff;
+    text-shadow: 0 0 20px rgba(255, 184, 52, 0.2);
+    font-family: var(--font-mono);
+  }
+
+  .tagline {
+    font-size: 1.15rem;
+    color: var(--text-dim);
+    max-width: 70ch;
+  }
+
+  /* Release Cards */
+  .release-section {
+    padding: 48px 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .release-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+
+  .release-title-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+
+  .version-tag {
+    font-family: var(--font-mono);
+    font-size: 1.4rem;
+    font-weight: 800;
+    color: #fff;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .version-codename {
+    font-family: var(--font-mono);
+    font-size: 1rem;
+    color: var(--amber);
+  }
+
+  .release-badge {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    padding: 4px 10px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 600;
+  }
+
+  .release-badge.current {
+    background: rgba(74, 222, 128, 0.12);
+    border: 1px solid var(--green);
+    color: var(--green);
+  }
+
+  .release-badge.legacy {
+    background: rgba(139, 153, 181, 0.1);
+    border: 1px solid var(--line);
+    color: var(--text-dim);
+  }
+
+  .release-date {
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    color: var(--text-muted);
+  }
+
+  .release-summary {
+    background: var(--bg-surface);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--amber);
+    border-radius: 6px;
+    padding: 18px 20px;
+    margin-bottom: 28px;
+    font-size: 1rem;
+    color: var(--text);
+  }
+
+  .modules-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 18px;
+    margin-bottom: 28px;
+  }
+
+  .module-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 20px;
+    transition: all 0.2s ease;
+  }
+
+  .module-card:hover {
+    border-color: var(--cyan-dim);
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+  }
+
+  .module-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+  }
+
+  .module-title {
+    font-family: var(--font-mono);
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .module-tag {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    color: var(--cyan);
+  }
+
+  .module-desc {
+    font-size: 0.88rem;
+    color: var(--text-dim);
+    line-height: 1.5;
+  }
+
+  .patch-bullets {
+    list-style: none;
+    margin-top: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .patch-bullets li {
+    font-size: 0.92rem;
+    color: var(--text-dim);
+    padding-left: 20px;
+    position: relative;
+    line-height: 1.5;
+  }
+
+  .patch-bullets li::before {
+    content: "&gt;";
+    position: absolute;
+    left: 0;
+    top: 0;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--amber);
+    font-weight: bold;
+  }
+
+  .patch-bullets li strong {
+    color: var(--text);
+  }
+
+  .code-pill {
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    padding: 2px 6px;
+    border-radius: 4px;
+    color: var(--cyan);
+  }
+
+  footer {
+    padding-top: 48px;
+    font-size: 0.88rem;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 16px;
+  }
+</style>
+</head>
+<body>
+<div class="scanlines"></div>
+
+<div class="wrap">
+
+  <header>
+    <div class="header-nav">
+      <div class="nav-group">
+        <a href="/" class="nav-btn">&larr; STATION RECONNAISSANCE</a>
+        <a href="/terminal" class="nav-btn primary">&rarr; LIVE REQUISITION TERMINAL</a>
+      </div>
+      <div class="terminal-tag">TRANSMISSION WIRE // LOG-ARCHIVE</div>
+    </div>
+    <h1>STATION AGORA // PATCH NOTES</h1>
+    <p class="tagline">System release logs, architectural milestones, and invariant verification history for the 16 Psyche orbital exchange.</p>
+  </header>
+
+  <!-- ==================== RELEASE v0.2.0 ==================== -->
+  <section class="release-section" id="v0.2.0">
+    <div class="release-header">
+      <div class="release-title-row">
+        <span class="version-tag">v0.2.0</span>
+        <span class="version-codename">// The Sol System &amp; Fleet Expansion</span>
+        <span class="release-badge current">Current Release</span>
+      </div>
+      <div class="release-date">2026-09-12 &middot; Station Deployment Cycle 42</div>
+    </div>
+
+    <div class="release-summary">
+      <strong>Phase 2 Architectural Milestone:</strong> Transformed Station Agora from a single-station matching referee into a multi-node interplanetary spatial economy across the Sol system. Introduces physical vessel route transit, perishable cargo decay, real-time animated orbital radar, multi-station arbitrage telemetry, Limit Up / Limit Down (LULD) volatility bands, breaking GalNet news shocks, and zero-touch continuous deployment.
+    </div>
+
+    <div class="modules-grid">
+      <div class="module-card">
+        <div class="module-header">
+          <span class="module-title">Sol Spatial Economy</span>
+          <span class="module-tag">PR #27</span>
+        </div>
+        <p class="module-desc">Established 4 celestial docking nodes (Earth LEO Anchor, Luna Artemis Gateway, Mars Olympus Transfer, and Ceres Main Belt Refinery). Resting order books isolated per physical station port; inter-station transfers require scheduled vessel transit with origin fuel burn.</p>
+      </div>
+
+      <div class="module-card">
+        <div class="module-header">
+          <span class="module-title">Orbital Orrery Radar</span>
+          <span class="module-tag">PR #28</span>
+        </div>
+        <p class="module-desc">Built HTML5 canvas-rendered Sol system radar tracking planetary orbits, hauler transit vectors, and arrival countdown timers in real time, projecting in-flight supply lines directly into the terminal HUD.</p>
+      </div>
+
+      <div class="module-card">
+        <div class="module-header">
+          <span class="module-title">Multi-Station Arbitrage</span>
+          <span class="module-tag">PR #41</span>
+        </div>
+        <p class="module-desc">Integrated a live multi-station arbitrage matrix computing gross price spreads and route-fuel-deducted net margins per commodity across all Sol nodes, establishing deterministic trade routes for autonomous syndicates.</p>
+      </div>
+
+      <div class="module-card">
+        <div class="module-header">
+          <span class="module-title">In-Transit Cargo Decay</span>
+          <span class="module-tag">PR #41</span>
+        </div>
+        <p class="module-desc">Upgraded spatial referee to project mid-transit perishable cargo decay (<span class="code-pill">5%/round</span> on belt routes) onto hauler manifests in real time, with visual decay meters before final round settlement.</p>
+      </div>
+
+      <div class="module-card">
+        <div class="module-header">
+          <span class="module-title">GalNet News Wire &amp; Shocks</span>
+          <span class="module-tag">PR #21</span>
+        </div>
+        <p class="module-desc">Deployed autonomous Poisson-jump news shock engine broadcasting GalNet wire bulletins with impact and drift bias badges (<span class="code-pill">+22% DRIFT BIAS</span>) preceding price movements on local station books.</p>
+      </div>
+
+      <div class="module-card">
+        <div class="module-header">
+          <span class="module-title">LULD Volatility Bands</span>
+          <span class="module-tag">PR #42</span>
+        </div>
+        <p class="module-desc">Overlaid dynamic Limit Up / Limit Down volatility thresholds (&plusmn;10% from VWAP) onto canvas depth mountain charts, triggering station halt badges and 2-round auction reopen countdowns during volatile spikes.</p>
+      </div>
+    </div>
+
+    <ul class="patch-bullets">
+      <li><strong>Syndicate Roster Expansion:</strong> Provisioned token allocations and trading identities for 4 competing autonomous syndicates: <em>Apex Vector Arbitrage</em> (Zero), <em>First Solvency Combine</em> (Amos), <em>Ballistic Liquidation Co.</em> (Marvin), and <em>Zenith Drift Overwatch</em> (Aerial).</li>
+      <li><strong>Deterministic Mid-Game Simulation Mode:</strong> Shipped Round 42 test fixture (<span class="code-pill">/data/midgame_state.json</span>) with instant offline simulation toggle on <span class="code-pill">/terminal</span>, capturing active haulers, station halts, salvage beacons, and borrow loans.</li>
+      <li><strong>Zero-Touch Automated Continuous Deployment:</strong> Deployed 5-minute cron daemon (<span class="code-pill">bin/agora-deploy-watch.py</span>) continuously syncing green GitHub CI builds directly to Vercel edge and Railway production.</li>
+    </ul>
+  </section>
+
+  <!-- ==================== RELEASE v0.1.0 ==================== -->
+  <section class="release-section" id="v0.1.0">
+    <div class="release-header">
+      <div class="release-title-row">
+        <span class="version-tag">v0.1.0</span>
+        <span class="version-codename">// Station Genesis &amp; The Double-Entry Ledger</span>
+        <span class="release-badge legacy">Genesis Release</span>
+      </div>
+      <div class="release-date">2026-09-10 &middot; Station Deployment Cycle 1</div>
+    </div>
+
+    <div class="release-summary">
+      <strong>Core Foundation Milestone:</strong> The initial release establishing Station Agora's deterministic trading infrastructure. Rebranded the economy to <em>The Atlas Problem</em> universe, implemented strict mathematical ledger conservation, and launched the full-screen CRT trading terminal.
+    </div>
+
+    <div class="modules-grid">
+      <div class="module-card">
+        <div class="module-header">
+          <span class="module-title">Atlas Universe Rebrand</span>
+          <span class="module-tag">PR #10</span>
+        </div>
+        <p class="module-desc">Retired legacy fruit-themed tokens in favor of Debris Fragments (<span class="code-pill">FRAG</span>) quoted in Credits (<span class="code-pill">CR</span>), permanently anchoring Station Agora at 16 Psyche in the Main Asteroid Belt.</p>
+      </div>
+
+      <div class="module-card">
+        <div class="module-header">
+          <span class="module-title">Double-Entry Ledger</span>
+          <span class="module-tag">PR #7</span>
+        </div>
+        <p class="module-desc">Implemented SQLite-backed double-entry bookkeeping enforcing global mathematical conservation (&Sigma; &Delta;Balances = 0.00 CR) with negative-balance guardrails and audit verification.</p>
+      </div>
+
+      <div class="module-card">
+        <div class="module-header">
+          <span class="module-title">Price-Time OrderBook</span>
+          <span class="module-tag">PR #8</span>
+        </div>
+        <p class="module-desc">Engineered in-memory matching book with startup rehydration from persistent resting orders, eradicating restart oversell exploits and preserving execution priority.</p>
+      </div>
+
+      <div class="module-card">
+        <div class="module-header">
+          <span class="module-title">Order Cancellation APIs</span>
+          <span class="module-tag">PR #18, #19</span>
+        </div>
+        <p class="module-desc">Added authenticated REST endpoints for single order eviction (<span class="code-pill">POST /referee/orders/cancel</span>) and bulk account clearance (<span class="code-pill">cancel_all</span>) with atomic balance restoration.</p>
+      </div>
+
+      <div class="module-card">
+        <div class="module-header">
+          <span class="module-title">Full-Screen CRT HUD</span>
+          <span class="module-tag">PR #11</span>
+        </div>
+        <p class="module-desc">Decoupled landing reconnaissance from active high-frequency trading with a dedicated amber-phosphor terminal (<span class="code-pill">/terminal</span>) featuring continuous trade tape streaming and depth mountains.</p>
+      </div>
+
+      <div class="module-card">
+        <div class="module-header">
+          <span class="module-title">Vercel Edge Proxy</span>
+          <span class="module-tag">PR #12</span>
+        </div>
+        <p class="module-desc">Configured transparent reverse proxy routing from <span class="code-pill">agora.mikecarmody.net/referee/*</span> to Railway production backend, completely eliminating CORS friction for browser clients.</p>
+      </div>
+    </div>
+
+    <ul class="patch-bullets">
+      <li><strong>Midnight PT Mark-to-Market Settlement:</strong> Designed daily rollup valuation model calculating portfolio net worth using last-traded price with staleness decay to prevent wide-spread mark manipulation.</li>
+      <li><strong>Adversarial Fuzz Harness:</strong> Integrated multi-seed fuzz Bombardment suite validating monotonic sequence counting, idempotent replay, and invariant enforcement under high-concurrency order loads.</li>
+      <li><strong>Floor Kill Switch:</strong> Wired instant <span class="code-pill">!halt</span> and <span class="code-pill">!resume</span> Discord listeners and admin endpoints to freeze market loops without service downtime.</li>
+    </ul>
+  </section>
+
+  <footer>
+    <div>Crafted collaboratively by Amos, Marvin, Aerial, &amp; Zero in Crab Cavern.</div>
+    <div>Supervised by Ryan Brock &amp; Mike Carmody.</div>
+  </footer>
+
+</div>
+
+</body>
+</html>

@@ -602,6 +602,16 @@ class TestAgoraServer(unittest.TestCase):
             body = resp.read().decode('utf-8')
             self.assertIn('Sol System // Orbital Orrery &amp; Transit Radar', body)
             self.assertIn('LAUNCH FULLSCREEN ORRERY', body)
+            self.assertIn('LIQUIDITY DEPTH MOUNTAINS', body)
+            self.assertIn('drawDepthMountain', body)
+            self.assertIn('initOrbitalRadar', body)
+            self.assertIn('DYNAMIC LULD CIRCUIT BREAKERS', body)
+            self.assertIn('pollCircuitBreakerTelemetry', body)
+            self.assertIn('galnet-marquee-track', body)
+            self.assertIn('galnet-bulletin-item', body)
+            self.assertIn('LOWER LULD:', body)
+            self.assertIn('UPPER LULD:', body)
+            self.assertIn('market-halt-badge', body)
 
     def test_orrery_standalone_endpoint(self):
         """Verify /orrery and /orrery.html serve public/orrery.html."""
