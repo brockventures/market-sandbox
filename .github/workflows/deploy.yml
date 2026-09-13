@@ -1,0 +1,46 @@
+name: Deploy
+
+# Runs after CI finishes on main, not directly on push — a push to main that
+# somehow lands with red tests (branch protection normally prevents this,
+# but doesn't cover an admin force-push) should never trigger a production
+# deploy. workflow_run lets us gate on the CI workflow's actual conclusion
+# instead of re-running the test suite a second time here.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+jobs:
+  deploy:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      # Vercel: public/ is the project root (see public/vercel.json).
+      # VERCEL_ORG_ID / VERCEL_PROJECT_ID must point at the EXISTING "agora"
+      # project (org team_aANMAmNHADcEFpaL3obO7YsJ, project
+      # prj_MsIZsIsUesuVZdTgbvOc8B8rM04l) — get either wrong or leave one
+      # unset and the Vercel CLI does not error, it silently creates a NEW
+      # project instead. Confirmed the hard way 2026-09-12
+      # (bin/agora-deploy-watch.py's EXPECTED_VERCEL_PROJECT_ID/
+      # EXPECTED_VERCEL_ORG_ID guard exists because of this exact trap).
+      - name: Deploy to Vercel
+        working-directory: public
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: npx vercel@latest deploy --prod --token=${{ secrets.VERCEL_TOKEN }} --yes
+
+      # Railway: agora-banana service, production environment. Optional —
+      # this step is skipped (not failed) if RAILWAY_TOKEN isn't set yet, so
+      # this workflow can land and start covering Vercel before Railway's
+      # secret is added.
+      - name: Deploy to Railway
+        if: ${{ secrets.RAILWAY_TOKEN != '' }}
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: npx @railway/cli up --service agora-banana --environment production --detach
