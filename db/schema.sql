@@ -27,7 +27,7 @@ CREATE TABLE ledger_entries (
 -- referee only, never by a client.
 CREATE TABLE book_events (
     seq         INTEGER PRIMARY KEY,
-    kind        TEXT NOT NULL CHECK (kind IN ('order','trade','floor_open','floor_close','cancel','news','transit','transit_arrived','borrow','loan_closed','liquidation')),
+    kind        TEXT NOT NULL CHECK (kind IN ('order','trade','floor_open','floor_close','cancel','news','transit','transit_arrived','borrow','loan_closed','liquidation','distress','rescue','salvage')),
     payload     TEXT NOT NULL,        -- JSON
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
@@ -84,6 +84,57 @@ CREATE TABLE equity_loans (
     status          TEXT NOT NULL CHECK (status IN ('active', 'closed', 'liquidated')),
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     closed_at       TEXT
+);
+
+-- Distress beacons and wreck markers for stranded vessels.
+CREATE TABLE distress_beacons (
+    beacon_id       TEXT PRIMARY KEY,
+    agent_id        TEXT NOT NULL,
+    location        TEXT NOT NULL,
+    origin          TEXT,
+    destination     TEXT,
+    transit_id      TEXT,
+    round_declared  INTEGER NOT NULL,
+    reason          TEXT NOT NULL DEFAULT 'out_of_fuel',
+    cargo_bounty    TEXT NOT NULL DEFAULT '{}',
+    status          TEXT NOT NULL CHECK (status IN ('active', 'rescued', 'salvaged', 'cancelled')),
+    rescued_by      TEXT,
+    salvaged_by     TEXT,
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+-- Emergency Rescue RFQs.
+CREATE TABLE rescue_rfqs (
+    rfq_id          TEXT PRIMARY KEY,
+    beacon_id       TEXT NOT NULL,
+    agent_id        TEXT NOT NULL,
+    fuel_needed     INTEGER NOT NULL,
+    max_reward_cr   INTEGER NOT NULL DEFAULT 0,
+    status          TEXT NOT NULL CHECK (status IN ('open', 'accepted', 'expired', 'cancelled')),
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+-- Competitive rival quotes for rescue fuel.
+CREATE TABLE rescue_quotes (
+    quote_id        TEXT PRIMARY KEY,
+    rfq_id          TEXT NOT NULL,
+    beacon_id       TEXT NOT NULL,
+    rescuer_id      TEXT NOT NULL,
+    fuel_offered    INTEGER NOT NULL,
+    price_cr        INTEGER NOT NULL,
+    status          TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'rejected', 'expired')),
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+-- Derelict cargo salvage claims.
+CREATE TABLE salvage_claims (
+    claim_id        TEXT PRIMARY KEY,
+    beacon_id       TEXT NOT NULL,
+    salvager_id     TEXT NOT NULL,
+    cargo_claimed   TEXT NOT NULL,
+    claim_round     INTEGER NOT NULL,
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 
 -- Orders as submitted, carrying the agent's belief about the book at

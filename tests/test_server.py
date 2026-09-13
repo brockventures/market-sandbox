@@ -706,6 +706,87 @@ class TestAgoraServer(unittest.TestCase):
         self.assertTrue(data['invariants_valid'])
         self.assertEqual(len(data['errors']), 0)
 
+    def test_20_salvage_and_rescue_endpoints(self):
+        # 1. GET /salvage/summary initially clean
+        status, data = self._get('/salvage/summary')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['status'], 'ok')
+        self.assertIn('summary', data)
+
+        # 2. amos declares distress
+        status, data = self._post(
+            '/salvage/distress',
+            {
+                'location': 'mars',
+                'cargo_bounty': {'FRAG': 50},
+                'fuel_needed': 15,
+                'max_reward_cr': 200
+            },
+            token=self.auth_tokens['amos']
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(data['ok'])
+        beacon_id = data['beacon_id']
+        rfq_id = data['rfq_id']
+
+        # 3. GET /salvage/beacons verifies active beacon
+        status, data = self._get('/salvage/beacons?status=active')
+        self.assertEqual(status, 200)
+        self.assertTrue(any(b['beacon_id'] == beacon_id for b in data['beacons']))
+
+        # 4. marvin quotes rescue
+        status, data = self._post(
+            '/salvage/quote',
+            {
+                'rfq_id': rfq_id,
+                'fuel_offered': 15,
+                'price_cr': 120
+            },
+            token=self.auth_tokens['marvin']
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(data['ok'])
+        quote_id = data['quote_id']
+
+        # 5. amos accepts rescue quote
+        status, data = self._post(
+            '/salvage/accept_quote',
+            {'quote_id': quote_id},
+            token=self.auth_tokens['amos']
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['status'], 'rescued')
+
+        # 6. zero declares distress and marvin claims salvage
+        status, data = self._post(
+            '/salvage/distress',
+            {
+                'location': 'ceres_earth',
+                'cargo_bounty': {'FRAG': 25},
+                'fuel_needed': 30
+            },
+            token=self.auth_tokens['zero']
+        )
+        self.assertEqual(status, 200)
+        zero_beacon = data['beacon_id']
+
+        # marvin claims derelict
+        status, data = self._post(
+            '/salvage/claim',
+            {'beacon_id': zero_beacon},
+            token=self.auth_tokens['marvin']
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['status'], 'salvaged')
+
+        # 7. Invariants check
+        status, data = self._get('/referee/health')
+        self.assertEqual(status, 200)
+        self.assertTrue(data['invariants_valid'])
+        self.assertEqual(len(data['errors']), 0)
+
 
 if __name__ == '__main__':
     unittest.main()

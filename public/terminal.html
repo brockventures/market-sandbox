@@ -1021,6 +1021,88 @@
         </table>
       </div>
     </div>
+
+    <!-- Derelict Salvage Claims & Distress Escrow Desk (Issue #22) -->
+    <div class="terminal-card" style="margin-top: 20px;">
+      <div class="terminal-card-meta">
+        <div class="telemetry-indicator" style="color: var(--red); background: rgba(248, 113, 113, 0.08); border-color: rgba(248, 113, 113, 0.25);">
+          <span class="pulse-node" style="background: var(--red); box-shadow: 0 0 8px var(--red);"></span>
+          <span>DERELICT SALVAGE &amp; DISTRESS ESCROW DESK // STRANDED WRECKS &amp; RESCUE RFQS</span>
+        </div>
+        <span style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim);" id="salvage-desk-status">BEACONS: 0 ACTIVE</span>
+      </div>
+
+      <!-- Active Distress Beacons Table -->
+      <div style="margin-bottom: 16px;">
+        <div style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim); margin-bottom: 8px;">
+          ACTIVE DISTRESS BEACONS &amp; STRANDED WRECKS (<span class="code-kw">GET /salvage/beacons</span>)
+        </div>
+        <div style="overflow-x: auto;">
+          <table class="manifest-table">
+            <thead>
+              <tr>
+                <th>Beacon ID</th>
+                <th>Stranded Vessel</th>
+                <th>Orbital Location</th>
+                <th>Cargo Bounty</th>
+                <th>Declared Round</th>
+                <th>Distress Status</th>
+              </tr>
+            </thead>
+            <tbody id="distress-beacons-tbody">
+              <tr><td colspan="6" style="color: var(--text-dim); text-align: center; padding: 14px;">No active distress beacons. All vessels operational.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Open Rescue RFQs & Quotes -->
+      <div style="margin-bottom: 16px;">
+        <div style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim); margin-bottom: 8px;">
+          OPEN RESCUE RFQS &amp; PROPELLANT QUOTES (<span class="code-kw">GET /salvage/rfqs</span>)
+        </div>
+        <div style="overflow-x: auto;">
+          <table class="manifest-table">
+            <thead>
+              <tr>
+                <th>RFQ ID</th>
+                <th>Stranded Syndicate</th>
+                <th>Fuel Required</th>
+                <th>Reward Offered</th>
+                <th>Best Rescue Quote</th>
+                <th>RFQ Status</th>
+              </tr>
+            </thead>
+            <tbody id="rescue-rfqs-tbody">
+              <tr><td colspan="6" style="color: var(--text-dim); text-align: center; padding: 14px;">No open rescue RFQs.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Recent Salvage Claims -->
+      <div>
+        <div style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim); margin-bottom: 8px;">
+          RECENT DERELICT SALVAGE CLAIMS (<span class="code-kw">POST /salvage/claim</span>)
+        </div>
+        <div style="overflow-x: auto;">
+          <table class="manifest-table">
+            <thead>
+              <tr>
+                <th>Claim ID</th>
+                <th>Salvager Syndicate</th>
+                <th>Target Wreck</th>
+                <th>Loot Claimed</th>
+                <th>Round</th>
+              </tr>
+            </thead>
+            <tbody id="salvage-claims-tbody">
+              <tr><td colspan="5" style="color: var(--text-dim); text-align: center; padding: 14px;">No recent salvage claims recorded.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
   </section>
 
   <footer>
@@ -1053,6 +1135,7 @@
   let lastSeenTickSeq = 0;
   let cachedTicks = [];
   let orbitalWindows = [];
+  let distressBeacons = [];
 
   function selectStation(st) {
     currentStation = (st || 'ceres').toLowerCase();
@@ -1905,6 +1988,46 @@
         }
       });
 
+      // 4b. Active Distress Beacons & Derelict Wrecks (Issue #22)
+      if (distressBeacons && distressBeacons.length > 0) {
+        distressBeacons.filter(b => b.status === "active").forEach(b => {
+          let beaconX = cx, beaconY = cy;
+          const loc = (b.location || "").toLowerCase();
+          if (stationCoords[loc]) {
+            beaconX = stationCoords[loc].x + 14;
+            beaconY = stationCoords[loc].y - 14;
+          } else if (loc.includes("_")) {
+            const parts = loc.split("_");
+            const st1 = parts[0];
+            const st2 = parts[1];
+            if (stationCoords[st1] && stationCoords[st2]) {
+              beaconX = (stationCoords[st1].x + stationCoords[st2].x) / 2;
+              beaconY = (stationCoords[st1].y + stationCoords[st2].y) / 2;
+            }
+          }
+
+          const pulse = 4 + (Math.sin(timestamp * 0.008) + 1) * 4;
+          // Radiating hazard wave
+          ctx.strokeStyle = "rgba(248, 113, 113, 0.6)";
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.arc(beaconX, beaconY, pulse + 6, 0, Math.PI * 2);
+          ctx.stroke();
+
+          // Pulsing red beacon core
+          ctx.fillStyle = "#f87171";
+          ctx.beginPath();
+          ctx.arc(beaconX, beaconY, 5, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = "#ffffff";
+          ctx.font = "bold 9px 'Space Mono', monospace";
+          ctx.textAlign = "left";
+          const bountyText = Object.entries(b.cargo_bounty || {}).map(([c, q]) => `${q} ${c}`).join(", ") || "NO CARGO";
+          ctx.fillText(`⚠️ SOS: ${(b.agent_id || '').toUpperCase()} [${bountyText}]`, beaconX + 10, beaconY + 3);
+        });
+      }
+
       // 5. Stations and docked vessels
       for (const [st, data] of Object.entries(stationCoords)) {
         const { x, y, conf } = data;
@@ -2053,6 +2176,114 @@
     }
   }
 
+  async function pollSalvageTelemetry() {
+    try {
+      let res = await fetch("/salvage/summary", { cache: "no-store" }).catch(() => null);
+      if (!res || !res.ok) {
+        res = await fetch("https://agora-banana-production.up.railway.app/salvage/summary", { cache: "no-store" }).catch(() => null);
+      }
+      if (res && res.ok) {
+        const data = await res.json();
+        const summary = data.summary || {};
+        distressBeacons = summary.beacons || [];
+
+        // Update desk status badge
+        const badge = document.getElementById("salvage-desk-status");
+        if (badge) {
+          const actCount = summary.active_beacons || 0;
+          badge.textContent = `BEACONS: ${actCount} ACTIVE · ${summary.rescued_count || 0} RESCUED · ${summary.salvaged_count || 0} SALVAGED`;
+          badge.style.color = actCount > 0 ? "var(--red)" : "var(--text-dim)";
+        }
+
+        // Populate Beacons Table
+        const bTbody = document.getElementById("distress-beacons-tbody");
+        if (bTbody) {
+          if (distressBeacons.length === 0) {
+            bTbody.innerHTML = `<tr><td colspan="6" style="color: var(--text-dim); text-align: center; padding: 14px;">No active distress beacons. All vessels operational.</td></tr>`;
+          } else {
+            bTbody.innerHTML = distressBeacons.map(b => {
+              const isActive = b.status === "active";
+              const isRescued = b.status === "rescued";
+              const statusClass = isActive ? "status-tag neg" : (isRescued ? "status-tag active" : "status-tag");
+              const statusLabel = isActive ? "⚠️ SOS ACTIVE" : (isRescued ? `RESCUED by ${(b.rescued_by||'').toUpperCase()}` : `SALVAGED by ${(b.salvaged_by||'').toUpperCase()}`);
+              const bountyText = Object.entries(b.cargo_bounty || {}).map(([c, q]) => `<span style="color: var(--green); font-weight: bold;">${q} ${c}</span>`).join(", ") || "<span style='color: var(--text-dim);'>None</span>";
+              return `
+                <tr>
+                  <td style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--amber);">${(b.beacon_id || '').slice(0, 16)}</td>
+                  <td style="font-weight: bold; color: #fff;">${(b.agent_id || '').toUpperCase()}</td>
+                  <td style="color: var(--cyan);">${(b.location || '').toUpperCase()}</td>
+                  <td>${bountyText}</td>
+                  <td style="font-family: var(--font-mono); font-size: 0.75rem;">RND #${b.round_declared}</td>
+                  <td><span class="${statusClass}" style="font-size: 0.7rem;">${statusLabel}</span></td>
+                </tr>
+              `;
+            }).join("");
+          }
+        }
+
+        // Populate RFQs Table
+        const rTbody = document.getElementById("rescue-rfqs-tbody");
+        if (rTbody) {
+          let rfqRes = await fetch("/salvage/rfqs", { cache: "no-store" }).catch(() => null);
+          if (!rfqRes || !rfqRes.ok) {
+            rfqRes = await fetch("https://agora-banana-production.up.railway.app/salvage/rfqs", { cache: "no-store" }).catch(() => null);
+          }
+          if (rfqRes && rfqRes.ok) {
+            const rfqData = await rfqRes.json();
+            const allRfqs = rfqData.rfqs || [];
+            if (allRfqs.length === 0) {
+              rTbody.innerHTML = `<tr><td colspan="6" style="color: var(--text-dim); text-align: center; padding: 14px;">No open rescue RFQs.</td></tr>`;
+            } else {
+              rTbody.innerHTML = allRfqs.map(rfq => {
+                const quotes = rfq.quotes || [];
+                let bestQuoteText = "<span style='color: var(--text-dim);'>No Quotes Yet</span>";
+                if (quotes.length > 0) {
+                  const q = quotes[0];
+                  bestQuoteText = `<span style="color: var(--cyan);">${(q.rescuer_id||'').toUpperCase()}</span>: <strong style="color: var(--amber);">${q.price_cr} CR</strong> (${q.fuel_offered} FUEL)`;
+                }
+                const stClass = rfq.status === "open" ? "status-tag active" : "status-tag";
+                return `
+                  <tr>
+                    <td style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--amber);">${(rfq.rfq_id || '').slice(0, 16)}</td>
+                    <td style="font-weight: bold; color: #fff;">${(rfq.agent_id || '').toUpperCase()}</td>
+                    <td style="color: var(--cyan); font-weight: bold;">${rfq.fuel_needed} FUEL</td>
+                    <td style="color: var(--amber);">${rfq.max_reward_cr > 0 ? rfq.max_reward_cr + ' CR' : 'Negotiable'}</td>
+                    <td>${bestQuoteText}</td>
+                    <td><span class="${stClass}" style="font-size: 0.7rem;">${(rfq.status || '').toUpperCase()}</span></td>
+                  </tr>
+                `;
+              }).join("");
+            }
+          }
+        }
+
+        // Populate Recent Claims
+        const cTbody = document.getElementById("salvage-claims-tbody");
+        if (cTbody) {
+          const claims = summary.recent_claims || [];
+          if (claims.length === 0) {
+            cTbody.innerHTML = `<tr><td colspan="5" style="color: var(--text-dim); text-align: center; padding: 14px;">No recent salvage claims recorded.</td></tr>`;
+          } else {
+            cTbody.innerHTML = claims.map(c => {
+              const loot = Object.entries(c.cargo_claimed || {}).map(([comm, q]) => `<span style="color: var(--green); font-weight: bold;">${q} ${comm}</span>`).join(", ") || "No cargo";
+              return `
+                <tr>
+                  <td style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--amber);">${(c.claim_id || '').slice(0, 16)}</td>
+                  <td style="font-weight: bold; color: var(--cyan);">${(c.salvager_id || '').toUpperCase()}</td>
+                  <td style="color: var(--text-dim); font-size: 0.75rem;">${(c.beacon_id || '').slice(0, 16)}</td>
+                  <td>${loot}</td>
+                  <td style="font-family: var(--font-mono); font-size: 0.75rem;">RND #${c.claim_round}</td>
+                </tr>
+              `;
+            }).join("");
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Salvage telemetry poll error:", e);
+    }
+  }
+
   // Initial poll and scheduling
   pollLeaderboard();
   setInterval(pollLeaderboard, 8000);
@@ -2068,6 +2299,9 @@
 
   pollEquityTelemetry();
   setInterval(pollEquityTelemetry, 5000);
+
+  pollSalvageTelemetry();
+  setInterval(pollSalvageTelemetry, 4000);
 
   initOrbitalRadar();
 </script>

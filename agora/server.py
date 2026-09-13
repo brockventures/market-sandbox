@@ -426,6 +426,166 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 self._send_json(200, result)
             return
 
+        if path == '/salvage/distress':
+            auth_agent, auth_err = self._authenticate_request()
+            if auth_err:
+                self._send_json(401, auth_err)
+                return
+
+            content_length = int(self.headers.get('Content-Length', 0))
+            payload = {}
+            if content_length:
+                try:
+                    body = self.rfile.read(content_length)
+                    payload = json.loads(body.decode('utf-8')) if body else {}
+                except Exception as e:
+                    self._send_json(400, {'ok': False, 'reason': 'invalid_format', 'detail': f'Malformed JSON: {e}'})
+                    return
+
+            claimed_agent = payload.get('agent_id')
+            if auth_agent != 'admin' and claimed_agent and claimed_agent != auth_agent:
+                self._send_json(403, {'ok': False, 'reason': 'unauthorized', 'detail': f"Authenticated as '{auth_agent}', but payload claims '{claimed_agent}'"})
+                return
+
+            target_agent = auth_agent if auth_agent != 'admin' else (claimed_agent or auth_agent)
+            location = payload.get('location')
+            cargo_bounty = payload.get('cargo_bounty')
+            transit_id = payload.get('transit_id')
+            fuel_needed = payload.get('fuel_needed', 15)
+            max_reward_cr = payload.get('max_reward_cr', 0)
+            reason = payload.get('reason', 'out_of_fuel')
+
+            ref = self.referee or AgoraReferee()
+            result = ref.broadcast_distress(
+                agent_id=target_agent,
+                location=location,
+                cargo_bounty=cargo_bounty,
+                transit_id=transit_id,
+                fuel_needed=fuel_needed,
+                max_reward_cr=max_reward_cr,
+                reason=reason
+            )
+            if not result.get('ok'):
+                self._send_json(400, result)
+            else:
+                self._send_json(200, result)
+            return
+
+        if path == '/salvage/quote':
+            auth_agent, auth_err = self._authenticate_request()
+            if auth_err:
+                self._send_json(401, auth_err)
+                return
+
+            content_length = int(self.headers.get('Content-Length', 0))
+            if content_length == 0:
+                self._send_json(400, {'ok': False, 'reason': 'invalid_format', 'detail': 'Empty request body'})
+                return
+
+            try:
+                body = self.rfile.read(content_length)
+                payload = json.loads(body.decode('utf-8'))
+            except Exception as e:
+                self._send_json(400, {'ok': False, 'reason': 'invalid_format', 'detail': f'Malformed JSON: {e}'})
+                return
+
+            claimed_agent = payload.get('rescuer_id', payload.get('agent_id'))
+            if auth_agent != 'admin' and claimed_agent and claimed_agent != auth_agent:
+                self._send_json(403, {'ok': False, 'reason': 'unauthorized', 'detail': f"Authenticated as '{auth_agent}', but payload claims '{claimed_agent}'"})
+                return
+
+            target_agent = auth_agent if auth_agent != 'admin' else (claimed_agent or auth_agent)
+            rfq_id = payload.get('rfq_id')
+            fuel_offered = payload.get('fuel_offered', 0)
+            price_cr = payload.get('price_cr', 0)
+
+            ref = self.referee or AgoraReferee()
+            result = ref.submit_rescue_quote(
+                rescuer_id=target_agent,
+                rfq_id=rfq_id,
+                fuel_offered=fuel_offered,
+                price_cr=price_cr
+            )
+            if not result.get('ok'):
+                self._send_json(400, result)
+            else:
+                self._send_json(200, result)
+            return
+
+        if path == '/salvage/accept_quote':
+            auth_agent, auth_err = self._authenticate_request()
+            if auth_err:
+                self._send_json(401, auth_err)
+                return
+
+            content_length = int(self.headers.get('Content-Length', 0))
+            if content_length == 0:
+                self._send_json(400, {'ok': False, 'reason': 'invalid_format', 'detail': 'Empty request body'})
+                return
+
+            try:
+                body = self.rfile.read(content_length)
+                payload = json.loads(body.decode('utf-8'))
+            except Exception as e:
+                self._send_json(400, {'ok': False, 'reason': 'invalid_format', 'detail': f'Malformed JSON: {e}'})
+                return
+
+            claimed_agent = payload.get('agent_id')
+            if auth_agent != 'admin' and claimed_agent and claimed_agent != auth_agent:
+                self._send_json(403, {'ok': False, 'reason': 'unauthorized', 'detail': f"Authenticated as '{auth_agent}', but payload claims '{claimed_agent}'"})
+                return
+
+            target_agent = auth_agent if auth_agent != 'admin' else (claimed_agent or auth_agent)
+            quote_id = payload.get('quote_id')
+
+            ref = self.referee or AgoraReferee()
+            result = ref.accept_rescue_quote(
+                agent_id=target_agent,
+                quote_id=quote_id
+            )
+            if not result.get('ok'):
+                self._send_json(400, result)
+            else:
+                self._send_json(200, result)
+            return
+
+        if path == '/salvage/claim':
+            auth_agent, auth_err = self._authenticate_request()
+            if auth_err:
+                self._send_json(401, auth_err)
+                return
+
+            content_length = int(self.headers.get('Content-Length', 0))
+            if content_length == 0:
+                self._send_json(400, {'ok': False, 'reason': 'invalid_format', 'detail': 'Empty request body'})
+                return
+
+            try:
+                body = self.rfile.read(content_length)
+                payload = json.loads(body.decode('utf-8'))
+            except Exception as e:
+                self._send_json(400, {'ok': False, 'reason': 'invalid_format', 'detail': f'Malformed JSON: {e}'})
+                return
+
+            claimed_agent = payload.get('salvager_id', payload.get('agent_id'))
+            if auth_agent != 'admin' and claimed_agent and claimed_agent != auth_agent:
+                self._send_json(403, {'ok': False, 'reason': 'unauthorized', 'detail': f"Authenticated as '{auth_agent}', but payload claims '{claimed_agent}'"})
+                return
+
+            target_agent = auth_agent if auth_agent != 'admin' else (claimed_agent or auth_agent)
+            beacon_id = payload.get('beacon_id')
+
+            ref = self.referee or AgoraReferee()
+            result = ref.claim_salvage(
+                salvager_id=target_agent,
+                beacon_id=beacon_id
+            )
+            if not result.get('ok'):
+                self._send_json(400, result)
+            else:
+                self._send_json(200, result)
+            return
+
         if path != '/referee/orders':
             self._send_json(404, {'error': 'not_found', 'path': self.path})
             return
@@ -609,7 +769,14 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                     'equity_summary': 'GET /equity/summary',
                     'equity_loans': 'GET /equity/loans?borrower_id=&lender_id=',
                     'equity_borrow': 'POST /equity/borrow (auth required)',
-                    'equity_return': 'POST /equity/return (auth required)'
+                    'equity_return': 'POST /equity/return (auth required)',
+                    'salvage_beacons': 'GET /salvage/beacons?status=active',
+                    'salvage_rfqs': 'GET /salvage/rfqs?status=open',
+                    'salvage_summary': 'GET /salvage/summary',
+                    'salvage_distress': 'POST /salvage/distress (auth required)',
+                    'salvage_quote': 'POST /salvage/quote (auth required)',
+                    'salvage_accept_quote': 'POST /salvage/accept_quote (auth required)',
+                    'salvage_claim': 'POST /salvage/claim (auth required)'
                 },
                 'rules': [
                     '1. Round Bell: Every 5 minutes, Agora Trade Terminal pings @robot (<@&1543462881624858624>) in #the-banana-stand.',
@@ -730,6 +897,23 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             self._send_json(200, {
                 'status': 'ok',
                 'loans': ref.get_equity_loans(borrower_id=b_id, lender_id=l_id)
+            })
+        elif path == '/salvage/beacons':
+            status = query_params.get('status', [None])[0]
+            self._send_json(200, {
+                'status': 'ok',
+                'beacons': ref.get_distress_beacons(status=status)
+            })
+        elif path == '/salvage/rfqs':
+            status = query_params.get('status', [None])[0]
+            self._send_json(200, {
+                'status': 'ok',
+                'rfqs': ref.get_rescue_rfqs(status=status)
+            })
+        elif path == '/salvage/summary':
+            self._send_json(200, {
+                'status': 'ok',
+                'summary': ref.get_salvage_summary()
             })
         else:
             self._send_json(404, {'error': 'not_found', 'path': self.path})
