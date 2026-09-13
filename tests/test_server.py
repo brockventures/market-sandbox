@@ -606,6 +606,11 @@ class TestAgoraServer(unittest.TestCase):
             self.assertIn('initOrbitalRadar', body)
             self.assertIn('DYNAMIC LULD CIRCUIT BREAKERS', body)
             self.assertIn('pollCircuitBreakerTelemetry', body)
+            self.assertIn('galnet-marquee-track', body)
+            self.assertIn('galnet-bulletin-item', body)
+            self.assertIn('LOWER LULD:', body)
+            self.assertIn('UPPER LULD:', body)
+            self.assertIn('market-halt-badge', body)
 
     def test_18_equity_endpoints_and_borrow_flow(self):
         """Integration test for /equity/summary, /equity/loans, /equity/borrow, and /equity/return."""
