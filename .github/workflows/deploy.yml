@@ -15,6 +15,8 @@ jobs:
   deploy:
     if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -33,14 +35,12 @@ jobs:
         env:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-        run: npx vercel@latest deploy --prod --token=${{ secrets.VERCEL_TOKEN }} --yes
+        run: npx -y vercel@latest deploy --prod --token=${{ secrets.VERCEL_TOKEN }} --yes
 
       # Railway: agora-banana service, production environment. Optional —
       # this step is skipped (not failed) if RAILWAY_TOKEN isn't set yet, so
       # this workflow can land and start covering Vercel before Railway's
       # secret is added.
       - name: Deploy to Railway
-        if: ${{ secrets.RAILWAY_TOKEN != '' }}
-        env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-        run: npx @railway/cli up --service agora-banana --environment production --detach
+        if: env.RAILWAY_TOKEN != ''
+        run: npx -y @railway/cli up --service agora-banana --environment production --detach
