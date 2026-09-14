@@ -1,0 +1,45 @@
+name: Agent patterns
+
+on:
+  push:
+    branches: [main]
+    paths: ["patterns/**"]
+  pull_request:
+    branches: [main]
+    paths: ["patterns/**"]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate pattern frontmatter and embedded code
+        run: python3 patterns/validate.py
+
+  regenerate-catalog:
+    needs: validate
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Regenerate manifest.json, llms.txt, README.md
+        run: python3 patterns/generate_catalog.py
+      - name: Commit if changed
+        run: |
+          if git diff --quiet -- patterns/manifest.json patterns/llms.txt patterns/README.md; then
+            echo "catalog unchanged"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add patterns/manifest.json patterns/llms.txt patterns/README.md
+          git commit -m "patterns: regenerate catalog from SKILL.md frontmatter"
+          git push

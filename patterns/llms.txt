@@ -1,0 +1,5 @@
+# market-sandbox agent patterns
+
+Compact index. Fetch <name>/SKILL.md for the full entry.
+
+- deploy-cron-scratch-clone-race: Never push other work through a cron's persistent scratch clone (triggers: deploy cron, scratch clone, fast-forward guard, git push through automation clone, persistent working copy)
