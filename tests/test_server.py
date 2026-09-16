@@ -888,6 +888,131 @@ class TestAgoraServer(unittest.TestCase):
         self.assertEqual(len(data['errors']), 0)
 
 
+class TestAgoraAdminReset(unittest.TestCase):
+    """
+    Isolated from TestAgoraServer: this class wipes ledger/trading state on
+    purpose, so it gets a fresh AgoraReferee + server per test instead of
+    sharing one across a whole class.
+    """
+
+    def setUp(self):
+        self.referee = AgoraReferee()
+        self.auth_tokens = {'amos': 'tok-amos', 'admin': 'tok-admin'}
+        handler_class = make_handler(self.referee, auth_tokens=self.auth_tokens)
+        self.server = HTTPServer(('127.0.0.1', 0), handler_class)
+        self.port = self.server.server_port
+        self.base_url = f"http://127.0.0.1:{self.port}"
+        self.server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.server_thread.start()
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+    def _get(self, path, token=None):
+        headers = {'Authorization': f'Bearer {token}'} if token else {}
+        req = urllib.request.Request(f"{self.base_url}{path}", headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return resp.status, json.loads(resp.read().decode('utf-8'))
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read().decode('utf-8'))
+
+    def _post(self, path, payload, token=None):
+        data_bytes = json.dumps(payload).encode('utf-8')
+        headers = {'Content-Type': 'application/json'}
+        if token:
+            headers['Authorization'] = f'Bearer {token}'
+        req = urllib.request.Request(f"{self.base_url}{path}", data=data_bytes, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return resp.status, json.loads(resp.read().decode('utf-8'))
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read().decode('utf-8'))
+
+    def test_01_fleets_endpoint_lists_roster(self):
+        status, data = self._get('/referee/fleets')
+        self.assertEqual(status, 200)
+        agent_ids = {f['agent_id'] for f in data['fleets']}
+        self.assertEqual(agent_ids, {'amos', 'marvin', 'zero', 'aerial'})
+
+    def test_02_admin_fleets_rejects_non_admin(self):
+        status, data = self._post('/referee/admin/fleets', {
+            'agent_id': 'newbie', 'display_name': 'Newbie', 'genesis_cr': 10000,
+            'genesis_frag': 1000, 'genesis_fuel': 500,
+        }, token='tok-amos')
+        self.assertEqual(status, 403)
+        self.assertEqual(data['payload']['reason'], 'unauthorized')
+
+    def test_03_admin_fleets_rejects_missing_fields(self):
+        status, data = self._post('/referee/admin/fleets', {'agent_id': 'newbie'}, token='tok-admin')
+        self.assertEqual(status, 400)
+        self.assertEqual(data['payload']['reason'], 'invalid_format')
+
+    def test_04_admin_fleets_add_then_not_retroactive(self):
+        status, data = self._post('/referee/admin/fleets', {
+            'agent_id': 'newbie', 'display_name': 'Newbie Corp', 'genesis_cr': 5000,
+            'genesis_frag': 500, 'genesis_fuel': 250,
+        }, token='tok-admin')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['kind'], 'fleet_roster_ok')
+
+        # Roster row exists now...
+        status, data = self._get('/referee/fleets')
+        self.assertIn('newbie', {f['agent_id'] for f in data['fleets']})
+
+        # ...but no account was minted for it without a reset.
+        status, data = self._get('/referee/accounts', token='tok-admin')
+        self.assertNotIn('newbie', {a['agent_id'] for a in data['accounts']})
+
+    def test_05_admin_reset_rejects_non_admin(self):
+        status, data = self._post('/referee/admin/reset', {'confirm': True}, token='tok-amos')
+        self.assertEqual(status, 403)
+        self.assertEqual(data['payload']['reason'], 'unauthorized')
+
+    def test_06_admin_reset_requires_confirm(self):
+        status, data = self._post('/referee/admin/reset', {}, token='tok-admin')
+        self.assertEqual(status, 400)
+        self.assertEqual(data['payload']['reason'], 'confirm_required')
+
+    def test_07_admin_reset_wipes_and_reseeds(self):
+        # Dirty the state: submit a resting order and add a 5th fleet.
+        self._post('/referee/orders', {
+            'v': 1, 'kind': 'order',
+            'payload': {
+                'order_id': 'dirty-ask-1', 'agent_id': 'amos', 'instrument': 'FRAG',
+                'side': 'ask', 'qty': 10, 'limit_price': 99, 'seq_seen': self.referee.current_seq
+            }
+        }, token='tok-amos')
+        self._post('/referee/admin/fleets', {
+            'agent_id': 'newbie', 'display_name': 'Newbie Corp', 'genesis_cr': 5000,
+            'genesis_frag': 500, 'genesis_fuel': 250,
+        }, token='tok-admin')
+
+        status, data = self._post('/referee/admin/reset', {'confirm': True}, token='tok-admin')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['kind'], 'reset_ok')
+        self.assertEqual(data['payload']['seq'], 0)
+        self.assertIn('newbie', data['payload']['fleets'])
+
+        # Book is empty again.
+        status, data = self._get('/referee/book')
+        self.assertEqual(len(data['book']['bids']), 0)
+        self.assertEqual(len(data['book']['asks']), 0)
+
+        # newbie now has real balances (roster change took effect on reset).
+        status, data = self._get('/referee/accounts?agent_id=newbie', token='tok-admin')
+        balances = {a['instrument']: a['balance'] for a in data['accounts']}
+        self.assertEqual(balances['CR'], 5000)
+        self.assertEqual(balances['FRAG'], 500)
+        self.assertEqual(balances['FUEL'], 250)
+
+        # Invariants still hold after reset.
+        status, data = self._get('/referee/health')
+        self.assertTrue(data['invariants_valid'])
+        self.assertEqual(len(data['errors']), 0)
+
+
 if __name__ == '__main__':
     unittest.main()
 

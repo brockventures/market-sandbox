@@ -71,6 +71,21 @@ CREATE TABLE vessel_locations (
     updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 
+-- Source of truth for which fleets exist and what they start a genesis
+-- reset with. A row here plus POST /referee/admin/reset is a complete
+-- roster change or clean-slate reset -- no code deploy required. Seeded
+-- once from db/seed.sql; every subsequent change should go through
+-- POST /referee/admin/fleets rather than a fixture edit.
+CREATE TABLE fleet_roster (
+    agent_id        TEXT PRIMARY KEY,
+    display_name    TEXT NOT NULL,
+    home_station    TEXT NOT NULL DEFAULT 'ceres',
+    genesis_cr      INTEGER NOT NULL,
+    genesis_frag    INTEGER NOT NULL,
+    genesis_fuel    INTEGER NOT NULL,
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
 -- Bilateral stock loans and short obligations.
 CREATE TABLE equity_loans (
     loan_id         TEXT PRIMARY KEY,

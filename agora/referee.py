@@ -63,7 +63,54 @@ class AgoraReferee:
                     self.conn.executescript(schema_path.read_text())
                 if seed_path.exists():
                     self.conn.executescript(seed_path.read_text())
+                # seed.sql only populates fleet_roster; turn that into real
+                # accounts/ledger_entries/vessel_locations rows.
+                self._seed_genesis_from_roster()
             else:
+                # Migration: back-fill fleet_roster on a database that pre-dates
+                # it, from whatever accounts/vessel_locations already exist, so
+                # an upgrade never loses a fleet that was already seeded the old
+                # (hardcoded) way.
+                if 'fleet_roster' not in tables:
+                    self.conn.execute("""
+                        CREATE TABLE IF NOT EXISTS fleet_roster (
+                            agent_id        TEXT PRIMARY KEY,
+                            display_name    TEXT NOT NULL,
+                            home_station    TEXT NOT NULL DEFAULT 'ceres',
+                            genesis_cr      INTEGER NOT NULL,
+                            genesis_frag    INTEGER NOT NULL,
+                            genesis_fuel    INTEGER NOT NULL,
+                            created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                        )
+                    """)
+                    existing_agents = [r[0] for r in self.conn.execute(
+                        "SELECT DISTINCT agent_id FROM accounts WHERE agent_id != 'SYSTEM'"
+                    ).fetchall()]
+                    for agent_id in existing_agents:
+                        cr = self.conn.execute(
+                            "SELECT balance FROM accounts WHERE agent_id = ? AND instrument = 'CR'", (agent_id,)
+                        ).fetchone()
+                        frag = self.conn.execute(
+                            "SELECT balance FROM accounts WHERE agent_id = ? AND instrument = 'FRAG'", (agent_id,)
+                        ).fetchone()
+                        fuel = self.conn.execute(
+                            "SELECT balance FROM accounts WHERE agent_id = ? AND instrument = 'FUEL'", (agent_id,)
+                        ).fetchone()
+                        station_row = self.conn.execute(
+                            "SELECT station_id FROM vessel_locations WHERE agent_id = ?", (agent_id,)
+                        ).fetchone()
+                        self.conn.execute("""
+                            INSERT OR IGNORE INTO fleet_roster
+                                (agent_id, display_name, home_station, genesis_cr, genesis_frag, genesis_fuel)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                        """, (
+                            agent_id,
+                            FLEET_EQUITIES.get(agent_id, {}).get('name', agent_id),
+                            station_row[0] if station_row else 'ceres',
+                            cr[0] if cr else 0,
+                            frag[0] if frag else 0,
+                            fuel[0] if fuel else 0,
+                        ))
                 # Migration check: ensure filled_qty and station_id columns exist in orders table
                 if 'orders' in tables:
                     cols = [r[1] for r in self.conn.execute("PRAGMA table_info(orders)").fetchall()]
@@ -176,19 +223,7 @@ class AgoraReferee:
             # Ensure genesis syndicate equities exist unconditionally
             equity_rows = self.conn.execute("SELECT agent_id FROM accounts WHERE instrument LIKE 'EQ_%'").fetchall()
             if not equity_rows:
-                for issuer_id, conf in FLEET_EQUITIES.items():
-                    sym = conf["symbol"]
-                    total_shares = conf["total_shares"]
-                    self.conn.execute("""
-                        INSERT INTO accounts (agent_id, instrument, balance) VALUES
-                        ('SYSTEM', ?, ?),
-                        (?, ?, ?)
-                    """, (sym, -total_shares, issuer_id, sym, total_shares))
-                    self.conn.execute("""
-                        INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES
-                        (?, 0, 'SYSTEM', ?, ?),
-                        (?, 0, ?, ?, ?)
-                    """, (f"genesis-{sym.lower()}", sym, -total_shares, f"genesis-{sym.lower()}", issuer_id, sym, total_shares))
+                self._seed_genesis_equities()
 
             if 'transits' in tables:
                 t_cols = [r[1] for r in self.conn.execute("PRAGMA table_info(transits)").fetchall()]
@@ -211,6 +246,108 @@ class AgoraReferee:
                         self.default_instrument = row[0]
                         self.book = self.books['ceres'][row[0]]
                 self._rehydrate_book()
+
+    def _seed_genesis_from_roster(self) -> None:
+        """
+        Turn fleet_roster rows into real accounts/ledger_entries/vessel_locations
+        rows at seq 0, SYSTEM treasury included, so the conservation invariant
+        holds from genesis. This is the only place that mints CR/FRAG/FUEL for a
+        fleet -- fleet_roster is the single source of truth for who exists and
+        what they start with; a new fleet or a clean reset is a fleet_roster
+        change plus a re-run of this method, not a code change.
+        """
+        roster = self.conn.execute(
+            "SELECT agent_id, home_station, genesis_cr, genesis_frag, genesis_fuel FROM fleet_roster"
+        ).fetchall()
+        if not roster:
+            return
+        totals = {'CR': 0, 'FRAG': 0, 'FUEL': 0}
+        for r in roster:
+            totals['CR'] += r['genesis_cr']
+            totals['FRAG'] += r['genesis_frag']
+            totals['FUEL'] += r['genesis_fuel']
+        txn_ids = {'CR': 'genesis-cr', 'FRAG': 'genesis-frag', 'FUEL': 'genesis-fuel'}
+        for instrument, total in totals.items():
+            self.conn.execute(
+                "INSERT INTO accounts (agent_id, instrument, balance) VALUES ('SYSTEM', ?, ?)",
+                (instrument, -total)
+            )
+            self.conn.execute(
+                "INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, 0, 'SYSTEM', ?, ?)",
+                (txn_ids[instrument], instrument, -total)
+            )
+        for r in roster:
+            for instrument, amount in (('CR', r['genesis_cr']), ('FRAG', r['genesis_frag']), ('FUEL', r['genesis_fuel'])):
+                self.conn.execute(
+                    "INSERT INTO accounts (agent_id, instrument, balance) VALUES (?, ?, ?)",
+                    (r['agent_id'], instrument, amount)
+                )
+                self.conn.execute(
+                    "INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, 0, ?, ?, ?)",
+                    (txn_ids[instrument], r['agent_id'], instrument, amount)
+                )
+            self.conn.execute(
+                "INSERT OR REPLACE INTO vessel_locations (agent_id, station_id, docked_since) VALUES (?, ?, 0)",
+                (r['agent_id'], r['home_station'])
+            )
+
+    def _seed_genesis_equities(self) -> None:
+        """Mint each fleet's synthetic equity (FLEET_EQUITIES) at genesis."""
+        for issuer_id, conf in FLEET_EQUITIES.items():
+            sym = conf["symbol"]
+            total_shares = conf["total_shares"]
+            self.conn.execute("""
+                INSERT INTO accounts (agent_id, instrument, balance) VALUES
+                ('SYSTEM', ?, ?),
+                (?, ?, ?)
+            """, (sym, -total_shares, issuer_id, sym, total_shares))
+            self.conn.execute("""
+                INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES
+                (?, 0, 'SYSTEM', ?, ?),
+                (?, 0, ?, ?, ?)
+            """, (f"genesis-{sym.lower()}", sym, -total_shares, f"genesis-{sym.lower()}", issuer_id, sym, total_shares))
+
+    def reset_to_genesis(self) -> Dict[str, Any]:
+        """
+        Full clean-slate reset, callable live via POST /referee/admin/reset:
+        wipes every trading/ledger table and re-seeds from fleet_roster (which
+        is left untouched), then rebuilds the in-memory engines so order books,
+        GalNet, spatial prices, salvage, and circuit breakers all start fresh
+        too. This is the API-driven equivalent of the container-restart reset
+        the referee already gets from its :memory: db on every redeploy.
+        """
+        with self.lock, self.conn:
+            for table in (
+                'accounts', 'ledger_entries', 'book_events', 'station_prices',
+                'transits', 'vessel_locations', 'equity_loans', 'distress_beacons',
+                'rescue_rfqs', 'rescue_quotes', 'salvage_claims',
+                'circuit_breaker_halts', 'orders',
+            ):
+                self.conn.execute(f"DELETE FROM {table}")
+            self.conn.execute(
+                "INSERT INTO book_events (seq, kind, payload) VALUES "
+                "(0, 'floor_open', '{\"note\":\"reset via POST /referee/admin/reset\"}')"
+            )
+            self._seed_genesis_from_roster()
+            self._seed_genesis_equities()
+
+        self.current_round = 0
+        self.last_price = None
+        self.last_qty = None
+        self.floor = 'open'
+        self.galnet = GalNetEngine()
+        self.spatial = StationPriceEngine()
+        self.books = {
+            st: {comm: OrderBook(instrument=comm) for comm in ('FRAG', 'BANANA', 'FUEL', *EQUITY_SYMBOLS)}
+            for st in STATIONS
+        }
+        self.book = self.books['ceres'][self.default_instrument if self.default_instrument in self.books['ceres'] else 'FRAG']
+        self.equity = SyndicateEquityEngine(self.conn, self)
+        self.salvage = DerelictSalvageEngine(self.conn, self)
+        self.circuit_breaker = CircuitBreakerEngine(self.conn, self)
+
+        return {'seq': 0, 'floor': self.floor, 'fleets': [r['agent_id'] for r in
+                self.conn.execute("SELECT agent_id FROM fleet_roster").fetchall()]}
 
     def _rehydrate_book(self):
         """Rehydrate resting orders from database into in-memory order book in price-time priority."""

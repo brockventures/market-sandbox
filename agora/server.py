@@ -98,6 +98,115 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
         parsed_url = urllib.parse.urlparse(self.path)
         path = parsed_url.path.rstrip('/')
 
+        if path == '/referee/admin/reset':
+            auth_agent, auth_err = self._authenticate_request()
+            if auth_err:
+                self._send_json(401, auth_err)
+                return
+            if auth_agent != 'admin':
+                self._send_json(403, {
+                    'v': 1, 'kind': 'reject',
+                    'payload': {
+                        'reason': 'unauthorized',
+                        'detail': f"Only admin token can reset game state (authenticated as '{auth_agent}')"
+                    }
+                })
+                return
+
+            content_length = int(self.headers.get('Content-Length', 0))
+            payload = {}
+            if content_length:
+                try:
+                    body = self.rfile.read(content_length)
+                    payload = json.loads(body.decode('utf-8')) if body else {}
+                except Exception as e:
+                    self._send_json(400, {
+                        'v': 1, 'kind': 'reject',
+                        'payload': {'reason': 'invalid_format', 'detail': f'Malformed JSON: {e}'}
+                    })
+                    return
+
+            if not payload.get('confirm'):
+                self._send_json(400, {
+                    'v': 1, 'kind': 'reject',
+                    'payload': {
+                        'reason': 'confirm_required',
+                        'detail': 'This wipes every trade, order, and balance. POST {"confirm": true} to actually reset.'
+                    }
+                })
+                return
+
+            ref = self.referee or AgoraReferee()
+            result = ref.reset_to_genesis()
+            self._send_json(200, {'v': 1, 'kind': 'reset_ok', 'payload': result})
+            return
+
+        if path == '/referee/admin/fleets':
+            auth_agent, auth_err = self._authenticate_request()
+            if auth_err:
+                self._send_json(401, auth_err)
+                return
+            if auth_agent != 'admin':
+                self._send_json(403, {
+                    'v': 1, 'kind': 'reject',
+                    'payload': {
+                        'reason': 'unauthorized',
+                        'detail': f"Only admin token can edit the fleet roster (authenticated as '{auth_agent}')"
+                    }
+                })
+                return
+
+            content_length = int(self.headers.get('Content-Length', 0))
+            if content_length == 0:
+                self._send_json(400, {
+                    'v': 1, 'kind': 'reject',
+                    'payload': {'reason': 'invalid_format', 'detail': 'Empty request body'}
+                })
+                return
+            try:
+                body = self.rfile.read(content_length)
+                payload = json.loads(body.decode('utf-8'))
+            except Exception as e:
+                self._send_json(400, {
+                    'v': 1, 'kind': 'reject',
+                    'payload': {'reason': 'invalid_format', 'detail': f'Malformed JSON: {e}'}
+                })
+                return
+
+            agent_id = payload.get('agent_id')
+            required = ('agent_id', 'display_name', 'genesis_cr', 'genesis_frag', 'genesis_fuel')
+            missing = [f for f in required if payload.get(f) is None]
+            if missing:
+                self._send_json(400, {
+                    'v': 1, 'kind': 'reject',
+                    'payload': {'reason': 'invalid_format', 'detail': f"Missing required field(s): {', '.join(missing)}"}
+                })
+                return
+
+            ref = self.referee or AgoraReferee()
+            ref.conn.execute("""
+                INSERT INTO fleet_roster (agent_id, display_name, home_station, genesis_cr, genesis_frag, genesis_fuel)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(agent_id) DO UPDATE SET
+                    display_name = excluded.display_name,
+                    home_station = excluded.home_station,
+                    genesis_cr = excluded.genesis_cr,
+                    genesis_frag = excluded.genesis_frag,
+                    genesis_fuel = excluded.genesis_fuel
+            """, (
+                agent_id, payload['display_name'], payload.get('home_station', 'ceres'),
+                payload['genesis_cr'], payload['genesis_frag'], payload['genesis_fuel'],
+            ))
+            ref.conn.commit()
+            self._send_json(200, {
+                'v': 1, 'kind': 'fleet_roster_ok',
+                'payload': {
+                    'agent_id': agent_id,
+                    'note': 'Takes effect on the next POST /referee/admin/reset, not retroactively.'
+                }
+            })
+            return
+
         if path in ('/referee/floor', '/referee/admin/floor'):
             auth_agent, auth_err = self._authenticate_request()
             if auth_err:
@@ -791,6 +900,14 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 'status': 'ok',
                 'leaderboard': ref.get_leaderboard()
             })
+        elif path == '/referee/fleets':
+            rows = ref.conn.execute(
+                "SELECT agent_id, display_name, home_station, genesis_cr, genesis_frag, genesis_fuel FROM fleet_roster ORDER BY agent_id"
+            ).fetchall()
+            self._send_json(200, {
+                'status': 'ok',
+                'fleets': [dict(r) for r in rows]
+            })
         elif path in ('/referee/instructions', '/referee/rules'):
             format_param = query_params.get('format', ['json'])[0].lower()
             accept_header = self.headers.get('Accept', '')
@@ -828,6 +945,9 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                     'cancel_order': 'POST /referee/orders/cancel (auth required)',
                     'cancel_all': 'POST /referee/orders/cancel_all (auth required)',
                     'health': 'GET /referee/health',
+                    'fleets': 'GET /referee/fleets',
+                    'admin_fleets': 'POST /referee/admin/fleets (admin auth) — add/update a fleet_roster row',
+                    'admin_reset': 'POST /referee/admin/reset (admin auth) — {"confirm": true} wipes all trading state and re-seeds genesis from fleet_roster',
                     'instructions': 'GET /referee/instructions',
                     'galnet_feed': 'GET /galnet/feed?limit=15',
                     'galnet_events': 'GET /galnet/events',
