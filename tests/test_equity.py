@@ -34,7 +34,7 @@ class TestSyndicateEquityEngine(unittest.TestCase):
     def test_02_equity_summary_telemetry(self):
         """Verify get_equity_summary returns correct NAV, market cap, and short interest."""
         summary = self.referee.get_equity_summary()
-        self.assertEqual(len(summary), 3)
+        self.assertEqual(len(summary), 4)
 
         for sym, data in summary.items():
             self.assertIn("spot_price", data)

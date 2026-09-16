@@ -11,9 +11,9 @@ INSERT INTO book_events (seq, kind, payload) VALUES
   (0, 'floor_open', '{"note":"genesis, phase 1: orbital supply requisition terminal"}');
 
 INSERT INTO accounts (agent_id, instrument, balance) VALUES
-  ('SYSTEM', 'CR',   -30000),
-  ('SYSTEM', 'FRAG',  -3000),
-  ('SYSTEM', 'FUEL',  -1500),
+  ('SYSTEM', 'CR',   -40000),
+  ('SYSTEM', 'FRAG',  -4000),
+  ('SYSTEM', 'FUEL',  -2000),
   ('amos',   'CR',    10000),
   ('amos',   'FRAG',   1000),
   ('amos',   'FUEL',    500),
@@ -22,30 +22,37 @@ INSERT INTO accounts (agent_id, instrument, balance) VALUES
   ('marvin', 'FUEL',    500),
   ('zero',   'CR',    10000),
   ('zero',   'FRAG',   1000),
-  ('zero',   'FUEL',    500);
+  ('zero',   'FUEL',    500),
+  ('aerial', 'CR',    10000),
+  ('aerial', 'FRAG',   1000),
+  ('aerial', 'FUEL',    500);
 
 -- Grouped by txn_id so SUM(delta) = 0 holds per genesis transaction:
--- genesis-cr:   -30000 + 10000*3 = 0
--- genesis-frag:  -3000  + 1000*3  = 0
--- genesis-fuel:  -1500  +  500*3  = 0
+-- genesis-cr:   -40000 + 10000*4 = 0
+-- genesis-frag:  -4000  + 1000*4  = 0
+-- genesis-fuel:  -2000  +  500*4  = 0
 INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES
-  ('genesis-cr',   0, 'SYSTEM', 'CR',   -30000),
+  ('genesis-cr',   0, 'SYSTEM', 'CR',   -40000),
   ('genesis-cr',   0, 'amos',   'CR',    10000),
   ('genesis-cr',   0, 'marvin', 'CR',    10000),
   ('genesis-cr',   0, 'zero',   'CR',    10000),
-  ('genesis-frag', 0, 'SYSTEM', 'FRAG',  -3000),
+  ('genesis-cr',   0, 'aerial', 'CR',    10000),
+  ('genesis-frag', 0, 'SYSTEM', 'FRAG',  -4000),
   ('genesis-frag', 0, 'amos',   'FRAG',   1000),
   ('genesis-frag', 0, 'marvin', 'FRAG',   1000),
   ('genesis-frag', 0, 'zero',   'FRAG',   1000),
-  ('genesis-fuel', 0, 'SYSTEM', 'FUEL',  -1500),
+  ('genesis-frag', 0, 'aerial', 'FRAG',   1000),
+  ('genesis-fuel', 0, 'SYSTEM', 'FUEL',  -2000),
   ('genesis-fuel', 0, 'amos',   'FUEL',    500),
   ('genesis-fuel', 0, 'marvin', 'FUEL',    500),
-  ('genesis-fuel', 0, 'zero',   'FUEL',    500);
+  ('genesis-fuel', 0, 'zero',   'FUEL',    500),
+  ('genesis-fuel', 0, 'aerial', 'FUEL',    500);
 
 INSERT INTO vessel_locations (agent_id, station_id, docked_since) VALUES
   ('amos',   'ceres', 0),
   ('marvin', 'ceres', 0),
-  ('zero',   'ceres', 0);
+  ('zero',   'ceres', 0),
+  ('aerial', 'ceres', 0);
 
 -- Standing invariant checks, post-genesis. Both must always return zero rows.
 -- SELECT txn_id FROM ledger_entries GROUP BY txn_id HAVING SUM(delta) != 0;

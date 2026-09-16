@@ -213,7 +213,7 @@ class TestAgoraServer(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(data['status'], 'ok')
         self.assertIn('leaderboard', data)
-        self.assertEqual(len(data['leaderboard']), 3)
+        self.assertEqual(len(data['leaderboard']), 4)
 
         # Verify ranking and structure
         for entry in data['leaderboard']:

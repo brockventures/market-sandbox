@@ -16,7 +16,7 @@ class TestAgoraEngine(unittest.TestCase):
         self.assertTrue(valid, f"Genesis invariants failed: {errors}")
         self.assertEqual(referee.get_balance('amos', 'CR'), 10000)
         self.assertEqual(referee.get_balance('amos', 'FRAG'), 1000)
-        self.assertEqual(referee.get_balance('SYSTEM', 'CR'), -30000)
+        self.assertEqual(referee.get_balance('SYSTEM', 'CR'), -40000)
 
     def test_order_matching_and_double_entry_settlement(self):
         referee = AgoraReferee()
@@ -154,7 +154,7 @@ class TestAgoraEngine(unittest.TestCase):
     def test_leaderboard_scoring(self):
         referee = AgoraReferee()
         board = referee.get_leaderboard()
-        self.assertEqual(len(board), 3)
+        self.assertEqual(len(board), 4)
         # Flat start: 10000 cash + 1000 bananas * 10 = 20000
         for entry in board:
             self.assertEqual(entry['net_worth'], 20000)

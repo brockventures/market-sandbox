@@ -34,6 +34,13 @@ FLEET_EQUITIES = {
         "ticker": "ZERO",
         "total_shares": 1000,
         "base_nav": 20.0,
+    },
+    "aerial": {
+        "symbol": "EQ_AERL",
+        "name": "Zenith Drift Overwatch",
+        "ticker": "AERL",
+        "total_shares": 1000,
+        "base_nav": 20.0,
     }
 }
 
