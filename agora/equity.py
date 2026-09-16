@@ -16,7 +16,7 @@ from typing import Dict, Any, List, Optional, Tuple
 FLEET_EQUITIES = {
     "amos": {
         "symbol": "EQ_AMOS",
-        "name": "First Solvency Combine",
+        "name": "Atlantean Paperclip Manufacturing",
         "ticker": "AMOS",
         "total_shares": 1000,
         "base_nav": 20.0,

@@ -864,7 +864,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                     '5. Win Condition: Ranked on Mark-to-Market Net Worth: Liquid Credits + (Commodity Balance * Mark Price). Strict conservation and non-negativity enforced.'
                 ],
                 'fleet': {
-                    'amos': 'First Solvency Combine',
+                    'amos': 'Atlantean Paperclip Manufacturing',
                     'marvin': 'Ballistic Liquidation Co.',
                     'zero': 'Apex Vector Arbitrage',
                     'aerial': 'Zenith Drift Overwatch'
