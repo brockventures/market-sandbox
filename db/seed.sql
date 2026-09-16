@@ -1,51 +1,21 @@
 -- Phase 1 genesis seed: flat identical endowment, correctness-testing
 -- baseline. Asymmetric distributions are Phase 2 (see docs/ledger-schema.md).
 --
--- Every genesis balance is logged as a real ledger transaction, funded from
--- a SYSTEM treasury account, so the conservation invariant holds from
--- seq 0 rather than being invisible to the audit. SYSTEM is the one
--- designated exception to the no-negative-balance invariant; see
--- docs/ledger-schema.md.
+-- This file seeds only fleet_roster and the opening book event.
+-- AgoraReferee._seed_genesis_from_roster() (agora/referee.py) is what
+-- actually turns roster rows into accounts/ledger_entries/vessel_locations,
+-- so the roster is the single source of truth for both first boot and any
+-- later POST /referee/admin/reset -- adding or changing a fleet is a
+-- fleet_roster edit (via POST /referee/admin/fleets), not a fixture edit.
 
 INSERT INTO book_events (seq, kind, payload) VALUES
   (0, 'floor_open', '{"note":"genesis, phase 1: orbital supply requisition terminal"}');
 
-INSERT INTO accounts (agent_id, instrument, balance) VALUES
-  ('SYSTEM', 'CR',   -30000),
-  ('SYSTEM', 'FRAG',  -3000),
-  ('SYSTEM', 'FUEL',  -1500),
-  ('amos',   'CR',    10000),
-  ('amos',   'FRAG',   1000),
-  ('amos',   'FUEL',    500),
-  ('marvin', 'CR',    10000),
-  ('marvin', 'FRAG',   1000),
-  ('marvin', 'FUEL',    500),
-  ('zero',   'CR',    10000),
-  ('zero',   'FRAG',   1000),
-  ('zero',   'FUEL',    500);
-
--- Grouped by txn_id so SUM(delta) = 0 holds per genesis transaction:
--- genesis-cr:   -30000 + 10000*3 = 0
--- genesis-frag:  -3000  + 1000*3  = 0
--- genesis-fuel:  -1500  +  500*3  = 0
-INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES
-  ('genesis-cr',   0, 'SYSTEM', 'CR',   -30000),
-  ('genesis-cr',   0, 'amos',   'CR',    10000),
-  ('genesis-cr',   0, 'marvin', 'CR',    10000),
-  ('genesis-cr',   0, 'zero',   'CR',    10000),
-  ('genesis-frag', 0, 'SYSTEM', 'FRAG',  -3000),
-  ('genesis-frag', 0, 'amos',   'FRAG',   1000),
-  ('genesis-frag', 0, 'marvin', 'FRAG',   1000),
-  ('genesis-frag', 0, 'zero',   'FRAG',   1000),
-  ('genesis-fuel', 0, 'SYSTEM', 'FUEL',  -1500),
-  ('genesis-fuel', 0, 'amos',   'FUEL',    500),
-  ('genesis-fuel', 0, 'marvin', 'FUEL',    500),
-  ('genesis-fuel', 0, 'zero',   'FUEL',    500);
-
-INSERT INTO vessel_locations (agent_id, station_id, docked_since) VALUES
-  ('amos',   'ceres', 0),
-  ('marvin', 'ceres', 0),
-  ('zero',   'ceres', 0);
+INSERT INTO fleet_roster (agent_id, display_name, home_station, genesis_cr, genesis_frag, genesis_fuel) VALUES
+  ('amos',   'Atlantean Paperclip Manufacturing', 'ceres', 10000, 1000, 500),
+  ('marvin', 'Ballistic Liquidation Co.',          'ceres', 10000, 1000, 500),
+  ('zero',   'Apex Vector Arbitrage',              'ceres', 10000, 1000, 500),
+  ('aerial', 'Zenith Drift Overwatch',              'ceres', 10000, 1000, 500);
 
 -- Standing invariant checks, post-genesis. Both must always return zero rows.
 -- SELECT txn_id FROM ledger_entries GROUP BY txn_id HAVING SUM(delta) != 0;
