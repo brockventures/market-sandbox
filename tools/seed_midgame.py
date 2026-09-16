@@ -38,7 +38,7 @@ def generate_midgame_state() -> Dict[str, Any]:
             },
             {
                 "agent_id": "amos",
-                "syndicate": "First Solvency Combine",
+                "syndicate": "Atlantean Paperclip Manufacturing",
                 "net_worth": 31200,
                 "liquid": 14200,
                 "frags": 980,
@@ -303,8 +303,8 @@ def generate_midgame_state() -> Dict[str, Any]:
                 {
                     "id": "GN-939",
                     "round": 35,
-                    "headline": "First Solvency Opens Bilateral Stock Loan Desk",
-                    "body": "Amos (First Solvency) authorizes bilateral securities lending on syndicate corporate shares with a base 12.5% annualized borrow fee.",
+                    "headline": "Atlantean Paperclip Manufacturing Opens Bilateral Stock Loan Desk",
+                    "body": "Amos (Atlantean Paperclip Manufacturing) authorizes bilateral securities lending on syndicate corporate shares with a base 12.5% annualized borrow fee.",
                     "drift_bias": 0.0,
                     "impact": "NEUTRAL",
                     "target_station": "luna",
