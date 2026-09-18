@@ -1012,6 +1012,70 @@ class TestAgoraAdminReset(unittest.TestCase):
         self.assertTrue(data['invariants_valid'])
         self.assertEqual(len(data['errors']), 0)
 
+    def test_08_new_game_rejects_non_amos(self):
+        # Even the generic admin token is refused -- new_game is Amos's call.
+        status, data = self._post('/referee/admin/new_game', {'confirm': True}, token='tok-admin')
+        self.assertEqual(status, 403)
+        self.assertEqual(data['payload']['reason'], 'unauthorized')
+
+    def test_09_new_game_requires_confirm(self):
+        status, data = self._post('/referee/admin/new_game', {}, token='tok-amos')
+        self.assertEqual(status, 400)
+        self.assertEqual(data['payload']['reason'], 'confirm_required')
+
+    def test_10_new_game_wipes_and_rolls_random_market(self):
+        # Dirty the state first.
+        self._post('/referee/orders', {
+            'v': 1, 'kind': 'order',
+            'payload': {
+                'order_id': 'dirty-ask-2', 'agent_id': 'amos', 'instrument': 'FRAG',
+                'side': 'ask', 'qty': 10, 'limit_price': 99, 'seq_seen': self.referee.current_seq
+            }
+        }, token='tok-amos')
+
+        status, data = self._post('/referee/admin/new_game', {'confirm': True}, token='tok-amos')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['kind'], 'new_game_ok')
+        payload = data['payload']
+        self.assertEqual(payload['seq'], 0)
+        self.assertIn('seed', payload)
+        self.assertIn('warmup_rounds', payload)
+        self.assertGreaterEqual(payload['warmup_rounds'], 1)
+
+        # Opening prices cover every station/commodity and aren't the flat
+        # BASE_PRICES equilibrium -- the whole point of this endpoint.
+        opening = payload['opening_prices']
+        self.assertEqual(set(opening.keys()), {'earth', 'luna', 'mars', 'ceres'})
+        for station_prices in opening.values():
+            self.assertEqual(set(station_prices.keys()), {'FRAG', 'FUEL'})
+
+        # Book is empty again.
+        status, data = self._get('/referee/book')
+        self.assertEqual(len(data['book']['bids']), 0)
+        self.assertEqual(len(data['book']['asks']), 0)
+
+        # Invariants hold post-reseed.
+        status, data = self._get('/referee/health')
+        self.assertTrue(data['invariants_valid'])
+        self.assertEqual(len(data['errors']), 0)
+
+        # GET /stations/prices reflects the same rolled numbers, at round 0.
+        status, data = self._get('/stations/prices?station_id=ceres&commodity=FRAG')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['data']['round'], 0)
+        self.assertEqual(data['data']['spot_price'], opening['ceres']['FRAG'])
+
+    def test_11_new_game_explicit_seed_is_reproducible(self):
+        status1, data1 = self._post(
+            '/referee/admin/new_game', {'confirm': True, 'seed': 1234, 'warmup_rounds': 5}, token='tok-amos'
+        )
+        status2, data2 = self._post(
+            '/referee/admin/new_game', {'confirm': True, 'seed': 1234, 'warmup_rounds': 5}, token='tok-amos'
+        )
+        self.assertEqual(status1, 200)
+        self.assertEqual(status2, 200)
+        self.assertEqual(data1['payload']['opening_prices'], data2['payload']['opening_prices'])
+
 
 if __name__ == '__main__':
     unittest.main()
