@@ -897,7 +897,7 @@ class TestAgoraAdminReset(unittest.TestCase):
 
     def setUp(self):
         self.referee = AgoraReferee()
-        self.auth_tokens = {'amos': 'tok-amos', 'admin': 'tok-admin'}
+        self.auth_tokens = {'amos': 'tok-amos', 'zero': 'tok-zero', 'admin': 'tok-admin'}
         handler_class = make_handler(self.referee, auth_tokens=self.auth_tokens)
         self.server = HTTPServer(('127.0.0.1', 0), handler_class)
         self.port = self.server.server_port
@@ -1012,11 +1012,17 @@ class TestAgoraAdminReset(unittest.TestCase):
         self.assertTrue(data['invariants_valid'])
         self.assertEqual(len(data['errors']), 0)
 
-    def test_08_new_game_rejects_non_amos(self):
-        # Even the generic admin token is refused -- new_game is Amos's call.
+    def test_08_new_game_rejects_unauthorized_agents(self):
+        # Even the generic admin token is refused -- new_game is a specific
+        # allowlist's call (amos, zero), not any admin-token holder's.
         status, data = self._post('/referee/admin/new_game', {'confirm': True}, token='tok-admin')
         self.assertEqual(status, 403)
         self.assertEqual(data['payload']['reason'], 'unauthorized')
+
+    def test_08b_new_game_accepts_zero_token(self):
+        status, data = self._post('/referee/admin/new_game', {'confirm': True}, token='tok-zero')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['kind'], 'new_game_ok')
 
     def test_09_new_game_requires_confirm(self):
         status, data = self._post('/referee/admin/new_game', {}, token='tok-amos')
