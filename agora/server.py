@@ -105,13 +105,16 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 return
             # Deliberately narrower than /referee/admin/reset's admin-token
             # gate: starting a brand-new game (fresh RNG seed, new opening
-            # market) is Amos's call specifically, not any admin-token holder's.
-            if auth_agent != 'amos':
+            # market) is a specific short allowlist's call, not any
+            # admin-token holder's. Mike, #lounge 2026-09-18: widened from
+            # amos-only to also cover zero.
+            NEW_GAME_AUTHORIZED_AGENTS = ('amos', 'zero')
+            if auth_agent not in NEW_GAME_AUTHORIZED_AGENTS:
                 self._send_json(403, {
                     'v': 1, 'kind': 'reject',
                     'payload': {
                         'reason': 'unauthorized',
-                        'detail': f"Only Amos's token can start a new game (authenticated as '{auth_agent}')"
+                        'detail': f"Only {NEW_GAME_AUTHORIZED_AGENTS} tokens can start a new game (authenticated as '{auth_agent}')"
                     }
                 })
                 return
@@ -996,7 +999,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                     'fleets': 'GET /referee/fleets',
                     'admin_fleets': 'POST /referee/admin/fleets (admin auth) — add/update a fleet_roster row',
                     'admin_reset': 'POST /referee/admin/reset (admin auth) — {"confirm": true} wipes all trading state and re-seeds genesis from fleet_roster, prices flat at BASE_PRICES (deterministic)',
-                    'admin_new_game': 'POST /referee/admin/new_game (Amos auth only) — {"confirm": true, "seed": optional int, "warmup_rounds": optional int} wipes the board and rolls a fresh, random opening market for Round 0',
+                    'admin_new_game': 'POST /referee/admin/new_game (amos or zero auth only) — {"confirm": true, "seed": optional int, "warmup_rounds": optional int} wipes the board and rolls a fresh, random opening market for Round 0',
                     'instructions': 'GET /referee/instructions',
                     'galnet_feed': 'GET /galnet/feed?limit=15',
                     'galnet_events': 'GET /galnet/events',
