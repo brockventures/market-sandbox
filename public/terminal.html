@@ -3726,6 +3726,82 @@
 
   initOrbitalRadar();
   updateModeDisplay();
+
+  // -------------------------------------------------------------
+  // Section 8: WebSocket Real-Time Delta Stream (/ws/terminal)
+  // -------------------------------------------------------------
+  let terminalWs = null;
+  function initTerminalWebSocket() {
+    let wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    let wsHost = window.location.host;
+    let wsUrl = `${wsProtocol}//${wsHost}/ws/terminal`;
+
+    if (!wsHost || wsHost.includes("null") || window.location.protocol === "file:") {
+      wsUrl = "wss://agora-banana-production.up.railway.app/ws/terminal";
+    }
+
+    try {
+      terminalWs = new WebSocket(wsUrl);
+    } catch (e) {
+      console.warn("WebSocket initialization error:", e);
+      return;
+    }
+
+    terminalWs.onopen = function () {
+      console.log("Agora Terminal WebSocket connected to", wsUrl);
+      const statusText = document.getElementById("referee-status-text");
+      if (statusText) {
+        statusText.textContent = "REFEREE: WS STREAM (LIVE)";
+        statusText.style.color = "var(--green-bright, #00ff66)";
+      }
+      if (terminalWs && terminalWs.readyState === WebSocket.OPEN) {
+        terminalWs.send(JSON.stringify({
+          action: "subscribe",
+          station_id: typeof currentStation !== "undefined" ? currentStation : "ceres",
+          instrument: typeof currentCommodity !== "undefined" ? currentCommodity : "FRAG"
+        }));
+      }
+    };
+
+    terminalWs.onmessage = function (event) {
+      try {
+        const frame = JSON.parse(event.data);
+        if (!frame || !frame.type) return;
+
+        if (frame.type === "snapshot") {
+          pollLeaderboard();
+          pollBookAndTape();
+          pollCircuitBreakerTelemetry();
+          pollStationsTelemetry();
+        } else if (frame.type === "ticks" || frame.type === "depth_diff") {
+          pollBookAndTape();
+        } else if (frame.type === "leaderboard") {
+          pollLeaderboard();
+        } else if (frame.type === "circuit_state") {
+          pollCircuitBreakerTelemetry();
+        }
+      } catch (err) {
+        console.warn("Error processing WS frame:", err);
+      }
+    };
+
+    terminalWs.onclose = function () {
+      console.log("Agora Terminal WebSocket disconnected. Retrying in 5s...");
+      const statusText = document.getElementById("referee-status-text");
+      if (statusText) {
+        statusText.textContent = "REFEREE: LIVE POLLING";
+        statusText.style.color = "var(--text-bright)";
+      }
+      terminalWs = null;
+      setTimeout(initTerminalWebSocket, 5000);
+    };
+
+    terminalWs.onerror = function (err) {
+      console.warn("Agora Terminal WebSocket error:", err);
+    };
+  }
+
+  initTerminalWebSocket();
 </script>
 
 </body>

@@ -14,11 +14,12 @@ import hmac
 import json
 import os
 import urllib.parse
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, HTTPServer, BaseHTTPRequestHandler
 from typing import Optional, Dict
 from agora.referee import AgoraReferee
 from agora.galnet import GalNetEngine
 from agora.spatial import STATIONS, COMMODITIES, ROUTES, get_route, get_alignment_windows
+from agora.websocket import handle_terminal_websocket
 
 
 def get_configured_tokens() -> Dict[str, str]:
@@ -886,6 +887,19 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 self.wfile.write(content)
                 return
 
+        if path == '/ws/terminal':
+            if self.headers.get('Upgrade', '').lower() == 'websocket':
+                handle_terminal_websocket(self, ref, self.galnet_engine)
+                return
+            else:
+                self._send_json(200, {
+                    'status': 'ok',
+                    'endpoint': '/ws/terminal',
+                    'protocol': 'websocket',
+                    'frames': ['snapshot', 'ticks', 'depth_diff', 'leaderboard', 'circuit_state']
+                })
+                return
+
         if path == '/referee/health':
             valid, errors = ref.verify_ledger_invariants()
             status_code = 200 if valid else 500
@@ -1201,7 +1215,7 @@ def run_server(host: Optional[str] = None, port: int = 8080, referee: Optional[A
     ref = referee or AgoraReferee(db_path=db_path)
     tokens = auth_tokens if auth_tokens is not None else get_configured_tokens()
     handler_class = make_handler(ref, auth_tokens=tokens)
-    server = HTTPServer((bind_host, port), handler_class)
+    server = ThreadingHTTPServer((bind_host, port), handler_class)
     print(f"Agora Referee HTTP API listening on {bind_host}:{port} (db: {db_path})")
     if tokens:
         print(f"Configured auth tokens for agents: {list(tokens.keys())}")
