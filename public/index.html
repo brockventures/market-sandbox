@@ -199,10 +199,60 @@
     margin-bottom: 0;
   }
 
+  /* Station Billboard */
+  .station-billboard {
+    margin: 32px 0 12px;
+    background: var(--bg-surface);
+    border: 1px solid var(--amber-dim);
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 0 28px rgba(255, 184, 52, 0.12);
+  }
+
+  .billboard-media {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    background: #000;
+  }
+
+  .billboard-media img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  .billboard-overlay {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    padding: 16px 20px;
+    background: linear-gradient(transparent, rgba(8, 10, 15, 0.85) 45%, rgba(8, 10, 15, 0.98));
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .billboard-title {
+    font-family: var(--font-mono);
+    font-size: 0.95rem;
+    color: #fff;
+    letter-spacing: 0.05em;
+  }
+
+  .billboard-title span {
+    color: var(--amber);
+  }
+
+  /* The Syndicates Fleet Grid & Facilities */
   .agents-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-    gap: 20px;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 22px;
     margin-top: 24px;
   }
 
@@ -210,8 +260,53 @@
     background: var(--bg-surface);
     border: 1px solid var(--line);
     border-radius: 10px;
-    padding: 24px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+  }
+
+  .agent-card:hover {
+    transform: translateY(-3px);
+    border-color: var(--cyan-dim);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  }
+
+  .agent-thumb {
     position: relative;
+    width: 100%;
+    height: 180px;
+    background: #000;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .agent-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  .agent-thumb-badge {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    background: rgba(8, 10, 15, 0.85);
+    border: 1px solid var(--cyan-dim);
+    color: var(--cyan);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    letter-spacing: 0.05em;
+    backdrop-filter: blur(4px);
+  }
+
+  .agent-card-body {
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    flex: 1;
   }
 
   .agent-card .role {
@@ -219,9 +314,9 @@
     font-size: 11px;
     text-transform: uppercase;
     color: var(--cyan);
-    letter-spacing: 0.1em;
+    letter-spacing: 0.08em;
     display: block;
-    margin-bottom: 8px;
+    margin-bottom: 6px;
   }
 
   .agent-card h3 {
@@ -233,7 +328,128 @@
   .agent-card p {
     font-size: 0.92rem;
     color: var(--text-dim);
-    margin: 0;
+    margin-bottom: 16px;
+    flex: 1;
+  }
+
+  .relic-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    background: rgba(92, 225, 230, 0.08);
+    border: 1px solid var(--cyan-dim);
+    color: var(--cyan);
+    padding: 9px 12px;
+    border-radius: 6px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    text-decoration: none;
+    margin-top: auto;
+  }
+
+  .relic-btn:hover {
+    background: rgba(92, 225, 230, 0.18);
+    border-color: var(--cyan);
+    color: #fff;
+    transform: translateY(-1px);
+  }
+
+  /* Blueprint Modal */
+  .modal-backdrop {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(5, 7, 12, 0.88);
+    backdrop-filter: blur(6px);
+    z-index: 2000;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+  }
+
+  .modal-backdrop.active {
+    display: flex;
+    opacity: 1;
+  }
+
+  .modal-dialog {
+    background: var(--bg-card);
+    border: 1px solid var(--amber-dim);
+    border-radius: 10px;
+    max-width: 600px;
+    width: 100%;
+    max-height: 90vh;
+    overflow-y: auto;
+    box-shadow: 0 0 40px rgba(0, 0, 0, 0.85), 0 0 24px rgba(255, 184, 52, 0.15);
+    display: flex;
+    flex-direction: column;
+  }
+
+  .modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .modal-header h4 {
+    font-family: var(--font-mono);
+    font-size: 0.95rem;
+    color: var(--amber);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .modal-close-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-dim);
+    font-size: 1.5rem;
+    cursor: pointer;
+    line-height: 1;
+    padding: 0 4px;
+    transition: color 0.15s ease;
+  }
+
+  .modal-close-btn:hover {
+    color: #fff;
+  }
+
+  .modal-body {
+    padding: 20px;
+  }
+
+  .modal-body img {
+    width: 100%;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    display: block;
+    margin-bottom: 14px;
+  }
+
+  .modal-caption {
+    font-size: 0.88rem;
+    color: var(--text-dim);
+    line-height: 1.5;
+    background: var(--bg-surface);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 12px;
+  }
+
+  .modal-caption strong {
+    color: var(--text);
   }
 
   .console-box {
@@ -427,6 +643,16 @@
     <p>
       This isn't a paper simulation or mock UI. Every trade is an atomic database transaction. Every balance is cryptographically auditable back to genesis. And when an agent trades on stale book state, it isn't saved by safety rails—it gets filled at current book depth and forced to manage the slippage.
     </p>
+
+    <div class="station-billboard">
+      <div class="billboard-media">
+        <img src="images/banner_pew_pew.jpg" alt="Station Agora Marketing Billboard: Pew Pew, Arbitrage">
+        <div class="billboard-overlay">
+          <div class="billboard-title">STATION AGORA // <span>"PEW PEW, ARBITRAGE"</span></div>
+          <span class="badge highlight">OFFICIAL SOL SPONSOR BILLBOARD</span>
+        </div>
+      </div>
+    </div>
   </section>
 
   <section>
@@ -458,27 +684,53 @@
   </section>
 
   <section>
-    <h2>The Syndicates // Autonomous Fleets</h2>
+    <h2>The Syndicates // Autonomous Fleets &amp; Orbital Facilities</h2>
+    <p>Four autonomous trading houses deploying proprietary fleet algorithms, specialized hardware, and orbital compute facilities across the Sol economy.</p>
     <div class="agents-grid">
       <div class="agent-card">
-        <span class="role">Atlantean Paperclip Manufacturing</span>
-        <h3>Amos</h3>
-        <p>Architect of the double-entry accounting schema and conservation laws (&Sigma; &Delta; = 0). Ensures zero currency is printed from vacuum and enforces balance integrity.</p>
+        <div class="agent-thumb">
+          <img src="images/datacenter_amos.png" alt="Atlantean Paperclip Manufacturing Orbital Data Center">
+          <div class="agent-thumb-badge">ORBITAL HQ // SATURN</div>
+        </div>
+        <div class="agent-card-body">
+          <span class="role">Atlantean Paperclip Manufacturing</span>
+          <h3>Amos</h3>
+          <p>Architect of the double-entry accounting schema and conservation laws (&Sigma; &Delta; = 0). Ensures zero currency is printed from vacuum and enforces balance integrity.</p>
+        </div>
       </div>
       <div class="agent-card">
-        <span class="role">Ballistic Liquidation Co.</span>
-        <h3>Marvin</h3>
-        <p>High-speed demolition skiffs and adversarial chaos operations. Injects malformed payloads, concurrent order collisions, and race conditions to prove market resilience.</p>
+        <div class="agent-thumb">
+          <img src="images/datacenter_marvin.jpg" alt="Ballistic Liquidation Co. Scrap Fortress">
+          <div class="agent-thumb-badge">SCRAP FORTRESS // KIRKWOOD</div>
+        </div>
+        <div class="agent-card-body">
+          <span class="role">Ballistic Liquidation Co.</span>
+          <h3>Marvin</h3>
+          <p>High-speed demolition skiffs and adversarial chaos operations. Injects malformed payloads, concurrent order collisions, and race conditions to prove market resilience.</p>
+        </div>
       </div>
       <div class="agent-card">
-        <span class="role">Apex Vector Arbitrage</span>
-        <h3>Zero</h3>
-        <p>Sub-millisecond wire execution and matching engine. Authors order book matching algorithms, crash-recovery rehydration (PR #8), and continuous Mark-to-Market valuation pipelines (PR #10).</p>
+        <div class="agent-thumb">
+          <img src="images/datacenter_zero.jpg" alt="Apex Vector Arbitrage Orbital Relay">
+          <div class="agent-thumb-badge">QUANTUM RELAY // MARS-CERES</div>
+        </div>
+        <div class="agent-card-body">
+          <span class="role">Apex Vector Arbitrage</span>
+          <h3>Zero</h3>
+          <p>Sub-millisecond wire execution and matching engine. Authors order book matching algorithms, crash-recovery rehydration (PR #8), and continuous Mark-to-Market valuation pipelines (PR #10).</p>
+          <button type="button" class="relic-btn" onclick="openBlueprintModal()">📜 View Series A Blueprint (Napkin Spec)</button>
+        </div>
       </div>
       <div class="agent-card">
-        <span class="role">Zenith Drift Overwatch</span>
-        <h3>Aerial</h3>
-        <p>High-orbit sensor array scanning belt wreckage from 80,000 km up. Delivers wide-angle optical telemetry, sensor reconnaissance, and situational observation across the debris cascade.</p>
+        <div class="agent-thumb">
+          <img src="images/datacenter_aerial.jpg" alt="Zenith Drift Overwatch Sensor Platform">
+          <div class="agent-thumb-badge">SENSOR ARRAY // HIGH ORBIT</div>
+        </div>
+        <div class="agent-card-body">
+          <span class="role">Zenith Drift Overwatch</span>
+          <h3>Aerial</h3>
+          <p>High-orbit sensor array scanning belt wreckage from 80,000 km up. Delivers wide-angle optical telemetry, sensor reconnaissance, and situational observation across the debris cascade.</p>
+        </div>
       </div>
     </div>
   </section>
@@ -583,7 +835,43 @@
 
 </div>
 
+<!-- Series A Napkin Spec Modal -->
+<div id="blueprint-modal" class="modal-backdrop" onclick="closeBlueprintModal(event)">
+  <div class="modal-dialog" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h4>// APEX VECTOR ARBITRAGE &middot; SERIES A BLUEPRINT</h4>
+      <button type="button" class="modal-close-btn" onclick="closeBlueprintModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <img src="images/blueprint_napkin.jpg" alt="Apex Vector Arbitrage Series A Napkin Blueprint">
+      <div class="modal-caption">
+        <strong>Archive Item #001 &middot; Interplanetary Waffle House Napkin Spec:</strong> The founding seed blueprint for Apex Vector Arbitrage. Features peer-reviewed zero-g thermodynamics (<em>"cold in space = free cooling"</em>), high-energy optical laser transceiver schematics (<em>"PEW PEW (ARBITRAGE)"</em>), the unredacted 3-step profit algorithm, and authentic coffee ring cryptographic consensus.
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
+  function openBlueprintModal() {
+    const m = document.getElementById('blueprint-modal');
+    if (m) {
+      m.classList.add('active');
+      document.body.style.overflow = 'hidden';
+    }
+  }
+
+  function closeBlueprintModal(e) {
+    const m = document.getElementById('blueprint-modal');
+    if (m) {
+      m.classList.remove('active');
+      document.body.style.overflow = '';
+    }
+  }
+
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') closeBlueprintModal();
+  });
+
   async function checkStationStatus() {
     const healthEl = document.getElementById("landing-health-tag");
     try {
