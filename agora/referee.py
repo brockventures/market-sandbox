@@ -39,6 +39,8 @@ class AgoraReferee:
         self.current_round: int = 0
         self.last_price: Optional[int] = None
         self.last_qty: Optional[int] = None
+        self.last_prices: Dict[Tuple[str, str], int] = {}
+        self.last_quantities: Dict[Tuple[str, str], int] = {}
         self.floor: str = 'open'
         # Multi-station order books across Sol nodes, supporting commodities and equities
         self.books: Dict[str, Dict[str, OrderBook]] = {
@@ -50,6 +52,14 @@ class AgoraReferee:
         self.equity = SyndicateEquityEngine(self.conn, self)
         self.salvage = DerelictSalvageEngine(self.conn, self)
         self.circuit_breaker = CircuitBreakerEngine(self.conn, self)
+
+    def get_last_price(self, station_id: str, instrument: str) -> Optional[int]:
+        """Return the most recent trade price for a specific station and instrument."""
+        return self.last_prices.get((station_id.lower(), instrument.upper()))
+
+    def get_last_qty(self, station_id: str, instrument: str) -> Optional[int]:
+        """Return the most recent trade quantity for a specific station and instrument."""
+        return self.last_quantities.get((station_id.lower(), instrument.upper()))
 
     def _init_db(self):
         """Load schema and genesis seed if database is uninitialized, and rehydrate book from open orders."""
@@ -332,6 +342,8 @@ class AgoraReferee:
         self.current_round = 0
         self.last_price = None
         self.last_qty = None
+        self.last_prices = {}
+        self.last_quantities = {}
         self.floor = 'open'
         self.books = {
             st: {comm: OrderBook(instrument=comm) for comm in ('FRAG', 'BANANA', 'FUEL', *EQUITY_SYMBOLS)}
@@ -1288,8 +1300,8 @@ class AgoraReferee:
                     'instrument': instrument,
                     'best_bid': target_book.best_bid(),
                     'best_ask': target_book.best_ask(),
-                    'last_price': self.last_price,
-                    'last_qty': self.last_qty,
+                    'last_price': self.get_last_price(order_station, instrument),
+                    'last_qty': self.get_last_qty(order_station, instrument),
                     'status': 'halted',
                     'trades_count': 0,
                     'auction_resting': True,
@@ -1398,6 +1410,9 @@ class AgoraReferee:
                 # Settle each executed trade atomically in ledger_entries and accounts
                 for trade in trades:
                     self.circuit_breaker.record_trade(order_station, instrument, trade.price, trade.qty, self.current_round)
+                    st_key = (order_station.lower(), instrument.upper())
+                    self.last_prices[st_key] = trade.price
+                    self.last_quantities[st_key] = trade.qty
                     self.last_price = trade.price
                     self.last_qty = trade.qty
                     buyer_currency = self.get_currency_instrument(trade.buyer_id)
@@ -1511,8 +1526,8 @@ class AgoraReferee:
                 'instrument': instrument,
                 'best_bid': target_book.best_bid(),
                 'best_ask': target_book.best_ask(),
-                'last_price': self.last_price,
-                'last_qty': self.last_qty,
+                'last_price': self.get_last_price(order_station, instrument),
+                'last_qty': self.get_last_qty(order_station, instrument),
                 'status': self.floor,
                 'trades_count': len(trades)
             }
@@ -1676,8 +1691,23 @@ class AgoraReferee:
     def get_leaderboard(self) -> List[Dict[str, Any]]:
         """
         Calculate Net Worth = Balance(Credits/CR) + Qty(FRAG) * Mark Price.
+        FRAG mark price is determined strictly against Ceres FRAG:
+        1. Inside mid: (best_bid + best_ask) // 2 if both sides of book are present
+        2. Last Ceres FRAG trade price if executed
+        3. Default baseline: 10 CR
+        Unrelated trades (e.g. 1-credit FUEL or 50-credit equities) do not contaminate the mark.
         """
-        mark = self.last_price if self.last_price is not None else 10  # default mark if no trades
+        ceres_frag_book = self.books.get('ceres', {}).get('FRAG')
+        best_bid = ceres_frag_book.best_bid() if ceres_frag_book else None
+        best_ask = ceres_frag_book.best_ask() if ceres_frag_book else None
+        if best_bid is not None and best_ask is not None:
+            mark = (best_bid + best_ask) // 2
+        elif ('ceres', 'FRAG') in self.last_prices:
+            mark = self.last_prices[('ceres', 'FRAG')]
+        elif ('ceres', 'BANANA') in self.last_prices:
+            mark = self.last_prices[('ceres', 'BANANA')]
+        else:
+            mark = 10  # default mark if no trades or active inside market
         cur = self.conn.cursor()
         cur.execute("""
             SELECT agent_id,

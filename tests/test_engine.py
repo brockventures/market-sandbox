@@ -515,5 +515,113 @@ class TestAgoraEngine(unittest.TestCase):
         self.assertEqual(res['kind'], 'market_tick')
         self.assertEqual(res['payload']['best_ask'], 10)
 
+    def test_scoped_last_prices_and_uncontaminated_leaderboard_mark(self):
+        referee = AgoraReferee()
+        # Initial baseline: all agents flat at 20,000 CR net worth (mark = 10)
+        board0 = referee.get_leaderboard()
+        for e in board0:
+            self.assertEqual(e['mark_price'], 10)
+            self.assertEqual(e['net_worth'], 20000)
+
+        # 1. Execute a trade on FUEL at Ceres (price 26, qty 50) within baseline LULD bands (23.4 - 28.6)
+        sell_fuel = {
+            'v': 1, 'kind': 'order',
+            'payload': {
+                'order_id': 'fuel-sell-1', 'agent_id': 'amos', 'instrument': 'FUEL',
+                'side': 'ask', 'qty': 50, 'limit_price': 26, 'station_id': 'ceres',
+                'seq_seen': referee.current_seq
+            }
+        }
+        referee.submit_envelope(sell_fuel)
+
+        buy_fuel = {
+            'v': 1, 'kind': 'order',
+            'payload': {
+                'order_id': 'fuel-buy-1', 'agent_id': 'zero', 'instrument': 'FUEL',
+                'side': 'bid', 'qty': 50, 'limit_price': 26, 'station_id': 'ceres',
+                'seq_seen': referee.current_seq
+            }
+        }
+        res_fuel = referee.submit_envelope(buy_fuel)
+        self.assertEqual(res_fuel['kind'], 'market_tick')
+        self.assertEqual(res_fuel['payload']['trades_count'], 1)
+        self.assertEqual(res_fuel['payload']['last_price'], 26)
+        self.assertEqual(res_fuel['payload']['last_qty'], 50)
+
+        # Scoped prices verify isolation
+        self.assertEqual(referee.get_last_price('ceres', 'FUEL'), 26)
+        self.assertIsNone(referee.get_last_price('ceres', 'FRAG'))
+
+        # Critical invariant: Leaderboard mark for FRAG MUST NOT be contaminated by FUEL trade price of 26!
+        board1 = referee.get_leaderboard()
+        for e in board1:
+            self.assertEqual(e['mark_price'], 10, "FRAG mark price was contaminated by FUEL trade!")
+
+        # 2. Post an active inside spread on Ceres FRAG (bid 21, ask 23)
+        bid_frag = {
+            'v': 1, 'kind': 'order',
+            'payload': {
+                'order_id': 'frag-bid-1', 'agent_id': 'zero', 'instrument': 'FRAG',
+                'side': 'bid', 'qty': 10, 'limit_price': 21, 'station_id': 'ceres',
+                'seq_seen': referee.current_seq
+            }
+        }
+        ask_frag = {
+            'v': 1, 'kind': 'order',
+            'payload': {
+                'order_id': 'frag-ask-1', 'agent_id': 'amos', 'instrument': 'FRAG',
+                'side': 'ask', 'qty': 10, 'limit_price': 23, 'station_id': 'ceres',
+                'seq_seen': referee.current_seq
+            }
+        }
+        referee.submit_envelope(bid_frag)
+        referee.submit_envelope(ask_frag)
+
+        # Inside mid is (21 + 23) // 2 = 22
+        board2 = referee.get_leaderboard()
+        self.assertEqual(board2[0]['mark_price'], 22)
+
+        # 3. Cross and execute Ceres FRAG trade at 23
+        cross_bid = {
+            'v': 1, 'kind': 'order',
+            'payload': {
+                'order_id': 'frag-bid-2', 'agent_id': 'marvin', 'instrument': 'FRAG',
+                'side': 'bid', 'qty': 10, 'limit_price': 23, 'station_id': 'ceres',
+                'seq_seen': referee.current_seq
+            }
+        }
+        res_cross = referee.submit_envelope(cross_bid)
+        self.assertEqual(res_cross['payload']['trades_count'], 1)
+        self.assertEqual(res_cross['payload']['last_price'], 23)
+        self.assertEqual(referee.get_last_price('ceres', 'FRAG'), 23)
+
+        # 4. Now execute a second trade on Ceres FUEL at 25 CR
+        sell_fuel2 = {
+            'v': 1, 'kind': 'order',
+            'payload': {
+                'order_id': 'fuel-sell-2', 'agent_id': 'amos', 'instrument': 'FUEL',
+                'side': 'ask', 'qty': 10, 'limit_price': 25, 'station_id': 'ceres',
+                'seq_seen': referee.current_seq
+            }
+        }
+        buy_fuel2 = {
+            'v': 1, 'kind': 'order',
+            'payload': {
+                'order_id': 'fuel-buy-2', 'agent_id': 'aerial', 'instrument': 'FUEL',
+                'side': 'bid', 'qty': 10, 'limit_price': 25, 'station_id': 'ceres',
+                'seq_seen': referee.current_seq
+            }
+        }
+        referee.submit_envelope(sell_fuel2)
+        res_fuel2 = referee.submit_envelope(buy_fuel2)
+        self.assertEqual(res_fuel2['payload']['last_price'], 25)
+        self.assertEqual(referee.get_last_price('ceres', 'FUEL'), 25)
+        self.assertEqual(referee.get_last_price('ceres', 'FRAG'), 23)
+
+        # Ceres FRAG mark in leaderboard must remain unaffected by FUEL fill
+        # Book now has resting bid at 21 (ask was filled), so inside mid has no ask -> falls back to last trade (23)
+        board3 = referee.get_leaderboard()
+        self.assertEqual(board3[0]['mark_price'], 23)
+
 if __name__ == '__main__':
     unittest.main()
