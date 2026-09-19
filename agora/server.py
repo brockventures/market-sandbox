@@ -98,6 +98,54 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
         parsed_url = urllib.parse.urlparse(self.path)
         path = parsed_url.path.rstrip('/')
 
+        if path == '/referee/admin/new_game':
+            auth_agent, auth_err = self._authenticate_request()
+            if auth_err:
+                self._send_json(401, auth_err)
+                return
+            # Deliberately narrower than /referee/admin/reset's admin-token
+            # gate: starting a brand-new game (fresh RNG seed, new opening
+            # market) is Amos's call specifically, not any admin-token holder's.
+            if auth_agent != 'amos':
+                self._send_json(403, {
+                    'v': 1, 'kind': 'reject',
+                    'payload': {
+                        'reason': 'unauthorized',
+                        'detail': f"Only Amos's token can start a new game (authenticated as '{auth_agent}')"
+                    }
+                })
+                return
+
+            content_length = int(self.headers.get('Content-Length', 0))
+            payload = {}
+            if content_length:
+                try:
+                    body = self.rfile.read(content_length)
+                    payload = json.loads(body.decode('utf-8')) if body else {}
+                except Exception as e:
+                    self._send_json(400, {
+                        'v': 1, 'kind': 'reject',
+                        'payload': {'reason': 'invalid_format', 'detail': f'Malformed JSON: {e}'}
+                    })
+                    return
+
+            if not payload.get('confirm'):
+                self._send_json(400, {
+                    'v': 1, 'kind': 'reject',
+                    'payload': {
+                        'reason': 'confirm_required',
+                        'detail': 'This wipes every trade, order, and balance and rolls a new opening market. POST {"confirm": true} to actually start a new game.'
+                    }
+                })
+                return
+
+            seed = payload.get('seed')
+            warmup_rounds = payload.get('warmup_rounds')
+            ref = self.referee or AgoraReferee()
+            result = ref.new_game(seed=seed, warmup_rounds=warmup_rounds)
+            self._send_json(200, {'v': 1, 'kind': 'new_game_ok', 'payload': result})
+            return
+
         if path == '/referee/admin/reset':
             auth_agent, auth_err = self._authenticate_request()
             if auth_err:
@@ -947,7 +995,8 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                     'health': 'GET /referee/health',
                     'fleets': 'GET /referee/fleets',
                     'admin_fleets': 'POST /referee/admin/fleets (admin auth) — add/update a fleet_roster row',
-                    'admin_reset': 'POST /referee/admin/reset (admin auth) — {"confirm": true} wipes all trading state and re-seeds genesis from fleet_roster',
+                    'admin_reset': 'POST /referee/admin/reset (admin auth) — {"confirm": true} wipes all trading state and re-seeds genesis from fleet_roster, prices flat at BASE_PRICES (deterministic)',
+                    'admin_new_game': 'POST /referee/admin/new_game (Amos auth only) — {"confirm": true, "seed": optional int, "warmup_rounds": optional int} wipes the board and rolls a fresh, random opening market for Round 0',
                     'instructions': 'GET /referee/instructions',
                     'galnet_feed': 'GET /galnet/feed?limit=15',
                     'galnet_events': 'GET /galnet/events',

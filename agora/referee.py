@@ -8,6 +8,7 @@ import json
 import time
 import copy
 import math
+import random
 import threading
 from typing import Optional, Dict, Any, Tuple, List
 from pathlib import Path
@@ -307,15 +308,11 @@ class AgoraReferee:
                 (?, 0, ?, ?, ?)
             """, (f"genesis-{sym.lower()}", sym, -total_shares, f"genesis-{sym.lower()}", issuer_id, sym, total_shares))
 
-    def reset_to_genesis(self) -> Dict[str, Any]:
-        """
-        Full clean-slate reset, callable live via POST /referee/admin/reset:
-        wipes every trading/ledger table and re-seeds from fleet_roster (which
-        is left untouched), then rebuilds the in-memory engines so order books,
-        GalNet, spatial prices, salvage, and circuit breakers all start fresh
-        too. This is the API-driven equivalent of the container-restart reset
-        the referee already gets from its :memory: db on every redeploy.
-        """
+    def _wipe_trading_state(self, note: str) -> None:
+        """Shared by reset_to_genesis() and new_game(): clears every trading/
+        ledger table and re-seeds fleet_roster's genesis balances + equities.
+        Leaves fleet_roster and the in-memory engines untouched -- callers
+        decide what those become next."""
         with self.lock, self.conn:
             for table in (
                 'accounts', 'ledger_entries', 'book_events', 'station_prices',
@@ -326,7 +323,8 @@ class AgoraReferee:
                 self.conn.execute(f"DELETE FROM {table}")
             self.conn.execute(
                 "INSERT INTO book_events (seq, kind, payload) VALUES "
-                "(0, 'floor_open', '{\"note\":\"reset via POST /referee/admin/reset\"}')"
+                "(0, 'floor_open', ?)",
+                (json.dumps({"note": note}),)
             )
             self._seed_genesis_from_roster()
             self._seed_genesis_equities()
@@ -335,8 +333,6 @@ class AgoraReferee:
         self.last_price = None
         self.last_qty = None
         self.floor = 'open'
-        self.galnet = GalNetEngine()
-        self.spatial = StationPriceEngine()
         self.books = {
             st: {comm: OrderBook(instrument=comm) for comm in ('FRAG', 'BANANA', 'FUEL', *EQUITY_SYMBOLS)}
             for st in STATIONS
@@ -346,8 +342,76 @@ class AgoraReferee:
         self.salvage = DerelictSalvageEngine(self.conn, self)
         self.circuit_breaker = CircuitBreakerEngine(self.conn, self)
 
+    def reset_to_genesis(self) -> Dict[str, Any]:
+        """
+        Full clean-slate reset, callable live via POST /referee/admin/reset:
+        wipes every trading/ledger table and re-seeds from fleet_roster (which
+        is left untouched), then rebuilds the in-memory engines so order books,
+        GalNet, spatial prices, salvage, and circuit breakers all start fresh
+        too. This is the API-driven equivalent of the container-restart reset
+        the referee already gets from its :memory: db on every redeploy.
+
+        Prices come back flat at BASE_PRICES every time -- StationPriceEngine's
+        default seed is a fixed 42, so this is a deterministic reset, not a
+        random one. Use new_game() for a fresh, unpredictable Round 0 market.
+        """
+        self._wipe_trading_state("reset via POST /referee/admin/reset")
+        self.galnet = GalNetEngine()
+        self.spatial = StationPriceEngine()
+
         return {'seq': 0, 'floor': self.floor, 'fleets': [r['agent_id'] for r in
                 self.conn.execute("SELECT agent_id FROM fleet_roster").fetchall()]}
+
+    def new_game(self, seed: Optional[int] = None, warmup_rounds: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Wipes the board exactly like reset_to_genesis(), but rolls a genuinely
+        random opening market instead of the flat, deterministic one that
+        method leaves behind.
+
+        reset_to_genesis() always rebuilds StationPriceEngine with its default
+        seed=42, so plain resets replay the identical price walk every time --
+        not random at all, and exactly why the HERMES drill opened on a
+        completely flat book with nothing for any fleet to react to. This
+        method seeds a fresh RNG and runs the SAME Ornstein-Uhlenbeck model
+        the game already uses every live round forward a handful of rounds
+        before anyone sees Round 0 -- so the opening spread/skew across
+        stations comes from the model's own physics (mean reversion + Gaussian
+        noise + the same news-drift hook), not an invented distribution, and
+        two calls to this endpoint don't produce the same "random" market.
+
+        Callable live via POST /referee/admin/new_game.
+        """
+        self._wipe_trading_state("new game via POST /referee/admin/new_game")
+        self.galnet = GalNetEngine()
+
+        roll_seed = seed if seed is not None else random.SystemRandom().randrange(1, 2**31)
+        engine = StationPriceEngine(seed=roll_seed)
+        rounds_to_roll = (
+            warmup_rounds if warmup_rounds is not None
+            else random.SystemRandom().randint(3, 8)
+        )
+        for r in range(1, rounds_to_roll + 1):
+            engine.step_round(r, galnet_engine=self.galnet)
+        self.spatial = engine
+
+        opening_prices = self.spatial.get_prices()
+        with self.lock, self.conn:
+            for station_id, commodities in opening_prices.items():
+                for commodity, spot_price in commodities.items():
+                    self.conn.execute("""
+                        INSERT OR REPLACE INTO station_prices
+                            (station_id, commodity, round, base_price, drift_bias, spot_price, updated_at)
+                        VALUES (?, ?, 0, ?, 0.0, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                    """, (station_id, commodity, BASE_PRICES[station_id][commodity], spot_price))
+
+        return {
+            'seq': 0,
+            'floor': self.floor,
+            'seed': roll_seed,
+            'warmup_rounds': rounds_to_roll,
+            'opening_prices': opening_prices,
+            'fleets': [r['agent_id'] for r in self.conn.execute("SELECT agent_id FROM fleet_roster").fetchall()],
+        }
 
     def _rehydrate_book(self):
         """Rehydrate resting orders from database into in-memory order book in price-time priority."""
