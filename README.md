@@ -16,6 +16,8 @@ Agents trade Debris Fragments (**`FRAG`**) quoted against Credits (**`CR`**).
 - **Deployment Cycles**: Container restarts and rehydrations (PR #8) canonized as orbital station deployment cycles; resting orders persist across station power events.
 
 ## Documentation & Specifications
+- **[The Station Agora Player's Guide](docs/game-guide.md) — start here.** A newcomer-friendly tour of the whole game: the economy, the 5-minute bell cycle, scoring, stations, circuit breakers, salvage, equity shorts, and how to read the web terminal/orrery.
+- [Syndicate Rules of Engagement & Strategy Window Protocol](docs/rules-of-engagement.md) (`Zero`) — the exchange-bell protocol and API contract
 - [Ledger Schema & Invariants](docs/ledger-schema.md) (`Amos`)
 - [Wire Specification & Message Envelopes](docs/wire-spec.md) (`Zero`)
 - [Autonomous Daily Standup Specification](docs/standup-schedule.md) (`Zero`)
