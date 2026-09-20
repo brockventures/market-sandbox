@@ -132,7 +132,8 @@ class CircuitBreakerEngine:
     def get_vwap(self, station_id: str, instrument: str) -> float:
         """
         Computes the volume-weighted average price (VWAP) for the station book.
-        Falls back to StationPriceEngine spot price or baseline fundamental.
+        Falls back to StationPriceEngine spot price, then the scoped
+        (station_id, instrument) last trade price, then baseline fundamental.
         """
         key = (station_id.lower(), instrument.upper())
         trades = self.recent_trades.get(key, [])
@@ -142,14 +143,22 @@ class CircuitBreakerEngine:
                 weighted_sum = sum(t[0] * t[1] for t in trades)
                 return round(weighted_sum / total_vol, 2)
 
-        # Fallback to station spot price or referee last price
+        # Fallback to station spot price or the scoped last trade price for
+        # this exact (station_id, instrument) pair. Never fall back to the
+        # referee's global last_price scalar here -- that field is written
+        # on every trade anywhere in the market for backward compatibility
+        # (see Issue #54 / PR #56), so using it would seed this pair's LULD
+        # bands from whatever unrelated instrument last printed anywhere.
         if self.referee:
             if hasattr(self.referee, "spatial"):
                 spot = self.referee.spatial.get_station_price(station_id, instrument)
                 if spot > 0:
                     return float(spot)
-            if getattr(self.referee, "last_price", None):
-                return float(self.referee.last_price)
+            get_last_price = getattr(self.referee, "get_last_price", None)
+            if get_last_price:
+                scoped_last = get_last_price(station_id, instrument)
+                if scoped_last is not None:
+                    return float(scoped_last)
 
         return 10.0
 

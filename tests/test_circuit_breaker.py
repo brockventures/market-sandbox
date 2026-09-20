@@ -88,6 +88,58 @@ class TestCircuitBreaker(unittest.TestCase):
         assert ref.circuit_breaker.get_vwap('ceres', 'FRAG') == 22.0
 
 
+    def test_get_vwap_fallback_is_scoped_not_global(self):
+        """
+        Issue #58: get_vwap()'s fallback used to read the referee's global,
+        unscoped last_price scalar -- which is written on every trade
+        anywhere in the market for back-compat (Issue #54 / PR #56) -- so a
+        pair with no VWAP history and no spatial spot coverage would have
+        its LULD bands seeded from an unrelated instrument's last print.
+
+        Disable spatial spot coverage for (ceres, FRAG) only -- leaving
+        FUEL's real coverage intact so its own LULD band doesn't collapse
+        and its setup trade executes cleanly -- to force get_vwap() on
+        FRAG past the spot-price branch and prove it lands on the scoped
+        (station_id, instrument) last trade price, not the unrelated
+        global scalar.
+        """
+        ref = AgoraReferee()
+        real_get_station_price = ref.spatial.get_station_price
+
+        def patched(station_id, commodity='FRAG'):
+            if station_id.lower() == 'ceres' and commodity.upper() == 'FRAG':
+                return 0.0
+            return real_get_station_price(station_id, commodity)
+
+        ref.spatial.get_station_price = patched
+
+        # An unrelated FUEL trade at Ceres (real spatial coverage, 26 CR is
+        # within its actual [23.4, 28.6] band) writes the global last_price
+        # scalar to 26, while FRAG at Ceres has never traded.
+        ref.submit_envelope({
+            'kind': 'order',
+            'payload': {
+                'order_id': 'fuel-ask-1', 'agent_id': 'amos', 'instrument': 'FUEL',
+                'side': 'ask', 'qty': 10, 'limit_price': 26, 'station_id': 'ceres', 'seq_seen': 0
+            }
+        })
+        fuel_bid = ref.submit_envelope({
+            'kind': 'order',
+            'payload': {
+                'order_id': 'fuel-bid-1', 'agent_id': 'zero', 'instrument': 'FUEL',
+                'side': 'bid', 'qty': 10, 'limit_price': 26, 'station_id': 'ceres', 'seq_seen': 0
+            }
+        })
+        assert fuel_bid['payload']['trades_count'] == 1
+        assert ref.last_price == 26  # global scalar contaminated, by design (back-compat)
+
+        # FRAG at Ceres has no VWAP history and (spatial coverage disabled
+        # for this pair only) no spot price -- get_vwap() must NOT fall
+        # back to the FUEL-contaminated global scalar. It has never traded
+        # either, so it falls through to the 10 CR baseline, not 26.
+        assert ref.circuit_breaker.get_vwap('ceres', 'FRAG') == 10.0
+
+
     def test_out_of_band_breach_triggers_2_round_halt(self):
         ref = AgoraReferee()
 
