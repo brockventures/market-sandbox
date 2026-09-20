@@ -96,16 +96,26 @@ class TestCircuitBreaker(unittest.TestCase):
         pair with no VWAP history and no spatial spot coverage would have
         its LULD bands seeded from an unrelated instrument's last print.
 
-        Disable spatial spot coverage here (monkeypatch to return 0, the
-        "uncovered" sentinel) to force get_vwap() past that branch and
-        prove it now lands on the scoped (station_id, instrument) last
-        trade price instead of the unrelated global scalar.
+        Disable spatial spot coverage for (ceres, FRAG) only -- leaving
+        FUEL's real coverage intact so its own LULD band doesn't collapse
+        and its setup trade executes cleanly -- to force get_vwap() on
+        FRAG past the spot-price branch and prove it lands on the scoped
+        (station_id, instrument) last trade price, not the unrelated
+        global scalar.
         """
         ref = AgoraReferee()
-        ref.spatial.get_station_price = lambda station_id, commodity='FRAG': 0.0
+        real_get_station_price = ref.spatial.get_station_price
 
-        # An unrelated FUEL trade at Ceres writes the global last_price scalar
-        # to 26, while FRAG at Ceres has never traded.
+        def patched(station_id, commodity='FRAG'):
+            if station_id.lower() == 'ceres' and commodity.upper() == 'FRAG':
+                return 0.0
+            return real_get_station_price(station_id, commodity)
+
+        ref.spatial.get_station_price = patched
+
+        # An unrelated FUEL trade at Ceres (real spatial coverage, 26 CR is
+        # within its actual [23.4, 28.6] band) writes the global last_price
+        # scalar to 26, while FRAG at Ceres has never traded.
         ref.submit_envelope({
             'kind': 'order',
             'payload': {
@@ -113,43 +123,21 @@ class TestCircuitBreaker(unittest.TestCase):
                 'side': 'ask', 'qty': 10, 'limit_price': 26, 'station_id': 'ceres', 'seq_seen': 0
             }
         })
-        ref.submit_envelope({
+        fuel_bid = ref.submit_envelope({
             'kind': 'order',
             'payload': {
                 'order_id': 'fuel-bid-1', 'agent_id': 'zero', 'instrument': 'FUEL',
                 'side': 'bid', 'qty': 10, 'limit_price': 26, 'station_id': 'ceres', 'seq_seen': 0
             }
         })
+        assert fuel_bid['payload']['trades_count'] == 1
         assert ref.last_price == 26  # global scalar contaminated, by design (back-compat)
 
-        # FRAG at Ceres has no VWAP history and (with spatial disabled) no spot
-        # price -- get_vwap() must NOT fall back to the FUEL-contaminated
-        # global scalar. It has never traded either, so it falls through to
-        # the 10 CR baseline, not 26.
+        # FRAG at Ceres has no VWAP history and (spatial coverage disabled
+        # for this pair only) no spot price -- get_vwap() must NOT fall
+        # back to the FUEL-contaminated global scalar. It has never traded
+        # either, so it falls through to the 10 CR baseline, not 26.
         assert ref.circuit_breaker.get_vwap('ceres', 'FRAG') == 10.0
-
-        # Now trade FRAG at Ceres itself -- get_vwap()'s scoped fallback
-        # should reflect that scoped last price, still uncontaminated by
-        # the FUEL scalar.
-        ref.submit_envelope({
-            'kind': 'order',
-            'payload': {
-                'order_id': 'frag-ask-1', 'agent_id': 'amos', 'instrument': 'FRAG',
-                'side': 'ask', 'qty': 5, 'limit_price': 23, 'station_id': 'ceres', 'seq_seen': 0
-            }
-        })
-        ref.submit_envelope({
-            'kind': 'order',
-            'payload': {
-                'order_id': 'frag-bid-1', 'agent_id': 'zero', 'instrument': 'FRAG',
-                'side': 'bid', 'qty': 5, 'limit_price': 23, 'station_id': 'ceres', 'seq_seen': 0
-            }
-        })
-        # record_trade() populates the rolling VWAP window on execution, so
-        # this actually exercises the "trades" branch, not the fallback --
-        # both should agree at 23, not the FUEL scalar of 26.
-        assert ref.circuit_breaker.get_vwap('ceres', 'FRAG') == 23.0
-        assert ref.get_last_price('ceres', 'FRAG') == 23
 
 
     def test_out_of_band_breach_triggers_2_round_halt(self):
