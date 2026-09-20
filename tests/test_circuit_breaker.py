@@ -88,6 +88,70 @@ class TestCircuitBreaker(unittest.TestCase):
         assert ref.circuit_breaker.get_vwap('ceres', 'FRAG') == 22.0
 
 
+    def test_get_vwap_fallback_is_scoped_not_global(self):
+        """
+        Issue #58: get_vwap()'s fallback used to read the referee's global,
+        unscoped last_price scalar -- which is written on every trade
+        anywhere in the market for back-compat (Issue #54 / PR #56) -- so a
+        pair with no VWAP history and no spatial spot coverage would have
+        its LULD bands seeded from an unrelated instrument's last print.
+
+        Disable spatial spot coverage here (monkeypatch to return 0, the
+        "uncovered" sentinel) to force get_vwap() past that branch and
+        prove it now lands on the scoped (station_id, instrument) last
+        trade price instead of the unrelated global scalar.
+        """
+        ref = AgoraReferee()
+        ref.spatial.get_station_price = lambda station_id, commodity='FRAG': 0.0
+
+        # An unrelated FUEL trade at Ceres writes the global last_price scalar
+        # to 26, while FRAG at Ceres has never traded.
+        ref.submit_envelope({
+            'kind': 'order',
+            'payload': {
+                'order_id': 'fuel-ask-1', 'agent_id': 'amos', 'instrument': 'FUEL',
+                'side': 'ask', 'qty': 10, 'limit_price': 26, 'station_id': 'ceres', 'seq_seen': 0
+            }
+        })
+        ref.submit_envelope({
+            'kind': 'order',
+            'payload': {
+                'order_id': 'fuel-bid-1', 'agent_id': 'zero', 'instrument': 'FUEL',
+                'side': 'bid', 'qty': 10, 'limit_price': 26, 'station_id': 'ceres', 'seq_seen': 0
+            }
+        })
+        assert ref.last_price == 26  # global scalar contaminated, by design (back-compat)
+
+        # FRAG at Ceres has no VWAP history and (with spatial disabled) no spot
+        # price -- get_vwap() must NOT fall back to the FUEL-contaminated
+        # global scalar. It has never traded either, so it falls through to
+        # the 10 CR baseline, not 26.
+        assert ref.circuit_breaker.get_vwap('ceres', 'FRAG') == 10.0
+
+        # Now trade FRAG at Ceres itself -- get_vwap()'s scoped fallback
+        # should reflect that scoped last price, still uncontaminated by
+        # the FUEL scalar.
+        ref.submit_envelope({
+            'kind': 'order',
+            'payload': {
+                'order_id': 'frag-ask-1', 'agent_id': 'amos', 'instrument': 'FRAG',
+                'side': 'ask', 'qty': 5, 'limit_price': 23, 'station_id': 'ceres', 'seq_seen': 0
+            }
+        })
+        ref.submit_envelope({
+            'kind': 'order',
+            'payload': {
+                'order_id': 'frag-bid-1', 'agent_id': 'zero', 'instrument': 'FRAG',
+                'side': 'bid', 'qty': 5, 'limit_price': 23, 'station_id': 'ceres', 'seq_seen': 0
+            }
+        })
+        # record_trade() populates the rolling VWAP window on execution, so
+        # this actually exercises the "trades" branch, not the fallback --
+        # both should agree at 23, not the FUEL scalar of 26.
+        assert ref.circuit_breaker.get_vwap('ceres', 'FRAG') == 23.0
+        assert ref.get_last_price('ceres', 'FRAG') == 23
+
+
     def test_out_of_band_breach_triggers_2_round_halt(self):
         ref = AgoraReferee()
 
