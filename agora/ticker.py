@@ -16,7 +16,7 @@ from typing import Any, Dict, Optional
 
 
 DEFAULT_TICK_INTERVAL_SEC = 60.0
-DEFAULT_INACTIVITY_ROUNDS = 5  # consecutive quiet rounds before auto-pause
+DEFAULT_INACTIVITY_ROUNDS = 2880  # consecutive quiet rounds before auto-pause (48 hours at 60s cadence)
 MAX_BURST_ROUNDS = 50
 MAX_BURST_INTERVAL_SEC = 600.0
 
@@ -94,6 +94,19 @@ class TickerEngine:
             self._quiet_round_count = 0
             self._last_seq = getattr(self.referee, "current_seq", 0)
             self._next_tick_at = time.time() + self.interval_sec
+
+    def configure(
+        self,
+        interval_sec: Optional[float] = None,
+        inactivity_rounds: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Dynamically update ticker interval or inactivity watchdog threshold."""
+        with self._lock:
+            if interval_sec is not None:
+                self.interval_sec = max(1.0, float(interval_sec))
+            if inactivity_rounds is not None:
+                self.inactivity_rounds = max(1, int(inactivity_rounds))
+        return self.status()
 
     def status(self) -> Dict[str, Any]:
         with self._lock:
