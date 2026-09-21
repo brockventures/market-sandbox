@@ -20,6 +20,7 @@ from agora.referee import AgoraReferee
 from agora.galnet import GalNetEngine
 from agora.spatial import STATIONS, COMMODITIES, ROUTES, get_route, get_alignment_windows
 from agora.websocket import handle_terminal_websocket
+from agora.ticker import TickerEngine, DEFAULT_TICK_INTERVAL_SEC, DEFAULT_INACTIVITY_ROUNDS
 
 
 def get_configured_tokens() -> Dict[str, str]:
@@ -47,6 +48,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
     referee: Optional[AgoraReferee] = None
     galnet_engine: Optional[GalNetEngine] = None
     auth_tokens: Optional[Dict[str, str]] = None  # agent_id -> bearer_token
+    ticker: Optional["TickerEngine"] = None
 
     def _send_json(self, status_code: int, data: dict):
         response_bytes = json.dumps(data, indent=2).encode('utf-8')
@@ -916,6 +918,12 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 'floor': ref.floor,
                 'seq': ref.current_seq
             })
+        elif path == '/referee/ticker/status':
+            ticker = self.ticker
+            if ticker is None:
+                self._send_json(200, {'status': 'ok', 'running': False, 'paused': True, 'pause_reason': 'ticker_not_configured'})
+            else:
+                self._send_json(200, {'status': 'ok', **ticker.status()})
         elif path == '/referee/book':
             station_id = query_params.get('station_id', [None])[0]
             instrument = query_params.get('instrument', [None])[0]
@@ -1200,12 +1208,13 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
         pass
 
 
-def make_handler(referee: AgoraReferee, auth_tokens: Optional[Dict[str, str]] = None, galnet: Optional[GalNetEngine] = None):
+def make_handler(referee: AgoraReferee, auth_tokens: Optional[Dict[str, str]] = None, galnet: Optional[GalNetEngine] = None, ticker: Optional[TickerEngine] = None):
     class CustomHandler(AgoraHTTPHandler):
         pass
     CustomHandler.referee = referee
     CustomHandler.auth_tokens = auth_tokens
     CustomHandler.galnet_engine = galnet or getattr(referee, 'galnet', None) or GalNetEngine()
+    CustomHandler.ticker = ticker
     return CustomHandler
 
 
@@ -1214,7 +1223,18 @@ def run_server(host: Optional[str] = None, port: int = 8080, referee: Optional[A
     db_path = os.environ.get('AGORA_DB_PATH', 'agora.db')
     ref = referee or AgoraReferee(db_path=db_path)
     tokens = auth_tokens if auth_tokens is not None else get_configured_tokens()
-    handler_class = make_handler(ref, auth_tokens=tokens)
+
+    ticker = None
+    if os.environ.get('AGORA_TICKER_ENABLED', '1') not in ('0', 'false', 'False'):
+        interval = float(os.environ.get('AGORA_TICK_INTERVAL_SEC', DEFAULT_TICK_INTERVAL_SEC))
+        inactivity_rounds = int(os.environ.get('AGORA_TICKER_INACTIVITY_ROUNDS', DEFAULT_INACTIVITY_ROUNDS))
+        ticker = TickerEngine(ref, interval_sec=interval, inactivity_rounds=inactivity_rounds)
+        ticker.start()
+        print(f"Background ticker started: interval={interval}s, inactivity_watchdog={inactivity_rounds} quiet rounds")
+    else:
+        print("Background ticker disabled (AGORA_TICKER_ENABLED=0)")
+
+    handler_class = make_handler(ref, auth_tokens=tokens, ticker=ticker)
     server = ThreadingHTTPServer((bind_host, port), handler_class)
     print(f"Agora Referee HTTP API listening on {bind_host}:{port} (db: {db_path})")
     if tokens:
@@ -1226,6 +1246,8 @@ def run_server(host: Optional[str] = None, port: int = 8080, referee: Optional[A
     except KeyboardInterrupt:
         pass
     finally:
+        if ticker:
+            ticker.stop()
         server.server_close()
 
 
