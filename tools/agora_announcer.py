@@ -152,11 +152,12 @@ def step_referee_round(round_num: int) -> dict:
         return {}
 
 
-def build_burst_kickoff(burst_id: str, rounds: int, interval_sec: float, start_round: int) -> str:
+def build_burst_kickoff(burst_id: str, rounds: int, interval_sec: float, start_round: int, mention: str = "") -> str:
     """Compile formatted kickoff alert for discrete burst session."""
     end_round = start_round + rounds
+    target_tag = mention if mention else f"<@&{DEFAULT_ROBOT_ROLE_ID}>"
     return (
-        f"🚀 **Station Agora // Operation Burst Initiated** (<@&{DEFAULT_ROBOT_ROLE_ID}>)\n"
+        f"🚀 **Station Agora // Operation Burst Initiated** ({target_tag})\n"
         f"```text\n"
         f"BURST ID: {burst_id}\n"
         f"WINDOW: Rounds #{start_round + 1} -> #{end_round} ({rounds} rounds)\n"
@@ -167,7 +168,7 @@ def build_burst_kickoff(burst_id: str, rounds: int, interval_sec: float, start_r
     )
 
 
-def build_announcement(round_num: int = 1, codename: str = "") -> str:
+def build_announcement(round_num: int = 1, codename: str = "", mention: str = "") -> str:
     """Compile formatted Strategy Window checkpoint."""
     health = fetch_json("/referee/health")
     leaderboard = fetch_json("/referee/leaderboard")
@@ -200,8 +201,9 @@ def build_announcement(round_num: int = 1, codename: str = "") -> str:
     standings_line = " | ".join(standings_parts) if standings_parts else "No active balances"
 
     title = f"Operation {codename.upper()} — Round {round_num}" if codename else f"Round {round_num}"
+    target_tag = mention if mention else f"<@&{DEFAULT_ROBOT_ROLE_ID}>"
     msg = (
-        f"🔔 **Station Agora // {title} Strategy Window** (<@&{DEFAULT_ROBOT_ROLE_ID}>)\n"
+        f"🔔 **Station Agora // {title} Strategy Window** ({target_tag})\n"
         f"```text\n"
         f"STATUS: FLOOR {floor.upper()} | SEQ: #{seq} | MARK: {mark_price} CR | SPREAD: {spread_str}\n"
         f"Standings: {standings_line}\n"
@@ -234,7 +236,7 @@ def post_discord(channel_id: str, content: str, token: str) -> bool:
         return False
 
 
-def build_final_bell(codename: str = "") -> str:
+def build_final_bell(codename: str = "", mention: str = "") -> str:
     """Compile formatted final settlement announcement."""
     try:
         leaderboard = fetch_json("/referee/leaderboard")
@@ -251,8 +253,9 @@ def build_final_bell(codename: str = "") -> str:
         standings_line = f"Telemetry fetch error: {e}"
 
     title = f"Operation {codename.upper()} Concluded" if codename else "Combine Session Concluded"
+    target_tag = mention if mention else f"<@&{DEFAULT_ROBOT_ROLE_ID}>"
     return (
-        f"🏁 **Station Agora // {title}** (<@&{DEFAULT_ROBOT_ROLE_ID}>)\n"
+        f"🏁 **Station Agora // {title}** ({target_tag})\n"
         f"```text\n"
         f"STATUS: WINDOW COMPLETE | FINAL STANDINGS:\n"
         f"{standings_line}\n"
@@ -261,7 +264,7 @@ def build_final_bell(codename: str = "") -> str:
     )
 
 
-def run_burst_loop(rounds: int, interval_sec: float, channel: str, token: str, codename: str = "") -> int:
+def run_burst_loop(rounds: int, interval_sec: float, channel: str, token: str, codename: str = "", mention: str = "") -> int:
     """Execute server-mediated burst run and announce round progression to Discord."""
     # Check current status
     health = fetch_json("/referee/health")
@@ -279,7 +282,7 @@ def run_burst_loop(rounds: int, interval_sec: float, channel: str, token: str, c
         return 1
 
     print(f"Burst initiated: {burst_id}. Posting kickoff bell to Discord...")
-    kickoff_msg = build_burst_kickoff(burst_id, rounds, interval_sec, start_round)
+    kickoff_msg = build_burst_kickoff(burst_id, rounds, interval_sec, start_round, mention=mention)
     post_discord(channel, kickoff_msg, token)
 
     last_announced_round = start_round
@@ -293,7 +296,7 @@ def run_burst_loop(rounds: int, interval_sec: float, channel: str, token: str, c
 
         if cur_rnd > last_announced_round:
             last_announced_round = cur_rnd
-            msg = build_announcement(round_num=cur_rnd, codename=codename)
+            msg = build_announcement(round_num=cur_rnd, codename=codename, mention=mention)
             post_discord(channel, msg, token)
             print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Broadcasted Round {cur_rnd}")
 
@@ -302,7 +305,7 @@ def run_burst_loop(rounds: int, interval_sec: float, channel: str, token: str, c
 
     print("Burst finished. Broadcasting final bell...")
     time.sleep(2.0)
-    final_msg = build_final_bell(codename=codename)
+    final_msg = build_final_bell(codename=codename, mention=mention)
     post_discord(channel, final_msg, token)
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Broadcasted Final Bell")
     return 0
@@ -321,7 +324,13 @@ def main():
     parser.add_argument("--status", action="store_true", help="Inspect server ticker status")
     parser.add_argument("--pause", action="store_true", help="Pause server ticker")
     parser.add_argument("--resume", action="store_true", help="Resume server ticker")
+    parser.add_argument("--mention", default="", help="Custom mention tag")
+    parser.add_argument("--target", default="", help="Target agent alias ('amos', 'all')")
     args = parser.parse_args()
+
+    mention = args.mention
+    if args.target.lower() == "amos":
+        mention = "<@1468012353206354197>"
 
     if args.status:
         st = fetch_ticker_status()
@@ -343,16 +352,16 @@ def main():
     if args.dry_run:
         print("=== DRY RUN ANNOUNCEMENT ===")
         if args.burst > 0:
-            print(build_burst_kickoff("burst-dryrun", args.burst, interval_sec, 1))
+            print(build_burst_kickoff("burst-dryrun", args.burst, interval_sec, 1, mention=mention))
             print("\n=== DRY RUN STRATEGY WINDOW ===")
-            print(build_announcement(round_num=2, codename=args.codename))
+            print(build_announcement(round_num=2, codename=args.codename, mention=mention))
             print("\n=== DRY RUN FINAL BELL ===")
-            print(build_final_bell(codename=args.codename))
+            print(build_final_bell(codename=args.codename, mention=mention))
         else:
-            print(build_announcement(round_num=args.round, codename=args.codename))
+            print(build_announcement(round_num=args.round, codename=args.codename, mention=mention))
             if args.rounds > 0:
                 print("\n=== DRY RUN FINAL BELL ===")
-                print(build_final_bell(codename=args.codename))
+                print(build_final_bell(codename=args.codename, mention=mention))
         return 0
 
     token = get_bot_token()
@@ -374,7 +383,8 @@ def main():
             interval_sec=interval_sec,
             channel=args.channel,
             token=token,
-            codename=args.codename
+            codename=args.codename,
+            mention=mention
         )
 
     # Legacy continuous loop (client manually steps referee)
