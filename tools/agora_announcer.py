@@ -96,6 +96,21 @@ def trigger_referee_burst(rounds: int, interval_sec: float = 30.0, token: str = 
         return {"status": 500, "error": str(e)}
 
 
+def cancel_referee_burst(token: str = "") -> dict:
+    """Trigger POST /referee/admin/burst/cancel."""
+    url = f"{REFEREE_BASE_URL.rstrip('/')}/referee/admin/burst/cancel"
+    tok = token or get_referee_token()
+    headers = {"Content-Type": "application/json", "User-Agent": "AgoraAnnouncer/1.0"}
+    if tok:
+        headers["Authorization"] = f"Bearer {tok}"
+    req = urllib.request.Request(url, data=b"{}", headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        return {"status": 500, "error": str(e)}
+
+
 def pause_referee_ticker(token: str = "") -> dict:
     """Trigger POST /referee/admin/ticker/pause."""
     url = f"{REFEREE_BASE_URL.rstrip('/')}/referee/admin/ticker/pause"
@@ -266,11 +281,18 @@ def build_final_bell(codename: str = "", mention: str = "") -> str:
 
 def run_burst_loop(rounds: int, interval_sec: float, channel: str, token: str, codename: str = "", mention: str = "") -> int:
     """Execute server-mediated burst run and announce round progression to Discord."""
-    # Check current status
+    # If a burst is already in flight, cleanly cancel it first so we start a pristine run
+    st_check = fetch_ticker_status()
+    if st_check.get("burst_active"):
+        print(f"Active burst detected ({st_check.get('burst_id')}). Cancelling to start pristine run...")
+        sys.stdout.flush()
+        cancel_referee_burst()
+        time.sleep(1.0)
+
     st_init = fetch_ticker_status()
     start_round = st_init.get("current_round", 0)
 
-    print(f"Triggering {rounds}-round burst (interval: {interval_sec}s) on referee...")
+    print(f"Triggering {rounds}-round burst (interval: {interval_sec}s) on referee from round {start_round}...")
     sys.stdout.flush()
     res = trigger_referee_burst(rounds=rounds, interval_sec=interval_sec)
     burst_id = res.get("burst_id") or res.get("payload", {}).get("burst_id", "burst-session")
@@ -279,21 +301,16 @@ def run_burst_loop(rounds: int, interval_sec: float, channel: str, token: str, c
         print("Error: Referee authorization failed. Check AGORA_ADMIN_TOKEN.", file=sys.stderr)
         return 1
     if res.get("status") == 409 or "burst_rejected" in str(res):
-        st = fetch_ticker_status()
-        if st.get("burst_active"):
-            burst_id = st.get("burst_id", "burst-session")
-            print(f"Attaching to existing active burst: {burst_id}")
-            sys.stdout.flush()
-        else:
-            print(f"Error: Burst rejected by referee: {res}", file=sys.stderr)
-            return 1
-    else:
-        print(f"Burst initiated: {burst_id}. Posting kickoff bell to Discord...")
-        sys.stdout.flush()
-        kickoff_msg = build_burst_kickoff(burst_id, rounds, interval_sec, start_round, mention=mention)
-        post_discord(channel, kickoff_msg, token)
+        print(f"Error: Burst rejected by referee: {res}", file=sys.stderr)
+        return 1
+
+    print(f"Burst initiated: {burst_id}. Posting kickoff bell to Discord...")
+    sys.stdout.flush()
+    kickoff_msg = build_burst_kickoff(burst_id, rounds, interval_sec, start_round, mention=mention)
+    post_discord(channel, kickoff_msg, token)
 
     last_announced_round = start_round
+    rounds_announced = 0
     burst_completed = False
 
     while not burst_completed:
@@ -301,15 +318,17 @@ def run_burst_loop(rounds: int, interval_sec: float, channel: str, token: str, c
         st = fetch_ticker_status()
         cur_rnd = st.get("current_round", last_announced_round)
         is_active = st.get("burst_active", False)
+        rounds_remaining = st.get("rounds_remaining", 0)
 
         if cur_rnd > last_announced_round:
             last_announced_round = cur_rnd
+            rounds_announced += 1
             msg = build_announcement(round_num=cur_rnd, codename=codename, mention=mention)
             post_discord(channel, msg, token)
-            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Broadcasted Round {cur_rnd}")
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Broadcasted Round {cur_rnd} ({rounds_announced}/{rounds})")
             sys.stdout.flush()
 
-        if not is_active:
+        if not is_active and (rounds_remaining == 0 or rounds_announced >= rounds):
             burst_completed = True
 
     print("Burst finished. Broadcasting final bell...")

@@ -242,6 +242,24 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             })
             return
 
+        if path in ('/referee/admin/burst/cancel', '/referee/admin/burst/stop'):
+            auth_agent, auth_err = self._authenticate_request()
+            if auth_err:
+                self._send_json(401, auth_err)
+                return
+            if self.ticker is None:
+                self._send_json(409, {
+                    'v': 1, 'kind': 'reject',
+                    'payload': {'reason': 'ticker_not_configured', 'detail': 'No TickerEngine is wired into this server instance.'}
+                })
+                return
+            cancelled = self.ticker.cancel_burst()
+            self._send_json(200, {
+                'v': 1, 'kind': 'burst_cancelled',
+                'payload': {'cancelled': cancelled, 'status': self.ticker.status()}
+            })
+            return
+
         if path == '/referee/admin/ticker/pause':
             auth_agent, auth_err = self._authenticate_request()
             if auth_err:
