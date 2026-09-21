@@ -121,6 +121,7 @@ class TerminalDiffEngine:
         self.last_leaderboard_hash: str = ""
         self.last_book_hash: Dict[Tuple[str, str], str] = {}
         self.last_circuit_hash: Dict[Tuple[str, str], str] = {}
+        self.last_equity_hash: str = ""
 
     def get_snapshot(self, station_id: str = "ceres", instrument: str = "FRAG") -> Dict[str, Any]:
         """Generate a full initial snapshot frame covering all terminal panels."""
@@ -133,6 +134,8 @@ class TerminalDiffEngine:
         ticks = self.referee.get_ticks()[-25:]
         locations = self.referee.get_all_vessel_locations()
         windows = self.referee.get_orbital_windows()
+        equity = self.referee.get_equity_summary() if hasattr(self.referee, "get_equity_summary") else {}
+        loans = self.referee.get_equity_loans() if hasattr(self.referee, "get_equity_loans") else []
 
         self.last_seq = self.referee.current_seq
         self.last_leaderboard_hash = hashlib.md5(json.dumps(leaderboard, sort_keys=True).encode("utf-8")).hexdigest()
@@ -140,6 +143,7 @@ class TerminalDiffEngine:
         self.last_circuit_hash[(st, inst)] = hashlib.md5(
             json.dumps({"bands": bands, "halts": halts}, sort_keys=True).encode("utf-8")
         ).hexdigest()
+        self.last_equity_hash = hashlib.md5(json.dumps(equity, sort_keys=True).encode("utf-8")).hexdigest()
 
         return {
             "type": "snapshot",
@@ -158,7 +162,9 @@ class TerminalDiffEngine:
             },
             "ticks": ticks,
             "locations": locations,
-            "windows": windows
+            "windows": windows,
+            "equity": equity,
+            "loans": loans
         }
 
     def get_diffs(self, station_id: str = "ceres", instrument: str = "FRAG") -> List[Dict[str, Any]]:
@@ -222,6 +228,20 @@ class TerminalDiffEngine:
                 "bands": bands,
                 "halts": halts
             })
+
+        # 5. Syndicate equity & bilateral loans diff
+        if hasattr(self.referee, "get_equity_summary"):
+            equity = self.referee.get_equity_summary()
+            eq_hash = hashlib.md5(json.dumps(equity, sort_keys=True).encode("utf-8")).hexdigest()
+            if eq_hash != self.last_equity_hash:
+                self.last_equity_hash = eq_hash
+                loans = self.referee.get_equity_loans() if hasattr(self.referee, "get_equity_loans") else []
+                diffs.append({
+                    "type": "equity",
+                    "seq": curr_seq,
+                    "equity": equity,
+                    "loans": loans
+                })
 
         return diffs
 
