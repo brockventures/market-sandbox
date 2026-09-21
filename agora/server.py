@@ -195,6 +195,83 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             self._send_json(200, {'v': 1, 'kind': 'reset_ok', 'payload': result})
             return
 
+        if path == '/referee/admin/burst':
+            auth_agent, auth_err = self._authenticate_request()
+            if auth_err:
+                self._send_json(401, auth_err)
+                return
+
+            if self.ticker is None:
+                self._send_json(409, {
+                    'v': 1, 'kind': 'reject',
+                    'payload': {'reason': 'ticker_not_configured', 'detail': 'No TickerEngine is wired into this server instance.'}
+                })
+                return
+
+            content_length = int(self.headers.get('Content-Length', 0))
+            payload = {}
+            if content_length:
+                try:
+                    body = self.rfile.read(content_length)
+                    payload = json.loads(body.decode('utf-8')) if body else {}
+                except Exception as e:
+                    self._send_json(400, {
+                        'v': 1, 'kind': 'reject',
+                        'payload': {'reason': 'invalid_format', 'detail': f'Malformed JSON: {e}'}
+                    })
+                    return
+
+            rounds = payload.get('rounds')
+            interval_sec = payload.get('interval_sec', 30.0)
+            if rounds is None:
+                self._send_json(400, {
+                    'v': 1, 'kind': 'reject',
+                    'payload': {'reason': 'rounds_required', 'detail': 'POST {"rounds": N, "interval_sec": X} to start a burst run.'}
+                })
+                return
+
+            try:
+                result = self.ticker.start_burst(rounds=rounds, interval_sec=interval_sec)
+            except ValueError as e:
+                self._send_json(409, {'v': 1, 'kind': 'reject', 'payload': {'reason': 'burst_rejected', 'detail': str(e)}})
+                return
+
+            self._send_json(200, {
+                'v': 1, 'kind': 'burst_started',
+                'payload': {**result, 'triggered_by': auth_agent}
+            })
+            return
+
+        if path == '/referee/admin/ticker/pause':
+            auth_agent, auth_err = self._authenticate_request()
+            if auth_err:
+                self._send_json(401, auth_err)
+                return
+            if self.ticker is None:
+                self._send_json(409, {
+                    'v': 1, 'kind': 'reject',
+                    'payload': {'reason': 'ticker_not_configured', 'detail': 'No TickerEngine is wired into this server instance.'}
+                })
+                return
+            self.ticker.pause(reason=f"admin_pause:{auth_agent}")
+            self._send_json(200, {'v': 1, 'kind': 'ticker_paused', 'payload': self.ticker.status()})
+            return
+
+        if path == '/referee/admin/ticker/resume':
+            auth_agent, auth_err = self._authenticate_request()
+            if auth_err:
+                self._send_json(401, auth_err)
+                return
+            if self.ticker is None:
+                self._send_json(409, {
+                    'v': 1, 'kind': 'reject',
+                    'payload': {'reason': 'ticker_not_configured', 'detail': 'No TickerEngine is wired into this server instance.'}
+                })
+                return
+            self.ticker.resume()
+            self._send_json(200, {'v': 1, 'kind': 'ticker_resumed', 'payload': self.ticker.status()})
+            return
+
         if path == '/referee/admin/fleets':
             auth_agent, auth_err = self._authenticate_request()
             if auth_err:

@@ -170,17 +170,17 @@ class AgoraReferee:
                         )
                     """)
 
-                # Migration: book_events.kind CHECK constraint pre-dated 'cancel', 'news', 'transit', 'borrow', 'distress', 'rescue', 'salvage' support
+                # Migration: book_events.kind CHECK constraint pre-dated 'cancel', 'news', 'transit', 'borrow', 'distress', 'rescue', 'salvage', 'burst' support
                 if 'book_events' in tables:
                     row = self.conn.execute(
                         "SELECT sql FROM sqlite_master WHERE type='table' AND name='book_events'"
                     ).fetchone()
                     existing_sql = row[0] if row else ''
-                    if existing_sql and ("'borrow'" not in existing_sql or "'cancel'" not in existing_sql or "'news'" not in existing_sql or "'transit'" not in existing_sql or "'distress'" not in existing_sql or "'rescue'" not in existing_sql or "'salvage'" not in existing_sql or "'circuit_breaker_halt'" not in existing_sql):
+                    if existing_sql and ("'borrow'" not in existing_sql or "'cancel'" not in existing_sql or "'news'" not in existing_sql or "'transit'" not in existing_sql or "'distress'" not in existing_sql or "'rescue'" not in existing_sql or "'salvage'" not in existing_sql or "'circuit_breaker_halt'" not in existing_sql or "'burst'" not in existing_sql):
                         self.conn.executescript("""
                             CREATE TABLE book_events_new (
                                 seq         INTEGER PRIMARY KEY,
-                                kind        TEXT NOT NULL CHECK (kind IN ('order','trade','floor_open','floor_close','cancel','news','transit','transit_arrived','borrow','loan_closed','liquidation','distress','rescue','salvage','circuit_breaker_halt','circuit_breaker_reopen')),
+                                kind        TEXT NOT NULL CHECK (kind IN ('order','trade','floor_open','floor_close','cancel','news','transit','transit_arrived','borrow','loan_closed','liquidation','distress','rescue','salvage','circuit_breaker_halt','circuit_breaker_reopen','burst')),
                                 payload     TEXT NOT NULL,
                                 created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
                             );
@@ -485,6 +485,24 @@ class AgoraReferee:
             self.conn.execute(
                 "INSERT INTO book_events (seq, kind, payload) VALUES (?, 'news', ?)",
                 (next_seq, json.dumps(event_dict))
+            )
+            return next_seq
+
+    def record_burst_event(self, phase: str, payload_extra: Optional[Dict[str, Any]] = None) -> int:
+        """
+        Records a burst-run lifecycle event ('start', 'tick', 'conclude') into
+        book_events. Terminal Web HUD clients pick these up for free via the
+        existing /ws/terminal 'ticks' diff stream (TerminalDiffEngine.get_diffs),
+        no separate broadcast plumbing required.
+        """
+        with self.lock:
+            next_seq = self.current_seq + 1
+            payload = {'phase': phase, 'round': self.current_round}
+            if payload_extra:
+                payload.update(payload_extra)
+            self.conn.execute(
+                "INSERT INTO book_events (seq, kind, payload) VALUES (?, 'burst', ?)",
+                (next_seq, json.dumps(payload))
             )
             return next_seq
 
