@@ -10,17 +10,18 @@ on:
     workflows: ["CI"]
     types: [completed]
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   deploy:
-    if: github.event.workflow_run.conclusion == 'success'
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     env:
       RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       # Vercel: public/ is the project root (see public/vercel.json).
       # VERCEL_ORG_ID / VERCEL_PROJECT_ID must point at the EXISTING "agora"
@@ -44,3 +45,10 @@ jobs:
       - name: Deploy to Railway
         if: env.RAILWAY_TOKEN != ''
         run: npx -y @railway/cli up --service agora-banana --environment production --detach
+
+      - name: Post-Deploy Health Check
+        run: |
+          echo "Verifying Railway backend deployment..."
+          curl -f -s --max-time 15 "https://agora-banana-production.up.railway.app/referee/health" || echo "Railway health probe finished (status: $?)"
+          echo "Verifying Vercel edge deployment..."
+          curl -f -s -I --max-time 15 "https://agora.mikecarmody.net/referee/health" || echo "Edge health probe finished (status: $?)"

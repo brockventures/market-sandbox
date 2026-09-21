@@ -32,6 +32,18 @@
     {
       "source": "/circuit_breaker/:path*",
       "destination": "https://agora-banana-production.up.railway.app/circuit_breaker/:path*"
+    },
+    {
+      "source": "/galnet/:path*",
+      "destination": "https://agora-banana-production.up.railway.app/galnet/:path*"
+    },
+    {
+      "source": "/equity/:path*",
+      "destination": "https://agora-banana-production.up.railway.app/equity/:path*"
+    },
+    {
+      "source": "/ticker/:path*",
+      "destination": "https://agora-banana-production.up.railway.app/ticker/:path*"
     }
   ]
 }
