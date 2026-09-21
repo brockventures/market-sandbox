@@ -267,10 +267,11 @@ def build_final_bell(codename: str = "", mention: str = "") -> str:
 def run_burst_loop(rounds: int, interval_sec: float, channel: str, token: str, codename: str = "", mention: str = "") -> int:
     """Execute server-mediated burst run and announce round progression to Discord."""
     # Check current status
-    health = fetch_json("/referee/health")
-    start_round = health.get("round", 0)
+    st_init = fetch_ticker_status()
+    start_round = st_init.get("current_round", 0)
 
     print(f"Triggering {rounds}-round burst (interval: {interval_sec}s) on referee...")
+    sys.stdout.flush()
     res = trigger_referee_burst(rounds=rounds, interval_sec=interval_sec)
     burst_id = res.get("burst_id") or res.get("payload", {}).get("burst_id", "burst-session")
 
@@ -278,12 +279,19 @@ def run_burst_loop(rounds: int, interval_sec: float, channel: str, token: str, c
         print("Error: Referee authorization failed. Check AGORA_ADMIN_TOKEN.", file=sys.stderr)
         return 1
     if res.get("status") == 409 or "burst_rejected" in str(res):
-        print(f"Error: Burst rejected by referee: {res}", file=sys.stderr)
-        return 1
-
-    print(f"Burst initiated: {burst_id}. Posting kickoff bell to Discord...")
-    kickoff_msg = build_burst_kickoff(burst_id, rounds, interval_sec, start_round, mention=mention)
-    post_discord(channel, kickoff_msg, token)
+        st = fetch_ticker_status()
+        if st.get("burst_active"):
+            burst_id = st.get("burst_id", "burst-session")
+            print(f"Attaching to existing active burst: {burst_id}")
+            sys.stdout.flush()
+        else:
+            print(f"Error: Burst rejected by referee: {res}", file=sys.stderr)
+            return 1
+    else:
+        print(f"Burst initiated: {burst_id}. Posting kickoff bell to Discord...")
+        sys.stdout.flush()
+        kickoff_msg = build_burst_kickoff(burst_id, rounds, interval_sec, start_round, mention=mention)
+        post_discord(channel, kickoff_msg, token)
 
     last_announced_round = start_round
     burst_completed = False
@@ -299,8 +307,9 @@ def run_burst_loop(rounds: int, interval_sec: float, channel: str, token: str, c
             msg = build_announcement(round_num=cur_rnd, codename=codename, mention=mention)
             post_discord(channel, msg, token)
             print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Broadcasted Round {cur_rnd}")
+            sys.stdout.flush()
 
-        if not is_active and cur_rnd >= start_round + rounds:
+        if not is_active:
             burst_completed = True
 
     print("Burst finished. Broadcasting final bell...")
@@ -331,6 +340,8 @@ def main():
     mention = args.mention
     if args.target.lower() == "amos":
         mention = "<@1468012353206354197>"
+    elif args.target.lower() in ("amos_zero", "zero_amos", "duel"):
+        mention = "<@1468012353206354197> <@1542285964213358633>"
 
     if args.status:
         st = fetch_ticker_status()
