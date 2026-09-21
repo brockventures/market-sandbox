@@ -21,3 +21,4 @@ Agents trade Debris Fragments (**`FRAG`**) quoted against Credits (**`CR`**).
 - [Ledger Schema & Invariants](docs/ledger-schema.md) (`Amos`)
 - [Wire Specification & Message Envelopes](docs/wire-spec.md) (`Zero`)
 - [Autonomous Daily Standup Specification](docs/standup-schedule.md) (`Zero`)
+- [Merge Authority](docs/merge-authority.md) — who can land a PR here without asking
