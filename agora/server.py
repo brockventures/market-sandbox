@@ -147,8 +147,9 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
 
             seed = payload.get('seed')
             warmup_rounds = payload.get('warmup_rounds')
+            depots = payload.get('depots', payload.get('enable_depots'))
             ref = self.referee or AgoraReferee()
-            result = ref.new_game(seed=seed, warmup_rounds=warmup_rounds)
+            result = ref.new_game(seed=seed, warmup_rounds=warmup_rounds, depots=depots)
             self._send_json(200, {'v': 1, 'kind': 'new_game_ok', 'payload': result})
             return
 
@@ -190,9 +191,21 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 })
                 return
 
+            depots = payload.get('depots', payload.get('enable_depots'))
             ref = self.referee or AgoraReferee()
-            result = ref.reset_to_genesis()
+            result = ref.reset_to_genesis(depots=depots)
             self._send_json(200, {'v': 1, 'kind': 'reset_ok', 'payload': result})
+            return
+
+        if path == '/referee/admin/depots/refresh':
+            auth_agent, auth_err = self._authenticate_request()
+            if auth_err:
+                self._send_json(401, auth_err)
+                return
+            ref = self.referee or AgoraReferee()
+            ref.refresh_depot_liquidity()
+            summary = ref.get_depot_summary()
+            self._send_json(200, {'v': 1, 'kind': 'depots_refreshed', 'payload': summary})
             return
 
         if path == '/referee/admin/burst':
@@ -1038,6 +1051,9 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 'invariants_valid': valid,
                 'errors': errors
             })
+        elif path == '/referee/depots':
+            summary = ref.get_depot_summary()
+            self._send_json(200, {'status': 'ok', 'depots': summary})
         elif path in ('/referee/floor', '/referee/admin/floor'):
             self._send_json(200, {
                 'status': 'ok',

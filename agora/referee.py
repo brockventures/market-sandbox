@@ -28,7 +28,14 @@ from agora.circuit_breaker import CircuitBreakerEngine
 
 
 class AgoraReferee:
-    def __init__(self, db_path: str = ':memory:', instrument: Optional[str] = None, galnet: Optional[GalNetEngine] = None, spatial: Optional[StationPriceEngine] = None):
+    def __init__(
+        self,
+        db_path: str = ':memory:',
+        instrument: Optional[str] = None,
+        galnet: Optional[GalNetEngine] = None,
+        spatial: Optional[StationPriceEngine] = None,
+        depots: bool = False,
+    ):
         self.db_path = db_path
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
@@ -36,6 +43,7 @@ class AgoraReferee:
         self.default_instrument = instrument or 'FRAG'
         self.galnet = galnet or GalNetEngine()
         self.spatial = spatial or StationPriceEngine()
+        self.depots_enabled = depots
         self.current_round: int = 0
         self.last_price: Optional[int] = None
         self.last_qty: Optional[int] = None
@@ -52,6 +60,8 @@ class AgoraReferee:
         self.equity = SyndicateEquityEngine(self.conn, self)
         self.salvage = DerelictSalvageEngine(self.conn, self)
         self.circuit_breaker = CircuitBreakerEngine(self.conn, self)
+        if self.depots_enabled:
+            self.seed_depots()
 
     def get_last_price(self, station_id: str, instrument: str) -> Optional[int]:
         """Return the most recent trade price for a specific station and instrument."""
@@ -354,7 +364,7 @@ class AgoraReferee:
         self.salvage = DerelictSalvageEngine(self.conn, self)
         self.circuit_breaker = CircuitBreakerEngine(self.conn, self)
 
-    def reset_to_genesis(self) -> Dict[str, Any]:
+    def reset_to_genesis(self, depots: Optional[bool] = None) -> Dict[str, Any]:
         """
         Full clean-slate reset, callable live via POST /referee/admin/reset:
         wipes every trading/ledger table and re-seeds from fleet_roster (which
@@ -367,14 +377,18 @@ class AgoraReferee:
         default seed is a fixed 42, so this is a deterministic reset, not a
         random one. Use new_game() for a fresh, unpredictable Round 0 market.
         """
+        if depots is not None:
+            self.depots_enabled = depots
         self._wipe_trading_state("reset via POST /referee/admin/reset")
         self.galnet = GalNetEngine()
         self.spatial = StationPriceEngine()
+        if self.depots_enabled:
+            self.seed_depots()
 
         return {'seq': 0, 'floor': self.floor, 'fleets': [r['agent_id'] for r in
                 self.conn.execute("SELECT agent_id FROM fleet_roster").fetchall()]}
 
-    def new_game(self, seed: Optional[int] = None, warmup_rounds: Optional[int] = None) -> Dict[str, Any]:
+    def new_game(self, seed: Optional[int] = None, warmup_rounds: Optional[int] = None, depots: Optional[bool] = None) -> Dict[str, Any]:
         """
         Wipes the board exactly like reset_to_genesis(), but rolls a genuinely
         random opening market instead of the flat, deterministic one that
@@ -393,6 +407,8 @@ class AgoraReferee:
 
         Callable live via POST /referee/admin/new_game.
         """
+        if depots is not None:
+            self.depots_enabled = depots
         self._wipe_trading_state("new game via POST /referee/admin/new_game")
         self.galnet = GalNetEngine()
 
@@ -415,6 +431,9 @@ class AgoraReferee:
                             (station_id, commodity, round, base_price, drift_bias, spot_price, updated_at)
                         VALUES (?, ?, 0, ?, 0.0, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
                     """, (station_id, commodity, BASE_PRICES[station_id][commodity], spot_price))
+
+        if self.depots_enabled:
+            self.seed_depots()
 
         return {
             'seq': 0,
@@ -636,9 +655,9 @@ class AgoraReferee:
     def get_all_vessel_locations(self) -> List[Dict[str, Any]]:
         cur = self.conn.cursor()
         cur.execute("""
-            SELECT DISTINCT agent_id FROM vessel_locations
+            SELECT DISTINCT agent_id FROM vessel_locations WHERE agent_id NOT LIKE 'depot_%'
             UNION
-            SELECT DISTINCT agent_id FROM accounts WHERE agent_id != 'SYSTEM'
+            SELECT DISTINCT agent_id FROM accounts WHERE agent_id != 'SYSTEM' AND agent_id NOT LIKE 'depot_%'
             ORDER BY agent_id ASC
         """)
         agents = [r[0] for r in cur.fetchall()]
@@ -854,6 +873,9 @@ class AgoraReferee:
                         INSERT OR REPLACE INTO station_prices (station_id, commodity, round, base_price, drift_bias, spot_price, updated_at)
                         VALUES (?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
                     """, (p.station_id, p.commodity, p.round, p.base_price, p.drift_bias, p.spot_price))
+
+                if self.depots_enabled:
+                    self._refresh_depot_orders_locked()
 
                 # Settle arriving transits
                 cur = self.conn.cursor()
@@ -1733,7 +1755,7 @@ class AgoraReferee:
                    SUM(CASE WHEN instrument IN ('FRAG', 'BANANA') THEN balance ELSE 0 END) as frags,
                    SUM(CASE WHEN instrument = 'FUEL' THEN balance ELSE 0 END) as fuel
             FROM accounts
-            WHERE agent_id != 'SYSTEM'
+            WHERE agent_id != 'SYSTEM' AND agent_id NOT LIKE 'depot_%'
             GROUP BY agent_id
         """)
         rows = cur.fetchall()
@@ -1751,3 +1773,152 @@ class AgoraReferee:
             })
         board.sort(key=lambda x: x['net_worth'], reverse=True)
         return board
+
+    def seed_depots(self, initial_cr: int = 1000000, initial_qty: int = 100000) -> None:
+        """
+        Seed station depot accounts and continuous resting liquidity pools
+        for all Sol stations (Issue #71).
+        """
+        with self.lock, self.conn:
+            self.depots_enabled = True
+            for st in STATIONS:
+                depot_id = f"depot_{st}"
+                # Ensure vessel is docked at home station
+                self.conn.execute("""
+                    INSERT INTO vessel_locations (agent_id, station_id, docked_since, updated_at)
+                    VALUES (?, ?, 0, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                    ON CONFLICT(agent_id) DO UPDATE SET station_id = ?, docked_since = 0
+                """, (depot_id, st, st))
+
+                cur = self.conn.cursor()
+                cur.execute("SELECT balance FROM accounts WHERE agent_id = ? AND instrument = 'CR'", (depot_id,))
+                row = cur.fetchone()
+                if not row:
+                    txn_id = f"genesis-depot-{st}"
+                    for inst, amt in [('CR', initial_cr), ('FRAG', initial_qty), ('FUEL', initial_qty)]:
+                        self.conn.execute(
+                            "UPDATE accounts SET balance = balance - ? WHERE agent_id = 'SYSTEM' AND instrument = ?",
+                            (amt, inst)
+                        )
+                        self.conn.execute(
+                            "INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, 0, 'SYSTEM', ?, ?)",
+                            (txn_id, inst, -amt)
+                        )
+                        self.conn.execute(
+                            "INSERT INTO accounts (agent_id, instrument, balance) VALUES (?, ?, ?)",
+                            (depot_id, inst, amt)
+                        )
+                        self.conn.execute(
+                            "INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, 0, ?, ?, ?)",
+                            (txn_id, depot_id, inst, amt)
+                        )
+            self._refresh_depot_orders_locked()
+
+    def refresh_depot_liquidity(self) -> None:
+        """Public thread-safe entrypoint to refresh depot liquidity quotes."""
+        with self.lock, self.conn:
+            self._refresh_depot_orders_locked()
+
+    def _refresh_depot_orders_locked(self) -> None:
+        """
+        Refresh two-sided continuous depot resting liquidity across all stations
+        for FRAG and FUEL based on current spatial spot prices.
+        """
+        round_num = getattr(self, 'current_round', 0)
+        for st in STATIONS:
+            depot_id = f"depot_{st}"
+            for comm in ('FRAG', 'FUEL'):
+                # 1. Clear existing open depot orders for this station and commodity
+                if st in self.books and comm in self.books[st]:
+                    book = self.books[st][comm]
+                    book.bids = [o for o in book.bids if o.agent_id != depot_id]
+                    book.asks = [o for o in book.asks if o.agent_id != depot_id]
+                else:
+                    if st not in self.books:
+                        self.books[st] = {}
+                    self.books[st][comm] = OrderBook(instrument=comm)
+                    book = self.books[st][comm]
+
+                self.conn.execute("""
+                    DELETE FROM orders
+                    WHERE agent_id = ? AND station_id = ? AND instrument = ? AND status = 'open'
+                """, (depot_id, st, comm))
+
+                # 2. Get current spot price
+                spot = self.spatial.get_station_price(st, comm) if self.spatial else BASE_PRICES[st][comm]
+
+                # 3. Compute continuous two-sided prices
+                # Base spec:
+                # Earth Depot sells FRAG @ ~10-11 CR and buys FUEL @ ~8-9 CR
+                # Ceres Depot buys FRAG @ ~21-22 CR and sells FUEL @ ~25-26 CR
+                if st == 'earth' and comm == 'FRAG':
+                    bid_1, ask_1 = 10, 11
+                elif st == 'earth' and comm == 'FUEL':
+                    bid_1, ask_1 = 8, 9
+                elif st == 'ceres' and comm == 'FRAG':
+                    bid_1, ask_1 = 21, 22
+                elif st == 'ceres' and comm == 'FUEL':
+                    bid_1, ask_1 = 25, 26
+                else:
+                    mid = int(round(spot))
+                    bid_1 = max(1, mid - 1)
+                    ask_1 = max(bid_1 + 1, mid + 1)
+
+                base_p = BASE_PRICES[st][comm]
+                drift_offset = int(round(spot - base_p))
+                if drift_offset != 0:
+                    bid_1 = max(1, bid_1 + drift_offset)
+                    ask_1 = max(bid_1 + 1, ask_1 + drift_offset)
+
+                bid_2 = max(1, bid_1 - 1)
+                ask_2 = ask_1 + 1
+
+                levels = [
+                    ('bid', bid_1, 500, 1),
+                    ('bid', bid_2, 1000, 2),
+                    ('ask', ask_1, 500, 1),
+                    ('ask', ask_2, 1000, 2),
+                ]
+
+                seq = self.current_seq
+                for side, price, qty, lvl in levels:
+                    if side == 'bid' and price < 1:
+                        continue
+                    oid = f"{depot_id}-{comm.lower()}-{side}-r{round_num}-l{lvl}"
+                    order = Order(
+                        order_id=oid,
+                        agent_id=depot_id,
+                        instrument=comm,
+                        side=side,
+                        qty=qty,
+                        limit_price=price,
+                        seq_seen=seq
+                    )
+                    if side == 'bid':
+                        book._insert_bid(order)
+                    else:
+                        book._insert_ask(order)
+
+                    self.conn.execute("""
+                        INSERT OR REPLACE INTO orders (order_id, agent_id, instrument, side, qty, limit_price, seq_seen, status, resolved_seq, filled_qty, station_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, 'open', NULL, 0, ?)
+                    """, (oid, depot_id, comm, side, qty, price, seq, st))
+
+    def get_depot_summary(self) -> Dict[str, Any]:
+        """Return summary of all station depot quotes and depths."""
+        res = {'depots_enabled': self.depots_enabled, 'stations': {}}
+        for st in STATIONS:
+            res['stations'][st] = {}
+            for comm in ('FRAG', 'FUEL'):
+                spot = self.spatial.get_station_price(st, comm) if self.spatial else BASE_PRICES[st][comm]
+                book = self.books.get(st, {}).get(comm)
+                depot_bids = [o for o in (book.bids if book else []) if o.agent_id == f"depot_{st}"]
+                depot_asks = [o for o in (book.asks if book else []) if o.agent_id == f"depot_{st}"]
+                res['stations'][st][comm] = {
+                    'spot_price': spot,
+                    'best_bid': depot_bids[0].limit_price if depot_bids else None,
+                    'best_ask': depot_asks[0].limit_price if depot_asks else None,
+                    'bid_depth': sum(o.remaining_qty for o in depot_bids),
+                    'ask_depth': sum(o.remaining_qty for o in depot_asks),
+                }
+        return res
