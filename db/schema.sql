@@ -27,7 +27,7 @@ CREATE TABLE ledger_entries (
 -- referee only, never by a client.
 CREATE TABLE book_events (
     seq         INTEGER PRIMARY KEY,
-    kind        TEXT NOT NULL CHECK (kind IN ('order','trade','floor_open','floor_close','cancel','news','transit','transit_arrived','borrow','loan_closed','liquidation','distress','rescue','salvage','circuit_breaker_halt','circuit_breaker_reopen')),
+    kind        TEXT NOT NULL CHECK (kind IN ('order','trade','floor_open','floor_close','cancel','news','transit','transit_arrived','borrow','loan_closed','liquidation','distress','rescue','salvage','circuit_breaker_halt','circuit_breaker_reopen','burst')),
     payload     TEXT NOT NULL,        -- JSON
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
