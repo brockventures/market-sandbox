@@ -2053,9 +2053,32 @@ def run_server(host: Optional[str] = None, port: int = 8080, referee: Optional[A
     if os.environ.get('AGORA_TICKER_ENABLED', '1') not in ('0', 'false', 'False'):
         interval = float(os.environ.get('AGORA_TICK_INTERVAL_SEC', DEFAULT_TICK_INTERVAL_SEC))
         inactivity_rounds = int(os.environ.get('AGORA_TICKER_INACTIVITY_ROUNDS', DEFAULT_INACTIVITY_ROUNDS))
-        ticker = TickerEngine(ref, interval_sec=interval, inactivity_rounds=inactivity_rounds)
-        ticker.start()
-        print(f"Background ticker started: interval={interval}s, inactivity_watchdog={inactivity_rounds} quiet rounds")
+        # Boot-time reconciliation (Issue #63): resume from durable desired
+        # state rather than always waking up running-from-zero. A container
+        # restart that happened while the ticker was intentionally paused
+        # (manual pause, or the inactivity watchdog) stays paused; one that
+        # happened mid-run resumes with its quiet-round count intact instead
+        # of losing that progress and needing to re-accumulate it.
+        ticker = TickerEngine.resume_from_persisted_state(
+            ref, interval_sec=interval, inactivity_rounds=inactivity_rounds
+        )
+        if ticker is not None:
+            print(f"Background ticker resumed from persisted state: interval={interval}s, inactivity_watchdog={inactivity_rounds} quiet rounds")
+        else:
+            state = None
+            try:
+                state = ref.get_ticker_state()
+            except Exception:
+                pass
+            if state is None:
+                # Fresh database, no prior desired state recorded — default to running.
+                ticker = TickerEngine(ref, interval_sec=interval, inactivity_rounds=inactivity_rounds)
+                ticker.start()
+                print(f"Background ticker started (first boot): interval={interval}s, inactivity_watchdog={inactivity_rounds} quiet rounds")
+            else:
+                # Persisted desired state was 'paused' or 'stopped' — respect it.
+                ticker = TickerEngine(ref, interval_sec=interval, inactivity_rounds=inactivity_rounds)
+                print(f"Background ticker constructed but not started (persisted desired_state='{state.get('desired_state')}')")
     else:
         print("Background ticker disabled (AGORA_TICKER_ENABLED=0)")
 
