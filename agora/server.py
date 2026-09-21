@@ -148,8 +148,16 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             seed = payload.get('seed')
             warmup_rounds = payload.get('warmup_rounds')
             depots = payload.get('depots', payload.get('enable_depots'))
+            asymmetric = payload.get('asymmetric', False)
+            spawn_locations = payload.get('spawn_locations')
             ref = self.referee or AgoraReferee()
-            result = ref.new_game(seed=seed, warmup_rounds=warmup_rounds, depots=depots)
+            result = ref.new_game(
+                seed=seed,
+                warmup_rounds=warmup_rounds,
+                depots=depots,
+                asymmetric=asymmetric,
+                spawn_map=spawn_locations,
+            )
             self._send_json(200, {'v': 1, 'kind': 'new_game_ok', 'payload': result})
             return
 
@@ -192,8 +200,14 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 return
 
             depots = payload.get('depots', payload.get('enable_depots'))
+            asymmetric = payload.get('asymmetric', False)
+            spawn_locations = payload.get('spawn_locations')
             ref = self.referee or AgoraReferee()
-            result = ref.reset_to_genesis(depots=depots)
+            result = ref.reset_to_genesis(
+                depots=depots,
+                asymmetric=asymmetric,
+                spawn_map=spawn_locations,
+            )
             self._send_json(200, {'v': 1, 'kind': 'reset_ok', 'payload': result})
             return
 

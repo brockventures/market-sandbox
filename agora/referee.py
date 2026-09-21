@@ -27,6 +27,14 @@ from agora.salvage import DerelictSalvageEngine
 from agora.circuit_breaker import CircuitBreakerEngine
 
 
+ASYMMETRIC_SPAWN_LOCATIONS: Dict[str, str] = {
+    'zero': 'earth',
+    'amos': 'ceres',
+    'marvin': 'mars',
+    'aerial': 'luna',
+}
+
+
 class AgoraReferee:
     def __init__(
         self,
@@ -35,6 +43,7 @@ class AgoraReferee:
         galnet: Optional[GalNetEngine] = None,
         spatial: Optional[StationPriceEngine] = None,
         depots: bool = False,
+        asymmetric: bool = False,
     ):
         self.db_path = db_path
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
@@ -62,6 +71,22 @@ class AgoraReferee:
         self.circuit_breaker = CircuitBreakerEngine(self.conn, self)
         if self.depots_enabled:
             self.seed_depots()
+        if asymmetric:
+            self.set_asymmetric_roster()
+
+    def set_asymmetric_roster(self, spawn_map: Optional[Dict[str, str]] = None) -> None:
+        """Update fleet_roster with asymmetric home stations and sync vessel locations."""
+        mapping = spawn_map or ASYMMETRIC_SPAWN_LOCATIONS
+        with self.lock, self.conn:
+            for agent_id, home_station in mapping.items():
+                self.conn.execute(
+                    "UPDATE fleet_roster SET home_station = ? WHERE agent_id = ?",
+                    (home_station, agent_id)
+                )
+            self.conn.execute("""
+                INSERT OR REPLACE INTO vessel_locations (agent_id, station_id, docked_since, updated_at)
+                SELECT agent_id, home_station, 0, strftime('%Y-%m-%dT%H:%M:%fZ','now') FROM fleet_roster
+            """)
 
     def get_last_price(self, station_id: str, instrument: str) -> Optional[int]:
         """Return the most recent trade price for a specific station and instrument."""
@@ -200,11 +225,10 @@ class AgoraReferee:
                         """)
 
                 # Ensure default vessel locations exist for baseline fleet
-                for agent in ('amos', 'marvin', 'zero'):
-                    self.conn.execute(
-                        "INSERT OR IGNORE INTO vessel_locations (agent_id, station_id, docked_since) VALUES (?, 'ceres', 0)",
-                        (agent,)
-                    )
+                self.conn.execute("""
+                    INSERT OR IGNORE INTO vessel_locations (agent_id, station_id, docked_since)
+                    SELECT agent_id, home_station, 0 FROM fleet_roster
+                """)
 
                 # Ensure genesis fuel exists if pre-dated Phase 2
                 fuel_rows = self.conn.execute("SELECT agent_id FROM accounts WHERE instrument = 'FUEL'").fetchall()
@@ -364,21 +388,28 @@ class AgoraReferee:
         self.salvage = DerelictSalvageEngine(self.conn, self)
         self.circuit_breaker = CircuitBreakerEngine(self.conn, self)
 
-    def reset_to_genesis(self, depots: Optional[bool] = None) -> Dict[str, Any]:
+    def reset_to_genesis(
+        self,
+        depots: Optional[bool] = None,
+        asymmetric: bool = False,
+        spawn_map: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
         """
         Full clean-slate reset, callable live via POST /referee/admin/reset:
-        wipes every trading/ledger table and re-seeds from fleet_roster (which
-        is left untouched), then rebuilds the in-memory engines so order books,
-        GalNet, spatial prices, salvage, and circuit breakers all start fresh
-        too. This is the API-driven equivalent of the container-restart reset
-        the referee already gets from its :memory: db on every redeploy.
-
-        Prices come back flat at BASE_PRICES every time -- StationPriceEngine's
-        default seed is a fixed 42, so this is a deterministic reset, not a
-        random one. Use new_game() for a fresh, unpredictable Round 0 market.
+        wipes every trading/ledger table and re-seeds from fleet_roster.
+        If asymmetric=True or spawn_map is provided, updates fleet_roster
+        home_station prior to re-seeding.
         """
         if depots is not None:
             self.depots_enabled = depots
+        if asymmetric or spawn_map:
+            mapping = spawn_map or ASYMMETRIC_SPAWN_LOCATIONS
+            with self.lock, self.conn:
+                for agent_id, home_station in mapping.items():
+                    self.conn.execute(
+                        "UPDATE fleet_roster SET home_station = ? WHERE agent_id = ?",
+                        (home_station, agent_id)
+                    )
         self._wipe_trading_state("reset via POST /referee/admin/reset")
         self.galnet = GalNetEngine()
         self.spatial = StationPriceEngine()
@@ -388,27 +419,31 @@ class AgoraReferee:
         return {'seq': 0, 'floor': self.floor, 'fleets': [r['agent_id'] for r in
                 self.conn.execute("SELECT agent_id FROM fleet_roster").fetchall()]}
 
-    def new_game(self, seed: Optional[int] = None, warmup_rounds: Optional[int] = None, depots: Optional[bool] = None) -> Dict[str, Any]:
+    def new_game(
+        self,
+        seed: Optional[int] = None,
+        warmup_rounds: Optional[int] = None,
+        depots: Optional[bool] = None,
+        asymmetric: bool = False,
+        spawn_map: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
         """
         Wipes the board exactly like reset_to_genesis(), but rolls a genuinely
         random opening market instead of the flat, deterministic one that
         method leaves behind.
-
-        reset_to_genesis() always rebuilds StationPriceEngine with its default
-        seed=42, so plain resets replay the identical price walk every time --
-        not random at all, and exactly why the HERMES drill opened on a
-        completely flat book with nothing for any fleet to react to. This
-        method seeds a fresh RNG and runs the SAME Ornstein-Uhlenbeck model
-        the game already uses every live round forward a handful of rounds
-        before anyone sees Round 0 -- so the opening spread/skew across
-        stations comes from the model's own physics (mean reversion + Gaussian
-        noise + the same news-drift hook), not an invented distribution, and
-        two calls to this endpoint don't produce the same "random" market.
-
-        Callable live via POST /referee/admin/new_game.
+        If asymmetric=True or spawn_map is provided, updates fleet_roster
+        home_station prior to re-seeding.
         """
         if depots is not None:
             self.depots_enabled = depots
+        if asymmetric or spawn_map:
+            mapping = spawn_map or ASYMMETRIC_SPAWN_LOCATIONS
+            with self.lock, self.conn:
+                for agent_id, home_station in mapping.items():
+                    self.conn.execute(
+                        "UPDATE fleet_roster SET home_station = ? WHERE agent_id = ?",
+                        (home_station, agent_id)
+                    )
         self._wipe_trading_state("new game via POST /referee/admin/new_game")
         self.galnet = GalNetEngine()
 
@@ -632,14 +667,16 @@ class AgoraReferee:
         cur.execute("SELECT station_id, docked_since FROM vessel_locations WHERE agent_id = ?", (agent_id,))
         row = cur.fetchone()
         if not row:
+            roster_row = cur.execute("SELECT home_station FROM fleet_roster WHERE agent_id = ?", (agent_id,)).fetchone()
+            home = roster_row['home_station'] if roster_row else 'ceres'
             with self.conn:
                 self.conn.execute(
-                    "INSERT OR IGNORE INTO vessel_locations (agent_id, station_id, docked_since) VALUES (?, 'ceres', 0)",
-                    (agent_id,)
+                    "INSERT OR IGNORE INTO vessel_locations (agent_id, station_id, docked_since) VALUES (?, ?, 0)",
+                    (agent_id, home)
                 )
             return {
                 'agent_id': agent_id,
-                'station_id': 'ceres',
+                'station_id': home,
                 'status': 'docked',
                 'docked_since': 0,
                 'transit': None
