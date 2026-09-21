@@ -53,6 +53,7 @@ class TestTraderClient(unittest.TestCase):
         self.assertEqual(res["status"], "cancelled_all")
         mock_req.assert_called_with("/referee/orders/cancel_all", {"agent_id": trader_client.AGENT_ID})
 
+    @patch("tools.trader_client.get_stations_locations")
     @patch("tools.trader_client.cancel_all")
     @patch("tools.trader_client.submit_order")
     @patch("tools.trader_client.get_accounts")
@@ -61,8 +62,9 @@ class TestTraderClient(unittest.TestCase):
     @patch("tools.trader_client.check_health")
     @patch("tools.trader_client.time.sleep")
     def test_poll_round_loop_single_round(
-        self, mock_sleep, mock_health, mock_ticker, mock_book, mock_accs, mock_order, mock_cancel
+        self, mock_sleep, mock_health, mock_ticker, mock_book, mock_accs, mock_order, mock_cancel, mock_locs
     ):
+        mock_locs.return_value = {"locations": [{"agent_id": "zero", "status": "docked", "station_id": "ceres"}]}
         mock_health.return_value = {"status": "ok", "seq": 20, "floor": "open"}
         mock_ticker.return_value = {
             "status": "ok",

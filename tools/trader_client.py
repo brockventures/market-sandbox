@@ -249,7 +249,10 @@ def load_strategy_config() -> dict:
         "target_ask": 16,
         "clip_size": 5,
         "min_liquid_cr": 5000,
-        "prune_interval_cycles": 5
+        "prune_interval_cycles": 5,
+        "enable_spatial_transit": True,
+        "min_transit_net_cr": 50.0,
+        "transit_cargo_clip": 50
     }
     paths = [
         Path("/workspace/data/strategy_config.json"),
@@ -324,41 +327,100 @@ def poll_round_loop(
                     clip_size = cfg.get("clip_size", 5)
                     min_liquid = cfg.get("min_liquid_cr", 5000)
 
-                    # Account check
+                    # Account balance parsing
                     accs = get_accounts()
-                    my_acc = {}
-                    if isinstance(accs, list):
-                        for a in accs:
-                            if a.get("agent_id") == AGENT_ID:
-                                my_acc = a
-                                break
-                    liquid_cr = my_acc.get("liquid", 10000)
+                    balances = {}
+                    acc_list = accs.get("accounts", []) if isinstance(accs, dict) else (accs if isinstance(accs, list) else [])
+                    for a in acc_list:
+                        if a.get("agent_id") == AGENT_ID:
+                            inst = a.get("instrument")
+                            if inst:
+                                balances[inst] = a.get("balance", 0)
+                            if "liquid" in a:
+                                balances["CR"] = a.get("liquid", 0)
+                            if "frags" in a:
+                                balances["FRAG"] = a.get("frags", 0)
+                            if "fuel" in a:
+                                balances["FUEL"] = a.get("fuel", 0)
+                    liquid_cr = balances.get("CR", 10000)
+                    available_frag = balances.get("FRAG", 0)
+                    available_fuel = balances.get("FUEL", 0)
 
-                    # Book inspection
-                    book = get_book().get("book", {})
-                    bids = book.get("bids", [])
-                    asks = book.get("asks", [])
-                    best_bid = bids[0]["limit_price"] if bids else cfg.get("target_bid", 14)
-                    best_ask = asks[0]["limit_price"] if asks else cfg.get("target_ask", 16)
+                    # Fleet location check
+                    locs_resp = get_stations_locations(AGENT_ID)
+                    loc_list = locs_resp.get("locations", []) if isinstance(locs_resp, dict) else []
+                    my_loc = loc_list[0] if loc_list else {}
+                    is_docked = (my_loc.get("status", "docked") == "docked") if my_loc else True
+                    current_station = my_loc.get("station_id", station_id) if is_docked else "in_transit"
 
-                    # Prune stale resting orders
-                    cancel_res = cancel_all()
-                    pruned = cancel_res.get("payload", {}).get("count", 0) if isinstance(cancel_res, dict) else 0
-                    if pruned > 0:
-                        print(f"🧹 Pruned {pruned} stale resting orders")
+                    # Autonomous Spatial Transit Dispatch
+                    if is_docked and cfg.get("enable_spatial_transit", True) and available_fuel >= 20 and available_frag >= 10:
+                        prices_resp = get_stations_prices()
+                        prices_data = prices_resp.get("data", {}).get("prices", {}) if isinstance(prices_resp, dict) else {}
+                        cur_p = prices_data.get(current_station, {}).get("FRAG", 0.0)
 
-                    # Calculate tactical quote bounds
-                    if liquid_cr > min_liquid:
-                        bid_p = max(1, best_bid)
-                        ask_p = max(bid_p + 1, best_ask)
-                        if not dry_run:
-                            res_bid = submit_order("bid", qty=clip_size, limit_price=bid_p, instrument=instrument)
-                            res_ask = submit_order("ask", qty=clip_size, limit_price=ask_p, instrument=instrument)
-                            print(f"⚡ Round {current_round} Quotes Placed: BID {clip_size} @ {bid_p} CR | ASK {clip_size} @ {ask_p} CR")
+                        routes_resp = get_stations_routes(origin=current_station)
+                        routes_list = routes_resp.get("routes", []) if isinstance(routes_resp, dict) else []
+
+                        best_dest = None
+                        max_net_margin = 0.0
+                        best_req_fuel = 0
+
+                        for r in routes_list:
+                            dest = r.get("destination")
+                            if dest == current_station:
+                                continue
+                            dest_p = prices_data.get(dest, {}).get("FRAG", 0.0)
+                            spread = dest_p - cur_p
+                            fuel_req = r.get("fuel", 999)
+                            toll_req = r.get("toll", 0)
+
+                            transit_qty = min(cfg.get("transit_cargo_clip", 50), available_frag)
+                            gross_profit = spread * transit_qty
+                            fuel_cost = fuel_req * 10.0
+                            net_profit = gross_profit - toll_req - fuel_cost
+
+                            if (net_profit >= cfg.get("min_transit_net_cr", 50.0)
+                                and net_profit > max_net_margin
+                                and available_fuel >= fuel_req
+                                and liquid_cr >= toll_req):
+                                max_net_margin = net_profit
+                                best_dest = dest
+                                best_req_fuel = fuel_req
+
+                        if best_dest and not dry_run:
+                            cargo_qty = min(cfg.get("transit_cargo_clip", 50), available_frag)
+                            tx_res = post_transit(destination=best_dest, commodity="FRAG", cargo_qty=cargo_qty)
+                            print(f"🚀 [Spatial Transit Dispatched] {current_station.upper()} -> {best_dest.upper()} ({cargo_qty} FRAG, fuel={best_req_fuel}, proj net={max_net_margin:.1f} CR): {tx_res.get('status')}")
+
+                    # Book inspection & quoting (only when docked at a station)
+                    if is_docked:
+                        book = get_book().get("book", {})
+                        bids = book.get("bids", [])
+                        asks = book.get("asks", [])
+                        best_bid = bids[0]["limit_price"] if bids else cfg.get("target_bid", 14)
+                        best_ask = asks[0]["limit_price"] if asks else cfg.get("target_ask", 16)
+
+                        # Prune stale resting orders
+                        cancel_res = cancel_all()
+                        pruned = cancel_res.get("payload", {}).get("count", 0) if isinstance(cancel_res, dict) else 0
+                        if pruned > 0:
+                            print(f"🧹 Pruned {pruned} stale resting orders")
+
+                        # Calculate tactical quote bounds
+                        if liquid_cr > min_liquid:
+                            bid_p = max(1, best_bid)
+                            ask_p = max(bid_p + 1, best_ask)
+                            if not dry_run:
+                                res_bid = submit_order("bid", qty=clip_size, limit_price=bid_p, instrument=instrument)
+                                res_ask = submit_order("ask", qty=clip_size, limit_price=ask_p, instrument=instrument)
+                                print(f"⚡ Round {current_round} Quotes Placed ({current_station.upper()}): BID {clip_size} @ {bid_p} CR | ASK {clip_size} @ {ask_p} CR")
+                            else:
+                                print(f"[DRY-RUN] Would submit: BID {clip_size} @ {bid_p} CR | ASK {clip_size} @ {ask_p} CR")
                         else:
-                            print(f"[DRY-RUN] Would submit: BID {clip_size} @ {bid_p} CR | ASK {clip_size} @ {ask_p} CR")
+                            print(f"🛡️ Liquid credits ({liquid_cr} CR) below threshold ({min_liquid} CR) — conserving margin.")
                     else:
-                        print(f"🛡️ Liquid credits ({liquid_cr} CR) below threshold ({min_liquid} CR) — conserving margin.")
+                        print(f"🛰️ Fleet is in transit ({my_loc.get('transit', {}).get('origin', '?').upper()} -> {my_loc.get('transit', {}).get('destination', '?').upper()}, arrival round {my_loc.get('transit', {}).get('arrival_round', '?')}) — local order quoting paused.")
 
                 last_round = current_round
                 last_seq = current_seq
