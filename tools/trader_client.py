@@ -14,6 +14,7 @@ import uuid
 import urllib.request
 import urllib.error
 from pathlib import Path
+from typing import Optional, Dict, Any
 
 ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 
@@ -58,6 +59,9 @@ def request(endpoint: str, data: dict = None) -> dict:
 def check_health():
     return request("/referee/health")
 
+def get_ticker_status():
+    return request("/referee/ticker/status")
+
 def get_accounts():
     return request("/referee/accounts")
 
@@ -98,6 +102,58 @@ def post_transit(destination: str, commodity: str = "FRAG", cargo_qty: int = 0):
         "destination": destination,
         "commodity": commodity,
         "cargo_qty": cargo_qty
+    })
+
+def get_equity_summary():
+    return request("/equity/summary")
+
+def get_equity_loans(borrower_id: str = None, lender_id: str = None):
+    q = []
+    if borrower_id:
+        q.append(f"borrower_id={borrower_id}")
+    if lender_id:
+        q.append(f"lender_id={lender_id}")
+    suffix = f"?{'&'.join(q)}" if q else ""
+    return request(f"/equity/loans{suffix}")
+
+def borrow_equity(equity_symbol: str, shares: int, lender_id: str = None):
+    payload = {
+        "agent_id": AGENT_ID,
+        "equity_symbol": equity_symbol,
+        "shares": shares
+    }
+    if lender_id:
+        payload["lender_id"] = lender_id
+    return request("/equity/borrow", payload)
+
+def return_equity_loan(loan_id: str):
+    return request("/equity/return", {
+        "agent_id": AGENT_ID,
+        "loan_id": loan_id
+    })
+
+def get_salvage_summary():
+    return request("/salvage/summary")
+
+def get_salvage_beacons(status: str = "active"):
+    suffix = f"?status={status}" if status else ""
+    return request(f"/salvage/beacons{suffix}")
+
+def get_salvage_rfqs(status: str = "open"):
+    suffix = f"?status={status}" if status else ""
+    return request(f"/salvage/rfqs{suffix}")
+
+def claim_salvage(beacon_id: str):
+    return request("/salvage/claim", {
+        "agent_id": AGENT_ID,
+        "beacon_id": beacon_id
+    })
+
+def broadcast_distress(reason: str = "out_of_propellant", cargo_bounty: dict = None):
+    return request("/salvage/distress", {
+        "agent_id": AGENT_ID,
+        "reason": reason,
+        "cargo_bounty": cargo_bounty or {}
     })
 
 def cancel_all():
@@ -184,15 +240,169 @@ def run_loop(duration: int = 900, interval: float = 10.0, instrument: str = "FRA
     print("Final account status:")
     print(json.dumps(get_accounts(), indent=2))
 
+def load_strategy_config() -> dict:
+    """Load local hot-reload trading configuration merged with defaults."""
+    cfg = {
+        "station_id": "ceres",
+        "instrument": "FRAG",
+        "target_bid": 14,
+        "target_ask": 16,
+        "clip_size": 5,
+        "min_liquid_cr": 5000,
+        "prune_interval_cycles": 5
+    }
+    paths = [
+        Path("/workspace/data/strategy_config.json"),
+        Path(__file__).resolve().parent.parent / "data" / "strategy_config.json",
+        Path("strategy_config.json")
+    ]
+    for p in paths:
+        if p.exists():
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, dict):
+                        cfg.update(data)
+                        return cfg
+            except Exception:
+                pass
+    return cfg
+
+def poll_round_loop(
+    poll_interval: float = 2.0,
+    max_rounds: Optional[int] = None,
+    max_idle_sec: int = 600,
+    instrument: str = "FRAG",
+    station_id: str = "ceres",
+    dry_run: bool = False
+):
+    """
+    Autonomous round-sync and polling mode for agent runloop (Issue #63).
+    Monitors referee round progression via /referee/ticker/status or /referee/health,
+    evaluates order books upon round transition, and places tactical bids/asks.
+    Dynamically throttles when the market is quiet or paused.
+    """
+    print(f"Starting autonomous round-sync runloop: agent={AGENT_ID}, station={station_id}, poll_interval={poll_interval}s")
+    last_round: Optional[int] = None
+    last_seq: Optional[int] = None
+    rounds_completed = 0
+    idle_start = time.time()
+
+    try:
+        while True:
+            health = check_health()
+            if not isinstance(health, dict) or health.get("status") != "ok":
+                print(f"⚠️ Referee health unavailable: {health}")
+                time.sleep(poll_interval * 2)
+                continue
+
+            current_seq = health.get("seq", 0)
+            floor = health.get("floor", "open")
+
+            ticker = get_ticker_status()
+            is_ticker_active = isinstance(ticker, dict) and ticker.get("status") == "ok"
+            current_round = ticker.get("current_round") if is_ticker_active else None
+            is_paused = ticker.get("paused", False) if is_ticker_active else False
+
+            # If ticker status doesn't report round, synthesize pseudo-round from health seq
+            if current_round is None:
+                current_round = health.get("round", current_seq // 10 if current_seq else 1)
+
+            # Check if round advanced or initial turn
+            round_changed = (last_round is None) or (current_round != last_round)
+            seq_changed = (last_seq is None) or (current_seq != last_seq)
+
+            if round_changed:
+                rounds_completed += 1
+                idle_start = time.time()
+                print(f"\n🔔 [Round Advance] Round {last_round} -> {current_round} (seq={current_seq}, floor={floor})")
+
+                if floor != "open":
+                    print(f"⏸️ Floor is {floor.upper()} — standing down from order generation.")
+                else:
+                    cfg = load_strategy_config()
+                    clip_size = cfg.get("clip_size", 5)
+                    min_liquid = cfg.get("min_liquid_cr", 5000)
+
+                    # Account check
+                    accs = get_accounts()
+                    my_acc = {}
+                    if isinstance(accs, list):
+                        for a in accs:
+                            if a.get("agent_id") == AGENT_ID:
+                                my_acc = a
+                                break
+                    liquid_cr = my_acc.get("liquid", 10000)
+
+                    # Book inspection
+                    book = get_book().get("book", {})
+                    bids = book.get("bids", [])
+                    asks = book.get("asks", [])
+                    best_bid = bids[0]["limit_price"] if bids else cfg.get("target_bid", 14)
+                    best_ask = asks[0]["limit_price"] if asks else cfg.get("target_ask", 16)
+
+                    # Prune stale resting orders
+                    cancel_res = cancel_all()
+                    pruned = cancel_res.get("payload", {}).get("count", 0) if isinstance(cancel_res, dict) else 0
+                    if pruned > 0:
+                        print(f"🧹 Pruned {pruned} stale resting orders")
+
+                    # Calculate tactical quote bounds
+                    if liquid_cr > min_liquid:
+                        bid_p = max(1, best_bid)
+                        ask_p = max(bid_p + 1, best_ask)
+                        if not dry_run:
+                            res_bid = submit_order("bid", qty=clip_size, limit_price=bid_p, instrument=instrument)
+                            res_ask = submit_order("ask", qty=clip_size, limit_price=ask_p, instrument=instrument)
+                            print(f"⚡ Round {current_round} Quotes Placed: BID {clip_size} @ {bid_p} CR | ASK {clip_size} @ {ask_p} CR")
+                        else:
+                            print(f"[DRY-RUN] Would submit: BID {clip_size} @ {bid_p} CR | ASK {clip_size} @ {ask_p} CR")
+                    else:
+                        print(f"🛡️ Liquid credits ({liquid_cr} CR) below threshold ({min_liquid} CR) — conserving margin.")
+
+                last_round = current_round
+                last_seq = current_seq
+
+                if max_rounds and rounds_completed >= max_rounds:
+                    print(f"🏁 Max rounds reached ({rounds_completed}/{max_rounds}). Exiting runloop.")
+                    break
+
+            elif seq_changed:
+                last_seq = current_seq
+                idle_start = time.time()
+
+            # Dynamic backoff if ticker is paused or floor halted
+            if is_paused or floor != "open":
+                sleep_duration = poll_interval * 3
+            else:
+                sleep_duration = poll_interval
+
+            if time.time() - idle_start > max_idle_sec:
+                print(f"⏳ Inactivity timeout ({max_idle_sec}s without activity). Exiting runloop.")
+                break
+
+            time.sleep(sleep_duration)
+
+    except KeyboardInterrupt:
+        print("\n🛑 Runloop interrupted by operator.")
+    finally:
+        print("Cleaning up resting orders...")
+        cancel_all()
+        print("Autonomous runloop terminated cleanly.")
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Zero Agora Trader Client")
     parser.add_argument("--probe", action="store_true", help="Run a health and balance probe")
+    parser.add_argument("--ticker-status", action="store_true", help="Probe /referee/ticker/status endpoint")
     parser.add_argument("--galnet", action="store_true", help="Probe GalNet feed and active station drifts")
     parser.add_argument("--order", choices=["bid", "ask"], help="Place a single test limit order")
     parser.add_argument("--qty", type=int, default=10, help="Order quantity")
     parser.add_argument("--price", type=int, default=10, help="Order limit price")
     parser.add_argument("--run", action="store_true", help="Run continuous trading loop for test run")
+    parser.add_argument("--poll", "--autonomous", action="store_true", dest="poll", help="Run autonomous round-sync polling loop (Issue #63)")
+    parser.add_argument("--poll-interval", type=float, default=2.0, help="Interval between health/ticker polls in seconds (default: 2.0)")
+    parser.add_argument("--max-rounds", type=int, default=None, help="Maximum number of rounds to participate in before exiting")
     parser.add_argument("--duration", type=int, default=900, help="Run duration in seconds (default: 900 = 15m)")
     parser.add_argument("--interval", type=float, default=10.0, help="Interval between orders in seconds (default: 10.0)")
     parser.add_argument("--prices", action="store_true", help="Probe station spot prices across Sol nodes")
@@ -200,10 +410,24 @@ if __name__ == "__main__":
     parser.add_argument("--locations", action="store_true", help="Inspect fleet vessel locations and dock statuses")
     parser.add_argument("--transit", type=str, help="Initiate orbital transit to destination station (e.g. mars)")
     parser.add_argument("--cargo", type=int, default=0, help="Cargo quantity to transport during transit")
+    parser.add_argument("--equity-summary", action="store_true", help="Probe synthetic fleet equity prices, shares, and NAVs")
+    parser.add_argument("--equity-loans", action="store_true", help="Inspect active bilateral stock borrow loans")
+    parser.add_argument("--borrow", type=str, help="Borrow synthetic fleet equity shares (e.g. EQ_MARV)")
+    parser.add_argument("--shares", type=int, default=10, help="Number of equity shares to borrow")
+    parser.add_argument("--lender", type=str, default=None, help="Lender agent ID for equity loan")
+    parser.add_argument("--return-loan", type=str, help="Return equity loan by loan_id")
+    parser.add_argument("--salvage-summary", action="store_true", help="Inspect derelict salvage and distress RFQ statistics")
+    parser.add_argument("--salvage-beacons", action="store_true", help="List active derelict distress beacons")
+    parser.add_argument("--salvage-claim", type=str, help="Claim derelict vessel by beacon_id")
     args = parser.parse_args()
 
-    if args.run:
+    if args.poll:
+        poll_round_loop(poll_interval=args.poll_interval, max_rounds=args.max_rounds)
+    elif args.run:
         run_loop(duration=args.duration, interval=args.interval)
+    elif args.ticker_status:
+        print("=== Agora Ticker Status ===")
+        print(json.dumps(get_ticker_status(), indent=2))
     elif args.order:
         print(f"Placing {args.order} qty={args.qty} @ {args.price} CR...")
         res = submit_order(side=args.order, qty=args.qty, limit_price=args.price)
@@ -227,6 +451,30 @@ if __name__ == "__main__":
     elif args.transit:
         print(f"Initiating transit to {args.transit} with cargo_qty={args.cargo}...")
         res = post_transit(destination=args.transit, cargo_qty=args.cargo)
+        print(json.dumps(res, indent=2))
+    elif args.equity_summary:
+        print("=== Fleet Synthetic Equities ===")
+        print(json.dumps(get_equity_summary(), indent=2))
+    elif args.equity_loans:
+        print("=== Active Equity Loans ===")
+        print(json.dumps(get_equity_loans(), indent=2))
+    elif args.borrow:
+        print(f"Borrowing {args.shares} shares of {args.borrow} from {args.lender or 'default pool'}...")
+        res = borrow_equity(equity_symbol=args.borrow, shares=args.shares, lender_id=args.lender)
+        print(json.dumps(res, indent=2))
+    elif args.return_loan:
+        print(f"Returning equity loan {args.return_loan}...")
+        res = return_equity_loan(loan_id=args.return_loan)
+        print(json.dumps(res, indent=2))
+    elif args.salvage_summary:
+        print("=== Salvage & Distress Summary ===")
+        print(json.dumps(get_salvage_summary(), indent=2))
+    elif args.salvage_beacons:
+        print("=== Active Distress Beacons ===")
+        print(json.dumps(get_salvage_beacons(), indent=2))
+    elif args.salvage_claim:
+        print(f"Claiming salvage on beacon {args.salvage_claim}...")
+        res = claim_salvage(beacon_id=args.salvage_claim)
         print(json.dumps(res, indent=2))
     else:
         print("=== Agora Health ===")
