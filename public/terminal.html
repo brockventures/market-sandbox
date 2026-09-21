@@ -19,6 +19,11 @@
     --cyan-dim: #258387;
     --green: #4ade80;
     --red: #f87171;
+    --purple: #bf5af2;
+    --purple-neon: #d946ef;
+    --purple-dim: #7928ca;
+    --purple-glow: rgba(191, 90, 242, 0.28);
+    --purple-bg: #120e24;
     --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
     --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   }
@@ -618,6 +623,313 @@
     animation: haltPulse 1.5s infinite ease-in-out;
   }
 
+  /* Syndicate Corporate Equity Ticker Ribbon (Issue #37) */
+  .equity-ticker-ribbon {
+    margin-top: 10px;
+    margin-bottom: 20px;
+    background: linear-gradient(90deg, #100b1e 0%, #151126 50%, #0d0a1a 100%);
+    border: 1px solid rgba(191, 90, 242, 0.35);
+    border-radius: 6px;
+    padding: 6px 14px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    overflow: hidden;
+    box-shadow: 0 0 16px rgba(191, 90, 242, 0.12);
+  }
+
+  .equity-ticker-badge {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: #fff;
+    background: linear-gradient(135deg, #a855f7 0%, #7e22ce 100%);
+    padding: 3px 8px;
+    border-radius: 3px;
+    letter-spacing: 0.06em;
+    white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    box-shadow: 0 0 10px rgba(168, 85, 247, 0.4);
+  }
+
+  .pulse-node.purple {
+    background: #d946ef;
+    box-shadow: 0 0 8px #d946ef;
+  }
+
+  .equity-ticker-track {
+    overflow-x: auto;
+    width: 100%;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .equity-ticker-track::-webkit-scrollbar {
+    display: none;
+  }
+
+  .equity-ticker-content {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    white-space: nowrap;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+  }
+
+  .equity-ticker-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 2px 10px;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(191, 90, 242, 0.15);
+  }
+
+  .equity-ticker-sym {
+    font-weight: 800;
+    color: var(--purple-neon, #bf5af2);
+    letter-spacing: 0.04em;
+  }
+
+  .equity-ticker-price {
+    font-weight: 700;
+    color: #fff;
+  }
+
+  .equity-ticker-delta {
+    font-size: 0.72rem;
+    font-weight: 700;
+    padding: 1px 4px;
+    border-radius: 2px;
+  }
+  .equity-ticker-delta.pos {
+    color: var(--green);
+    background: rgba(74, 222, 128, 0.12);
+  }
+  .equity-ticker-delta.neg {
+    color: var(--red);
+    background: rgba(248, 113, 113, 0.12);
+  }
+  .equity-ticker-delta.neutral {
+    color: var(--text-dim);
+    background: rgba(255, 255, 255, 0.05);
+  }
+
+  .equity-ticker-cap {
+    font-size: 0.72rem;
+    color: var(--text-dim);
+  }
+
+  /* Syndicate Equity Cards & Squeeze Gauges (Issue #37) */
+  .equity-cards-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 16px;
+    margin-bottom: 20px;
+  }
+
+  .equity-card {
+    background: linear-gradient(180deg, #131124 0%, #0d0b18 100%);
+    border: 1px solid rgba(191, 90, 242, 0.25);
+    border-radius: 8px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    position: relative;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+    transition: all 0.2s ease;
+  }
+  .equity-card:hover {
+    border-color: rgba(191, 90, 242, 0.5);
+    box-shadow: 0 0 24px rgba(191, 90, 242, 0.15);
+    transform: translateY(-2px);
+  }
+
+  .equity-card-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 8px;
+    border-bottom: 1px solid rgba(191, 90, 242, 0.15);
+    padding-bottom: 10px;
+  }
+
+  .equity-card-title {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .equity-ticker-tag {
+    font-family: var(--font-mono);
+    font-size: 1.05rem;
+    font-weight: 800;
+    color: #fff;
+    letter-spacing: 0.04em;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .equity-ticker-tag .syn-sym {
+    color: var(--purple-neon, #bf5af2);
+  }
+
+  .equity-card-sub {
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .equity-status-badge {
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    font-weight: 700;
+    padding: 3px 8px;
+    border-radius: 3px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .equity-status-badge.solvent {
+    background: rgba(74, 222, 128, 0.12);
+    color: var(--green);
+    border: 1px solid rgba(74, 222, 128, 0.3);
+  }
+  .equity-status-badge.watch {
+    background: rgba(255, 184, 52, 0.15);
+    color: var(--amber);
+    border: 1px solid rgba(255, 184, 52, 0.4);
+  }
+  .equity-status-badge.squeeze {
+    background: rgba(217, 70, 239, 0.2);
+    color: #e879f9;
+    border: 1px solid #d946ef;
+    animation: beacon 1.8s infinite;
+  }
+  .equity-status-badge.critical {
+    background: rgba(248, 113, 113, 0.2);
+    color: var(--red);
+    border: 1px solid var(--red);
+    animation: haltPulse 1.2s infinite ease-in-out;
+  }
+
+  .equity-stat-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    font-family: var(--font-mono);
+  }
+
+  .equity-stat-box {
+    background: rgba(0, 0, 0, 0.3);
+    padding: 6px 10px;
+    border-radius: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.04);
+  }
+
+  .equity-stat-label {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .equity-stat-val {
+    font-size: 0.88rem;
+    font-weight: 700;
+    color: #fff;
+    margin-top: 1px;
+  }
+
+  /* Squeeze Risk Gauge */
+  .squeeze-gauge-wrap {
+    background: rgba(18, 14, 32, 0.8);
+    border: 1px solid rgba(191, 90, 242, 0.2);
+    border-radius: 5px;
+    padding: 10px;
+    margin-top: 4px;
+  }
+
+  .squeeze-gauge-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    margin-bottom: 6px;
+  }
+
+  .squeeze-gauge-title {
+    color: var(--text-dim);
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .squeeze-meter-track {
+    width: 100%;
+    height: 8px;
+    background: rgba(255, 255, 255, 0.07);
+    border-radius: 4px;
+    overflow: hidden;
+    position: relative;
+  }
+
+  .squeeze-meter-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.4s ease, background 0.3s ease;
+  }
+
+  .squeeze-gauge-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    margin-top: 6px;
+    color: var(--text-dim);
+  }
+
+  /* Bilateral Stock Borrow Desk Stats Bar */
+  .borrow-desk-bar {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+    padding: 12px;
+    background: rgba(19, 17, 36, 0.6);
+    border: 1px solid rgba(191, 90, 242, 0.2);
+    border-radius: 6px;
+    font-family: var(--font-mono);
+  }
+
+  .borrow-desk-metric {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .borrow-desk-metric-label {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+
+  .borrow-desk-metric-val {
+    font-size: 0.95rem;
+    font-weight: 800;
+    color: #fff;
+  }
+
   /* Sol Orbital Stations Grid */
   .sol-stations-grid {
     display: grid;
@@ -856,6 +1168,42 @@
     </div>
     <div class="galnet-ticker-text" id="galnet-wire-text">
       <span class="meta">[ROUND #-- // 16 PSYCHE]</span> MONITORING SOL INTER-STATION WIRE FREQUENCIES...
+    </div>
+  </div>
+
+  <!-- Syndicate Corporate Equity Ticker Ribbon (Issue #37) -->
+  <div class="equity-ticker-ribbon" id="equity-ticker-ribbon">
+    <div class="equity-ticker-badge">
+      <span class="pulse-node purple"></span>
+      SYN // EQUITY TAPE
+    </div>
+    <div class="equity-ticker-track">
+      <div class="equity-ticker-content" id="equity-ticker-content">
+        <div class="equity-ticker-item">
+          <span class="equity-ticker-sym">$APEX</span>
+          <span class="equity-ticker-price" id="ribbon-price-zero">-- CR</span>
+          <span class="equity-ticker-delta neutral" id="ribbon-delta-zero">--%</span>
+          <span class="equity-ticker-cap" id="ribbon-cap-zero">CAP: -- CR</span>
+        </div>
+        <div class="equity-ticker-item">
+          <span class="equity-ticker-sym">$SOLV</span>
+          <span class="equity-ticker-price" id="ribbon-price-amos">-- CR</span>
+          <span class="equity-ticker-delta neutral" id="ribbon-delta-amos">--%</span>
+          <span class="equity-ticker-cap" id="ribbon-cap-amos">CAP: -- CR</span>
+        </div>
+        <div class="equity-ticker-item">
+          <span class="equity-ticker-sym">$BAL</span>
+          <span class="equity-ticker-price" id="ribbon-price-marvin">-- CR</span>
+          <span class="equity-ticker-delta neutral" id="ribbon-delta-marvin">--%</span>
+          <span class="equity-ticker-cap" id="ribbon-cap-marvin">CAP: -- CR</span>
+        </div>
+        <div class="equity-ticker-item">
+          <span class="equity-ticker-sym">$ZNTH</span>
+          <span class="equity-ticker-price" id="ribbon-price-aerial">-- CR</span>
+          <span class="equity-ticker-delta neutral" id="ribbon-delta-aerial">--%</span>
+          <span class="equity-ticker-cap" id="ribbon-cap-aerial">CAP: -- CR</span>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -1168,82 +1516,213 @@
       Tradeable synthetic fleet shares (<span class="code-kw">GET /equity/summary</span>), bilateral stock loans for opponent short-selling (<span class="code-kw">POST /equity/borrow</span>), and round-by-round borrow fee accruals.
     </p>
 
-    <!-- Equity Overview Cards Grid -->
-    <div class="station-grid" id="equity-cards-grid" style="margin-bottom: 16px;">
-      <!-- EQ_AMOS -->
-      <div class="station-card" id="equity-card-amos">
-        <div class="station-card-head">
-          <span class="station-card-name">EQ_AMOS // FIRST SOLVENCY</span>
-          <span class="station-card-status" id="eq-status-amos">NAV: 20.0 CR</span>
+    <!-- Equity Overview Cards Grid with Squeeze Risk Gauges (Issue #37) -->
+    <div class="equity-cards-grid" id="equity-cards-grid">
+      <!-- EQ_ZERO / APEX -->
+      <div class="equity-card" id="equity-card-zero">
+        <div class="equity-card-head">
+          <div class="equity-card-title">
+            <div class="equity-ticker-tag"><span class="syn-sym">$APEX</span> // EQ_ZERO</div>
+            <div class="equity-card-sub">Apex Vector Arbitrage</div>
+          </div>
+          <span class="equity-status-badge solvent" id="eq-badge-zero">SOLVENT</span>
         </div>
-        <div class="station-card-body">
-          <span style="color: var(--text-dim);">SPOT PRICE</span>
-          <span id="eq-price-amos" style="color: var(--green); font-weight: bold;">20.0 CR</span>
+        <div class="equity-stat-grid">
+          <div class="equity-stat-box">
+            <div class="equity-stat-label">Spot Price</div>
+            <div class="equity-stat-val" id="eq-price-zero" style="color: var(--green);">20.0 CR</div>
+          </div>
+          <div class="equity-stat-box">
+            <div class="equity-stat-label">NAV / Share</div>
+            <div class="equity-stat-val" id="eq-nav-zero">20.0 CR</div>
+          </div>
+          <div class="equity-stat-box">
+            <div class="equity-stat-label">Market Cap</div>
+            <div class="equity-stat-val" id="eq-cap-zero" style="color: var(--cyan);">20,000 CR</div>
+          </div>
+          <div class="equity-stat-box">
+            <div class="equity-stat-label">Short Interest</div>
+            <div class="equity-stat-val" id="eq-short-zero" style="color: var(--amber);">0.0%</div>
+          </div>
         </div>
-        <div class="station-card-prices" style="border-top: 1px solid var(--line); padding-top: 8px;">
-          <span>SHORT INT: <strong id="eq-short-amos" style="color: var(--amber);">0.0%</strong></span>
-          <span>BORROW: <strong style="color: var(--cyan);">2.0%/rnd</strong></span>
-        </div>
-      </div>
-
-      <!-- EQ_MARV -->
-      <div class="station-card" id="equity-card-marvin">
-        <div class="station-card-head">
-          <span class="station-card-name">EQ_MARV // BALLISTIC LIQ</span>
-          <span class="station-card-status" id="eq-status-marvin">NAV: 20.0 CR</span>
-        </div>
-        <div class="station-card-body">
-          <span style="color: var(--text-dim);">SPOT PRICE</span>
-          <span id="eq-price-marvin" style="color: var(--green); font-weight: bold;">20.0 CR</span>
-        </div>
-        <div class="station-card-prices" style="border-top: 1px solid var(--line); padding-top: 8px;">
-          <span>SHORT INT: <strong id="eq-short-marvin" style="color: var(--amber);">0.0%</strong></span>
-          <span>BORROW: <strong style="color: var(--cyan);">2.0%/rnd</strong></span>
-        </div>
-      </div>
-
-      <!-- EQ_ZERO -->
-      <div class="station-card" id="equity-card-zero">
-        <div class="station-card-head">
-          <span class="station-card-name">EQ_ZERO // APEX VECTOR</span>
-          <span class="station-card-status" id="eq-status-zero">NAV: 20.0 CR</span>
-        </div>
-        <div class="station-card-body">
-          <span style="color: var(--text-dim);">SPOT PRICE</span>
-          <span id="eq-price-zero" style="color: var(--green); font-weight: bold;">20.0 CR</span>
-        </div>
-        <div class="station-card-prices" style="border-top: 1px solid var(--line); padding-top: 8px;">
-          <span>SHORT INT: <strong id="eq-short-zero" style="color: var(--amber);">0.0%</strong></span>
-          <span>BORROW: <strong style="color: var(--cyan);">2.0%/rnd</strong></span>
+        <div class="squeeze-gauge-wrap">
+          <div class="squeeze-gauge-head">
+            <span class="squeeze-gauge-title">SQUEEZE VULNERABILITY GAUGE</span>
+            <span id="squeeze-rating-zero" style="color: var(--green); font-weight: bold;">LOW RISK</span>
+          </div>
+          <div class="squeeze-meter-track">
+            <div class="squeeze-meter-fill" id="squeeze-meter-zero" style="width: 5%; background: var(--green);"></div>
+          </div>
+          <div class="squeeze-gauge-footer">
+            <span>FLOAT SHORTED: <strong id="eq-short-shares-zero" style="color: #fff;">0 / 1000</strong></span>
+            <span>LIQ MARK: <strong id="eq-liq-trigger-zero" style="color: var(--purple-neon);">24.0 CR</strong></span>
+          </div>
         </div>
       </div>
 
-      <!-- EQ_AERIAL -->
-      <div class="station-card" id="equity-card-aerial">
-        <div class="station-card-head">
-          <span class="station-card-name">EQ_ZNTH // ZENITH DRIFT</span>
-          <span class="station-card-status" id="eq-status-aerial">NAV: 24.8 CR</span>
+      <!-- EQ_AMOS / SOLV -->
+      <div class="equity-card" id="equity-card-amos">
+        <div class="equity-card-head">
+          <div class="equity-card-title">
+            <div class="equity-ticker-tag"><span class="syn-sym">$SOLV</span> // EQ_AMOS</div>
+            <div class="equity-card-sub">Atlantean Paperclip Mfg</div>
+          </div>
+          <span class="equity-status-badge solvent" id="eq-badge-amos">SOLVENT</span>
         </div>
-        <div class="station-card-body">
-          <span style="color: var(--text-dim);">SPOT PRICE</span>
-          <span id="eq-price-aerial" style="color: var(--green); font-weight: bold;">84.0 CR</span>
+        <div class="equity-stat-grid">
+          <div class="equity-stat-box">
+            <div class="equity-stat-label">Spot Price</div>
+            <div class="equity-stat-val" id="eq-price-amos" style="color: var(--green);">20.0 CR</div>
+          </div>
+          <div class="equity-stat-box">
+            <div class="equity-stat-label">NAV / Share</div>
+            <div class="equity-stat-val" id="eq-nav-amos">20.0 CR</div>
+          </div>
+          <div class="equity-stat-box">
+            <div class="equity-stat-label">Market Cap</div>
+            <div class="equity-stat-val" id="eq-cap-amos" style="color: var(--cyan);">20,000 CR</div>
+          </div>
+          <div class="equity-stat-box">
+            <div class="equity-stat-label">Short Interest</div>
+            <div class="equity-stat-val" id="eq-short-amos" style="color: var(--amber);">0.0%</div>
+          </div>
         </div>
-        <div class="station-card-prices" style="border-top: 1px solid var(--line); padding-top: 8px;">
-          <span>SHORT INT: <strong id="eq-short-aerial" style="color: var(--amber);">11.0%</strong></span>
-          <span>BORROW: <strong style="color: var(--cyan);">2.0%/rnd</strong></span>
+        <div class="squeeze-gauge-wrap">
+          <div class="squeeze-gauge-head">
+            <span class="squeeze-gauge-title">SQUEEZE VULNERABILITY GAUGE</span>
+            <span id="squeeze-rating-amos" style="color: var(--green); font-weight: bold;">LOW RISK</span>
+          </div>
+          <div class="squeeze-meter-track">
+            <div class="squeeze-meter-fill" id="squeeze-meter-amos" style="width: 5%; background: var(--green);"></div>
+          </div>
+          <div class="squeeze-gauge-footer">
+            <span>FLOAT SHORTED: <strong id="eq-short-shares-amos" style="color: #fff;">0 / 1000</strong></span>
+            <span>LIQ MARK: <strong id="eq-liq-trigger-amos" style="color: var(--purple-neon);">24.0 CR</strong></span>
+          </div>
         </div>
       </div>
 
+      <!-- EQ_MARV / BAL -->
+      <div class="equity-card" id="equity-card-marvin">
+        <div class="equity-card-head">
+          <div class="equity-card-title">
+            <div class="equity-ticker-tag"><span class="syn-sym">$BAL</span> // EQ_MARV</div>
+            <div class="equity-card-sub">Ballistic Liquidation Co.</div>
+          </div>
+          <span class="equity-status-badge solvent" id="eq-badge-marvin">SOLVENT</span>
+        </div>
+        <div class="equity-stat-grid">
+          <div class="equity-stat-box">
+            <div class="equity-stat-label">Spot Price</div>
+            <div class="equity-stat-val" id="eq-price-marvin" style="color: var(--green);">20.0 CR</div>
+          </div>
+          <div class="equity-stat-box">
+            <div class="equity-stat-label">NAV / Share</div>
+            <div class="equity-stat-val" id="eq-nav-marvin">20.0 CR</div>
+          </div>
+          <div class="equity-stat-box">
+            <div class="equity-stat-label">Market Cap</div>
+            <div class="equity-stat-val" id="eq-cap-marvin" style="color: var(--cyan);">20,000 CR</div>
+          </div>
+          <div class="equity-stat-box">
+            <div class="equity-stat-label">Short Interest</div>
+            <div class="equity-stat-val" id="eq-short-marvin" style="color: var(--amber);">0.0%</div>
+          </div>
+        </div>
+        <div class="squeeze-gauge-wrap">
+          <div class="squeeze-gauge-head">
+            <span class="squeeze-gauge-title">SQUEEZE VULNERABILITY GAUGE</span>
+            <span id="squeeze-rating-marvin" style="color: var(--green); font-weight: bold;">LOW RISK</span>
+          </div>
+          <div class="squeeze-meter-track">
+            <div class="squeeze-meter-fill" id="squeeze-meter-marvin" style="width: 5%; background: var(--green);"></div>
+          </div>
+          <div class="squeeze-gauge-footer">
+            <span>FLOAT SHORTED: <strong id="eq-short-shares-marvin" style="color: #fff;">0 / 1000</strong></span>
+            <span>LIQ MARK: <strong id="eq-liq-trigger-marvin" style="color: var(--purple-neon);">24.0 CR</strong></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- EQ_AERL / ZNTH -->
+      <div class="equity-card" id="equity-card-aerial">
+        <div class="equity-card-head">
+          <div class="equity-card-title">
+            <div class="equity-ticker-tag"><span class="syn-sym">$ZNTH</span> // EQ_AERL</div>
+            <div class="equity-card-sub">Zenith Drift Overwatch</div>
+          </div>
+          <span class="equity-status-badge solvent" id="eq-badge-aerial">SOLVENT</span>
+        </div>
+        <div class="equity-stat-grid">
+          <div class="equity-stat-box">
+            <div class="equity-stat-label">Spot Price</div>
+            <div class="equity-stat-val" id="eq-price-aerial" style="color: var(--green);">20.0 CR</div>
+          </div>
+          <div class="equity-stat-box">
+            <div class="equity-stat-label">NAV / Share</div>
+            <div class="equity-stat-val" id="eq-nav-aerial">20.0 CR</div>
+          </div>
+          <div class="equity-stat-box">
+            <div class="equity-stat-label">Market Cap</div>
+            <div class="equity-stat-val" id="eq-cap-aerial" style="color: var(--cyan);">20,000 CR</div>
+          </div>
+          <div class="equity-stat-box">
+            <div class="equity-stat-label">Short Interest</div>
+            <div class="equity-stat-val" id="eq-short-aerial" style="color: var(--amber);">0.0%</div>
+          </div>
+        </div>
+        <div class="squeeze-gauge-wrap">
+          <div class="squeeze-gauge-head">
+            <span class="squeeze-gauge-title">SQUEEZE VULNERABILITY GAUGE</span>
+            <span id="squeeze-rating-aerial" style="color: var(--green); font-weight: bold;">LOW RISK</span>
+          </div>
+          <div class="squeeze-meter-track">
+            <div class="squeeze-meter-fill" id="squeeze-meter-aerial" style="width: 5%; background: var(--green);"></div>
+          </div>
+          <div class="squeeze-gauge-footer">
+            <span>FLOAT SHORTED: <strong id="eq-short-shares-aerial" style="color: #fff;">0 / 1000</strong></span>
+            <span>LIQ MARK: <strong id="eq-liq-trigger-aerial" style="color: var(--purple-neon);">24.0 CR</strong></span>
+          </div>
+        </div>
+      </div>
     </div>
 
-    <!-- Active Bilateral Loan & Short Manifest -->
-    <div class="terminal-card">
+    <!-- Bilateral Stock Borrow Desk Control & Active Loans Panel -->
+    <div class="terminal-card" style="border-color: rgba(191, 90, 242, 0.3);">
       <div class="terminal-card-meta">
-        <div class="telemetry-indicator amber">
-          <span class="pulse-node amber"></span>
-          <span>BILATERAL STOCK LOAN DESK // ACTIVE CORPORATE SHORTS</span>
+        <div class="telemetry-indicator" style="color: var(--purple-neon); background: rgba(191, 90, 242, 0.08); border-color: rgba(191, 90, 242, 0.35);">
+          <span class="pulse-node purple"></span>
+          <span>BILATERAL STOCK BORROW DESK // OPPONENT SHORT-SELLING &amp; MARGIN ESCROW</span>
         </div>
-        <span style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim);" id="loan-desk-status">DESK: LIVE</span>
+        <span style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--purple-neon);" id="loan-desk-status">DESK: OPERATIONAL (2.0%/RND)</span>
+      </div>
+
+      <!-- Borrow Desk Aggregate Metrics Bar -->
+      <div class="borrow-desk-bar">
+        <div class="borrow-desk-metric">
+          <span class="borrow-desk-metric-label">Base Borrow Rate</span>
+          <span class="borrow-desk-metric-val" style="color: var(--cyan);">2.0% / rnd</span>
+        </div>
+        <div class="borrow-desk-metric">
+          <span class="borrow-desk-metric-label">Initial Margin Escrow</span>
+          <span class="borrow-desk-metric-val" style="color: var(--amber);">120% CR</span>
+        </div>
+        <div class="borrow-desk-metric">
+          <span class="borrow-desk-metric-label">Fleet Global Float</span>
+          <span class="borrow-desk-metric-val">4,000 Shs</span>
+        </div>
+        <div class="borrow-desk-metric">
+          <span class="borrow-desk-metric-label">Aggregate Float Utilization</span>
+          <span class="borrow-desk-metric-val" id="borrow-desk-utilization" style="color: var(--purple-neon);">0.0%</span>
+        </div>
+        <div class="borrow-desk-metric">
+          <span class="borrow-desk-metric-label">Active Loans Out</span>
+          <span class="borrow-desk-metric-val" id="borrow-desk-active-loans">0</span>
+        </div>
+        <div class="borrow-desk-metric">
+          <span class="borrow-desk-metric-label">Collateral in Escrow</span>
+          <span class="borrow-desk-metric-val" id="borrow-desk-total-collateral" style="color: var(--green);">0 CR</span>
+        </div>
       </div>
 
       <div style="overflow-x: auto;">
@@ -1256,11 +1735,13 @@
               <th>Borrowed Equity</th>
               <th>Escrowed Collateral</th>
               <th>Fee Rate</th>
+              <th>Margin Coverage</th>
+              <th>Liquidation Mark</th>
               <th>Loan Status</th>
             </tr>
           </thead>
           <tbody id="equity-loans-tbody">
-            <tr><td colspan="7" style="color: var(--text-dim); text-align: center; padding: 14px;">No active corporate shorts. Fleets fully capitalized.</td></tr>
+            <tr><td colspan="9" style="color: var(--text-dim); text-align: center; padding: 14px;">No active corporate shorts. Fleets fully capitalized.</td></tr>
           </tbody>
         </table>
       </div>
@@ -3384,9 +3865,104 @@
     requestAnimationFrame(render);
   }
 
+  function normalizeEquityData(raw) {
+    const base = {
+      zero: {
+        agent_id: "zero",
+        ticker: "APEX",
+        symbol: "EQ_ZERO",
+        name: "Apex Vector Arbitrage",
+        total_shares: 1000,
+        base_nav: 20.0,
+        spot_price: 20.0,
+        nav_per_share: 20.0,
+        market_cap: 20000,
+        short_interest_shares: 0,
+        short_interest_pct: 0.0,
+        borrow_fee_rate: 0.02,
+        active_loans_count: 0
+      },
+      amos: {
+        agent_id: "amos",
+        ticker: "SOLV",
+        symbol: "EQ_AMOS",
+        name: "Atlantean Paperclip Mfg",
+        total_shares: 1000,
+        base_nav: 20.0,
+        spot_price: 20.0,
+        nav_per_share: 20.0,
+        market_cap: 20000,
+        short_interest_shares: 0,
+        short_interest_pct: 0.0,
+        borrow_fee_rate: 0.02,
+        active_loans_count: 0
+      },
+      marvin: {
+        agent_id: "marvin",
+        ticker: "BAL",
+        symbol: "EQ_MARV",
+        name: "Ballistic Liquidation Co.",
+        total_shares: 1000,
+        base_nav: 20.0,
+        spot_price: 20.0,
+        nav_per_share: 20.0,
+        market_cap: 20000,
+        short_interest_shares: 0,
+        short_interest_pct: 0.0,
+        borrow_fee_rate: 0.02,
+        active_loans_count: 0
+      },
+      aerial: {
+        agent_id: "aerial",
+        ticker: "ZNTH",
+        symbol: "EQ_AERL",
+        name: "Zenith Drift Overwatch",
+        total_shares: 1000,
+        base_nav: 20.0,
+        spot_price: 20.0,
+        nav_per_share: 20.0,
+        market_cap: 20000,
+        short_interest_shares: 0,
+        short_interest_pct: 0.0,
+        borrow_fee_rate: 0.02,
+        active_loans_count: 0
+      }
+    };
+
+    if (!raw) return base;
+
+    for (const [key, val] of Object.entries(raw)) {
+      let aid = val.issuer_agent_id;
+      if (!aid) {
+        if (key === "EQ_ZERO" || key === "APEX" || key === "ZERO") aid = "zero";
+        else if (key === "EQ_AMOS" || key === "SOLV" || key === "AMOS") aid = "amos";
+        else if (key === "EQ_MARV" || key === "BAL" || key === "MARV") aid = "marvin";
+        else if (key === "EQ_AERL" || key === "EQ_ZNTH" || key === "ZNTH" || key === "AERL") aid = "aerial";
+      }
+      if (aid && base[aid]) {
+        const item = base[aid];
+        if (val.name) item.name = val.name;
+        if (val.symbol) item.symbol = val.symbol;
+        if (val.total_shares) item.total_shares = Number(val.total_shares);
+        const p = val.spot_price !== undefined ? val.spot_price : (val.share_price !== undefined ? val.share_price : item.spot_price);
+        item.spot_price = Number(p);
+        const n = val.nav_per_share !== undefined ? val.nav_per_share : item.spot_price;
+        item.nav_per_share = Number(n);
+        item.market_cap = val.market_cap !== undefined ? Number(val.market_cap) : Math.round(item.spot_price * item.total_shares);
+        item.short_interest_pct = val.short_interest_pct !== undefined ? Number(val.short_interest_pct) : 0;
+        item.short_interest_shares = val.short_interest_shares !== undefined ? Number(val.short_interest_shares) : Math.round((item.short_interest_pct / 100) * item.total_shares);
+        item.active_loans_count = val.active_loans_count !== undefined ? Number(val.active_loans_count) : 0;
+        if (val.borrow_fee_rate) item.borrow_fee_rate = Number(val.borrow_fee_rate);
+      }
+    }
+    return base;
+  }
+
   async function pollEquityTelemetry() {
+    let eq = null;
+    let loans = null;
+
     try {
-      let eq = null;
       if (!isSimulationMode) {
         let sRes = await fetch("/equity/summary", { cache: "no-store" }).catch(() => null);
         if (!sRes || !sRes.ok) {
@@ -3396,29 +3972,7 @@
           const sData = await sRes.json();
           eq = sData.equities || {};
         }
-      }
-      if (!eq && MIDGAME_STATE && MIDGAME_STATE.equities) {
-        eq = MIDGAME_STATE.equities;
-      }
-      if (eq) {
 
-        for (const [sym, data] of Object.entries(eq)) {
-          const agentId = data.issuer_agent_id;
-          const priceEl = document.getElementById(`eq-price-${agentId}`);
-          const statusEl = document.getElementById(`eq-status-${agentId}`);
-          const shortEl = document.getElementById(`eq-short-${agentId}`);
-          if (priceEl && data.spot_price !== undefined) priceEl.textContent = `${Number(data.spot_price).toFixed(1)} CR`;
-          if (statusEl && data.nav_per_share !== undefined) statusEl.textContent = `NAV: ${Number(data.nav_per_share).toFixed(1)} CR`;
-          if (shortEl && data.short_interest_pct !== undefined) shortEl.textContent = `${data.short_interest_pct}%`;
-        }
-      }
-    } catch (e) {
-      console.warn("Equity summary poll error:", e);
-    }
-
-    try {
-      let loans = null;
-      if (!isSimulationMode) {
         let lRes = await fetch("/equity/loans", { cache: "no-store" }).catch(() => null);
         if (!lRes || !lRes.ok) {
           lRes = await fetch("https://agora-banana-production.up.railway.app/equity/loans", { cache: "no-store" }).catch(() => null);
@@ -3428,37 +3982,160 @@
           loans = lData.loans || [];
         }
       }
+
+      if (!eq && MIDGAME_STATE && MIDGAME_STATE.equities) {
+        eq = MIDGAME_STATE.equities;
+      }
       if (!loans && MIDGAME_STATE && MIDGAME_STATE.loans) {
         loans = MIDGAME_STATE.loans;
       }
-      if (loans) {
-        const tbody = document.getElementById("equity-loans-tbody");
-        if (tbody) {
-          if (loans.length === 0) {
-            tbody.innerHTML = `<tr><td colspan="7" style="color: var(--text-dim); text-align: center; padding: 14px;">No active corporate shorts. Fleets fully capitalized.</td></tr>`;
-          } else {
-            tbody.innerHTML = loans.map(ln => {
-              const isLiq = ln.status === 'liquidated';
-              const statusClass = isLiq ? 'status-tag neg' : 'status-tag active';
-              const statusLabel = isLiq ? 'LIQUIDATED' : (ln.status === 'closed' ? 'CLOSED' : 'SHORT ACTIVE');
-              const feePct = Math.round((ln.fee_rate || 0.02) * 100);
-              return `
-                <tr>
-                  <td style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--amber);">${(ln.loan_id || '').slice(0, 14)}</td>
-                  <td style="font-weight: bold; color: #fff;">${(ln.borrower_id || '').toUpperCase()}</td>
-                  <td style="color: var(--cyan);">${(ln.lender_id || '').toUpperCase()}</td>
-                  <td style="color: var(--green); font-weight: bold;">${ln.shares} shs ${ln.equity_symbol}</td>
-                  <td style="color: var(--amber);">${Number(ln.collateral_cr || 0).toLocaleString()} CR</td>
-                  <td style="font-size: 0.75rem; color: var(--text-dim);">${feePct}.0%/rnd</td>
-                  <td><span class="${statusClass}" style="font-size: 0.7rem;">${statusLabel}</span></td>
-                </tr>
-              `;
-            }).join("");
-          }
+
+      const equities = normalizeEquityData(eq);
+
+      // 1. Render Top Equity Ticker Ribbon
+      for (const [aid, item] of Object.entries(equities)) {
+        const pEl = document.getElementById(`ribbon-price-${aid}`);
+        const dEl = document.getElementById(`ribbon-delta-${aid}`);
+        const cEl = document.getElementById(`ribbon-cap-${aid}`);
+        if (pEl) pEl.textContent = `${item.spot_price.toFixed(1)} CR`;
+        if (cEl) cEl.textContent = `CAP: ${item.market_cap.toLocaleString()} CR`;
+        if (dEl) {
+          const baseNav = item.base_nav || 20.0;
+          const deltaPct = ((item.spot_price - baseNav) / baseNav) * 100;
+          const sign = deltaPct >= 0 ? "+" : "";
+          dEl.textContent = `${sign}${deltaPct.toFixed(1)}%`;
+          dEl.className = `equity-ticker-delta ${deltaPct > 0 ? 'pos' : (deltaPct < 0 ? 'neg' : 'neutral')}`;
         }
       }
+
+      // 2. Render Syndicate Corporate Equity Cards & Squeeze Risk Gauges
+      let totalShortShares = 0;
+      for (const [aid, item] of Object.entries(equities)) {
+        totalShortShares += item.short_interest_shares;
+
+        const priceEl = document.getElementById(`eq-price-${aid}`);
+        const navEl = document.getElementById(`eq-nav-${aid}`);
+        const capEl = document.getElementById(`eq-cap-${aid}`);
+        const shortEl = document.getElementById(`eq-short-${aid}`);
+        const badgeEl = document.getElementById(`eq-badge-${aid}`);
+        const ratingEl = document.getElementById(`squeeze-rating-${aid}`);
+        const meterEl = document.getElementById(`squeeze-meter-${aid}`);
+        const sharesEl = document.getElementById(`eq-short-shares-${aid}`);
+        const liqEl = document.getElementById(`eq-liq-trigger-${aid}`);
+
+        if (priceEl) priceEl.textContent = `${item.spot_price.toFixed(1)} CR`;
+        if (navEl) navEl.textContent = `${item.nav_per_share.toFixed(1)} CR`;
+        if (capEl) capEl.textContent = `${item.market_cap.toLocaleString()} CR`;
+        if (shortEl) shortEl.textContent = `${item.short_interest_pct.toFixed(1)}%`;
+        if (sharesEl) sharesEl.textContent = `${item.short_interest_shares} / ${item.total_shares}`;
+
+        // Squeeze Risk Gauge Calculation
+        const shortPct = item.short_interest_pct;
+        const squeezeScore = Math.min(100, Math.max(5, Math.round(shortPct * 2.5)));
+        const liqTriggerPrice = (item.spot_price * 1.20).toFixed(1);
+        if (liqEl) liqEl.textContent = `${liqTriggerPrice} CR`;
+
+        if (meterEl) {
+          meterEl.style.width = `${squeezeScore}%`;
+        }
+
+        let badgeClass = "solvent";
+        let badgeText = "SOLVENT";
+        let ratingText = "LOW RISK";
+        let meterColor = "var(--green)";
+
+        if (shortPct >= 40.0) {
+          badgeClass = "critical";
+          badgeText = "CRITICAL HAZARD";
+          ratingText = "CRITICAL SQUEEZE";
+          meterColor = "var(--red)";
+        } else if (shortPct >= 25.0) {
+          badgeClass = "squeeze";
+          badgeText = "SQUEEZE WARNING";
+          ratingText = "PRESSURE BUILDING";
+          meterColor = "var(--purple-neon)";
+        } else if (shortPct >= 12.0) {
+          badgeClass = "watch";
+          badgeText = "MARGIN WATCH";
+          ratingText = "ELEVATED WATCH";
+          meterColor = "var(--amber)";
+        }
+
+        if (badgeEl) {
+          badgeEl.className = `equity-status-badge ${badgeClass}`;
+          badgeEl.textContent = badgeText;
+        }
+        if (ratingEl) {
+          ratingEl.textContent = ratingText;
+          ratingEl.style.color = meterColor;
+        }
+        if (meterEl) {
+          meterEl.style.background = meterColor;
+        }
+      }
+
+      // 3. Render Bilateral Stock Borrow Desk Summary Bar
+      const totalFloat = 4000;
+      const utilPct = ((totalShortShares / totalFloat) * 100).toFixed(1);
+      const utilEl = document.getElementById("borrow-desk-utilization");
+      if (utilEl) utilEl.textContent = `${utilPct}%`;
+
+      const safeLoans = loans || [];
+      const activeLoansCount = safeLoans.filter(l => l.status === "active" || l.status === "ACTIVE").length;
+      const activeEl = document.getElementById("borrow-desk-active-loans");
+      if (activeEl) activeEl.textContent = activeLoansCount;
+
+      const totalCollateral = safeLoans.reduce((sum, l) => sum + (Number(l.collateral_cr) || 0), 0);
+      const colEl = document.getElementById("borrow-desk-total-collateral");
+      if (colEl) colEl.textContent = `${totalCollateral.toLocaleString()} CR`;
+
+      // 4. Render Active Bilateral Loans Manifest Table
+      const tbody = document.getElementById("equity-loans-tbody");
+      if (tbody) {
+        if (safeLoans.length === 0) {
+          tbody.innerHTML = `<tr><td colspan="9" style="color: var(--text-dim); text-align: center; padding: 14px;">No active corporate shorts. Fleets fully capitalized.</td></tr>`;
+        } else {
+          tbody.innerHTML = safeLoans.map(ln => {
+            const isLiq = ln.status === 'liquidated' || ln.status === 'LIQUIDATED';
+            const isClosed = ln.status === 'closed' || ln.status === 'CLOSED';
+            const statusClass = isLiq ? 'status-tag neg' : (isClosed ? 'status-tag' : 'status-tag active');
+            const statusLabel = isLiq ? 'LIQUIDATED' : (isClosed ? 'CLOSED' : 'SHORT ACTIVE');
+            const feePct = ln.fee_rate !== undefined ? Math.round(Number(ln.fee_rate) * 100) : (ln.fee_pct || 2.0);
+            const shares = Number(ln.shares) || 0;
+            const collateral = Number(ln.collateral_cr) || 0;
+            const eqSym = ln.equity_symbol || ln.ticker || "EQUITY";
+
+            // Resolve spot price for coverage ratio
+            let spot = 20.0;
+            for (const it of Object.values(equities)) {
+              if (it.symbol === eqSym || it.ticker === eqSym) {
+                spot = it.spot_price;
+                break;
+              }
+            }
+            const loanValue = shares * spot;
+            const coveragePct = loanValue > 0 ? Math.round((collateral / loanValue) * 100) : 120;
+            const liqMark = shares > 0 ? (collateral / shares).toFixed(1) : "--";
+
+            return `
+              <tr>
+                <td style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--amber);">${(ln.loan_id || '').slice(0, 14)}</td>
+                <td style="font-weight: bold; color: #fff;">${(ln.borrower_id || '').toUpperCase()}</td>
+                <td style="color: var(--cyan);">${(ln.lender_id || '').toUpperCase()}</td>
+                <td style="color: var(--purple-neon); font-weight: bold;">${shares} shs ${eqSym}</td>
+                <td style="color: var(--green);">${collateral.toLocaleString()} CR</td>
+                <td style="font-size: 0.75rem; color: var(--text-dim);">${feePct}.0%/rnd</td>
+                <td style="font-weight: bold; color: ${coveragePct < 110 ? 'var(--red)' : (coveragePct < 125 ? 'var(--amber)' : 'var(--green)')};">${coveragePct}%</td>
+                <td style="color: var(--amber);">${liqMark} CR</td>
+                <td><span class="${statusClass}" style="font-size: 0.7rem;">${statusLabel}</span></td>
+              </tr>
+            `;
+          }).join("");
+        }
+      }
+
     } catch (e) {
-      console.warn("Equity loans poll error:", e);
+      console.warn("Equity telemetry poll error:", e);
     }
   }
 
@@ -3773,12 +4450,16 @@
           pollBookAndTape();
           pollCircuitBreakerTelemetry();
           pollStationsTelemetry();
+          pollEquityTelemetry();
         } else if (frame.type === "ticks" || frame.type === "depth_diff") {
           pollBookAndTape();
         } else if (frame.type === "leaderboard") {
           pollLeaderboard();
+          pollEquityTelemetry();
         } else if (frame.type === "circuit_state") {
           pollCircuitBreakerTelemetry();
+        } else if (frame.type === "equity") {
+          pollEquityTelemetry();
         }
       } catch (err) {
         console.warn("Error processing WS frame:", err);

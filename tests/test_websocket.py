@@ -63,10 +63,36 @@ class TestAgoraWebSocket(unittest.TestCase):
         self.assertIn("locations", snapshot)
         self.assertIn("windows", snapshot)
         self.assertEqual(len(snapshot["leaderboard"]), 4)
+        self.assertIn("equity", snapshot)
+        self.assertIn("loans", snapshot)
+        self.assertIn("EQ_AMOS", snapshot["equity"])
+        self.assertIn("EQ_ZERO", snapshot["equity"])
 
         # Diffs immediately after snapshot should be empty
         diffs = engine.get_diffs("ceres", "FRAG")
         self.assertEqual(len(diffs), 0)
+
+    def test_terminal_diff_engine_equity_streaming(self):
+        referee = AgoraReferee()
+        engine = TerminalDiffEngine(referee)
+        snapshot = engine.get_snapshot("ceres", "FRAG")
+        self.assertIn("equity", snapshot)
+
+        # Initiate an equity loan and verify diff emission
+        loan_res = referee.borrow_equity(
+            borrower_id="zero",
+            equity_symbol="EQ_AMOS",
+            shares=50,
+            collateral_cr=3000
+        )
+        self.assertTrue(loan_res["ok"])
+
+        diffs = engine.get_diffs("ceres", "FRAG")
+        equity_frames = [d for d in diffs if d["type"] == "equity"]
+        self.assertEqual(len(equity_frames), 1)
+        self.assertIn("EQ_AMOS", equity_frames[0]["equity"])
+        self.assertEqual(equity_frames[0]["equity"]["EQ_AMOS"]["short_interest_shares"], 50)
+        self.assertEqual(len(equity_frames[0]["loans"]), 1)
 
     def test_terminal_diff_engine_diffs_on_order(self):
         referee = AgoraReferee()
