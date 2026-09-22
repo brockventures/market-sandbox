@@ -990,6 +990,14 @@ async function fetchTelemetry() {
   const halts = await apiFetch("/circuit_breaker/halts?status=halted");
   if (halts && halts.halts) circuitBreakerHalts = halts.halts;
 
+  const pData = await apiFetch("/stations/prices");
+  if (pData) {
+    const rawPrices = (pData.data && pData.data.prices) ? pData.data.prices : (pData.data || pData.prices);
+    if (rawPrices && typeof rawPrices === "object") {
+      Object.assign(stationPrices, rawPrices);
+    }
+  }
+
   updateTransferArcs();
   updateFleetPositions();
   if (simState.targetFocus) updateInspector(simState.targetFocus);
