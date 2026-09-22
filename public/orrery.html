@@ -494,7 +494,10 @@
   <!-- Top-Left Navigation & Ephemeris -->
   <div class="hud-card hud-top-left" id="card-status">
     <div class="hud-card-header">
-      <a href="/terminal" class="nav-back-pill">&larr; STATION TERMINAL</a>
+      <div style="display:flex; align-items:center; gap:6px;">
+        <a href="/terminal" class="nav-back-pill">&larr; STATION TERMINAL</a>
+        <a href="/orrery-3d" class="nav-back-pill" style="color:var(--neon-cyan); border-color:rgba(92,225,230,0.35); background:rgba(92,225,230,0.12);">3D VIEW &rarr;</a>
+      </div>
       <div style="display:flex; align-items:center; gap:8px;">
         <button id="btn-audio-toggle" class="audio-toggle" title="Toggle Audio FX">🔊</button>
         <button class="mobile-card-close" onclick="closeAllMobileCards()" title="Close">&times;</button>

@@ -1142,6 +1142,7 @@
     <div class="terminal-brand">
       <a href="/" class="nav-back">&larr; STATION OVERVIEW</a>
       <a href="/orrery" class="nav-back" style="color: #c084fc; border-color: rgba(168, 85, 247, 0.4); background: rgba(168, 85, 247, 0.08);">🌌 ORRERY</a>
+      <a href="/orrery-3d" class="nav-back" style="color: #5ce1e6; border-color: rgba(92, 225, 230, 0.4); background: rgba(92, 225, 230, 0.08);">🛸 3D ORRERY</a>
       <a href="/patch-notes" class="nav-back" style="color: var(--amber); border-color: var(--amber-dim); background: rgba(255, 184, 52, 0.08);">&bull; PATCH NOTES</a>
       <h1>AGORA // REQUISITION TERMINAL</h1>
       <span class="station-badge">16 Psyche (2.92 AU)</span>
@@ -1320,9 +1321,14 @@
           Real-time vector scope plotting station orbits (Earth, Luna, Mars, Ceres), active freighter flight vectors, and docked syndicate fleet positions (<span class="code-kw">GET /stations/locations</span>).
         </p>
       </div>
-      <a href="/orrery" class="nav-back" style="color: #c084fc; border-color: rgba(168, 85, 247, 0.4); background: rgba(168, 85, 247, 0.12); margin-top: 4px;">
-        🌌 LAUNCH FULLSCREEN ORRERY &rarr;
-      </a>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px;">
+        <a href="/orrery" class="nav-back" style="color: #c084fc; border-color: rgba(168, 85, 247, 0.4); background: rgba(168, 85, 247, 0.12);">
+          🌌 2D RADAR &rarr;
+        </a>
+        <a href="/orrery-3d" class="nav-back" style="color: #5ce1e6; border-color: rgba(92, 225, 230, 0.4); background: rgba(92, 225, 230, 0.12);">
+          🛸 3D ORRERY (THREE.JS) &rarr;
+        </a>
+      </div>
     </div>
 
     <div class="terminal-card">

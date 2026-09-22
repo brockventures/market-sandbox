@@ -1,0 +1,1114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#07030e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="mobile-web-app-capable" content="yes">
+<title>AGORA // Sol System 3D Orbital Orrery &middot; Astrodynamics Radar</title>
+<meta name="description" content="Fullscreen 3D Keplerian orbital mechanics orrery using Three.js with real-time syndicate fleet vectors, Hohmann transfer corridors, and live station telemetry.">
+<style>
+  :root {
+    --bg-void: #07030e;
+    --bg-surface: #0f071b;
+    --bg-card: rgba(18, 10, 32, 0.82);
+    --bg-card-hover: rgba(30, 16, 52, 0.92);
+    --border-card: rgba(168, 85, 247, 0.32);
+    --border-card-glow: rgba(192, 132, 252, 0.7);
+    --neon-purple: #c084fc;
+    --neon-purple-deep: #a855f7;
+    --neon-magenta: #d946ef;
+    --neon-cyan: #5ce1e6;
+    --neon-cyan-glow: rgba(92, 225, 230, 0.4);
+    --neon-amber: #fbbf24;
+    --neon-red: #f87171;
+    --neon-green: #4ade80;
+    --text-primary: #f3e8ff;
+    --text-secondary: #c084fc;
+    --text-muted: #8b72a8;
+    --font-mono: "Space Mono", "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-tap-highlight-color: transparent; }
+
+  html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background-color: var(--bg-void);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    touch-action: none;
+  }
+
+  #webgl-container {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    z-index: 1;
+    touch-action: none;
+  }
+
+  /* HUD Overlay System */
+  .hud-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    z-index: 10;
+    pointer-events: none;
+    display: grid;
+    grid-template-columns: 340px 1fr 340px;
+    grid-template-rows: auto 1fr auto;
+    padding: 16px;
+    gap: 16px;
+  }
+
+  .hud-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-card);
+    border-radius: 8px;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    pointer-events: auto;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6), inset 0 0 16px rgba(168, 85, 247, 0.08);
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+
+  .hud-card:hover {
+    border-color: var(--border-card-glow);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.7), inset 0 0 20px rgba(192, 132, 252, 0.15);
+  }
+
+  .hud-top-left {
+    grid-column: 1;
+    grid-row: 1;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .hud-header-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .nav-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    background: rgba(168, 85, 247, 0.12);
+    border: 1px solid rgba(168, 85, 247, 0.35);
+    border-radius: 4px;
+    color: var(--neon-purple);
+    text-decoration: none;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    transition: all 0.2s;
+  }
+
+  .nav-pill:hover {
+    background: rgba(168, 85, 247, 0.25);
+    border-color: var(--neon-purple);
+    color: #ffffff;
+    box-shadow: 0 0 10px rgba(192, 132, 252, 0.4);
+  }
+
+  .mode-badge {
+    font-size: 9px;
+    font-weight: 700;
+    padding: 3px 6px;
+    border-radius: 3px;
+    background: rgba(92, 225, 230, 0.15);
+    color: var(--neon-cyan);
+    border: 1px solid rgba(92, 225, 230, 0.4);
+    letter-spacing: 0.08em;
+  }
+
+  .title-group h1 {
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: 0.1em;
+    color: var(--text-primary);
+    text-shadow: 0 0 10px rgba(192, 132, 252, 0.4);
+  }
+
+  .title-group p {
+    font-size: 10px;
+    color: var(--text-muted);
+    margin-top: 2px;
+  }
+
+  .stats-bar {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    padding-top: 6px;
+    border-top: 1px solid rgba(168, 85, 247, 0.2);
+  }
+
+  .stat-item {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .stat-label {
+    font-size: 8.5px;
+    color: var(--text-muted);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .stat-value {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--neon-cyan);
+    margin-top: 1px;
+  }
+
+  /* Target Selector Controls (Top Center) */
+  .hud-top-center {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: center;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-card);
+    border-radius: 20px;
+    backdrop-filter: blur(12px);
+    pointer-events: auto;
+  }
+
+  .target-btn {
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--text-muted);
+    padding: 4px 10px;
+    border-radius: 14px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .target-btn:hover {
+    color: var(--text-primary);
+    border-color: rgba(168, 85, 247, 0.4);
+  }
+
+  .target-btn.active {
+    background: rgba(168, 85, 247, 0.28);
+    border-color: var(--neon-purple);
+    color: #ffffff;
+    box-shadow: 0 0 12px rgba(192, 132, 252, 0.5);
+  }
+
+  /* Entity Inspector (Bottom Left) */
+  .hud-bottom-left {
+    grid-column: 1;
+    grid-row: 3;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .inspector-title {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 12px;
+    font-weight: 800;
+    color: var(--neon-purple);
+  }
+
+  .inspector-data-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    font-size: 10px;
+  }
+
+  .data-cell {
+    background: rgba(10, 5, 20, 0.5);
+    padding: 6px 8px;
+    border-radius: 4px;
+    border: 1px solid rgba(168, 85, 247, 0.18);
+  }
+
+  .data-lbl {
+    font-size: 8.5px;
+    color: var(--text-muted);
+    display: block;
+    margin-bottom: 2px;
+  }
+
+  .data-val {
+    font-weight: 700;
+    color: var(--text-primary);
+  }
+
+  .data-val.cyan { color: var(--neon-cyan); }
+  .data-val.amber { color: var(--neon-amber); }
+  .data-val.red { color: var(--neon-red); }
+  .data-val.green { color: var(--neon-green); }
+
+  /* Simulation Controls (Bottom Right) */
+  .hud-bottom-right {
+    grid-column: 3;
+    grid-row: 3;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .controls-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .ctrl-btn {
+    background: rgba(168, 85, 247, 0.15);
+    border: 1px solid rgba(168, 85, 247, 0.35);
+    color: var(--text-primary);
+    padding: 5px 10px;
+    border-radius: 4px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .ctrl-btn:hover {
+    background: rgba(168, 85, 247, 0.3);
+    border-color: var(--neon-purple);
+    box-shadow: 0 0 10px rgba(192, 132, 252, 0.4);
+  }
+
+  .slider-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 9.5px;
+    color: var(--text-muted);
+  }
+
+  .slider-group input[type="range"] {
+    flex: 1;
+    accent-color: var(--neon-purple);
+    cursor: pointer;
+  }
+
+  /* Floating Tooltip */
+  #floating-tooltip {
+    position: absolute;
+    z-index: 100;
+    pointer-events: none;
+    background: rgba(15, 7, 27, 0.92);
+    border: 1px solid var(--neon-purple);
+    box-shadow: 0 0 16px rgba(192, 132, 252, 0.4);
+    border-radius: 6px;
+    padding: 6px 10px;
+    color: var(--text-primary);
+    font-size: 10px;
+    display: none;
+    transform: translate(-50%, -120%);
+    white-space: nowrap;
+    backdrop-filter: blur(8px);
+  }
+
+  #floating-tooltip .tt-title {
+    font-weight: 800;
+    color: var(--neon-purple);
+    margin-bottom: 2px;
+  }
+
+  #floating-tooltip .tt-meta {
+    font-size: 8.5px;
+    color: var(--neon-cyan);
+  }
+
+  /* Mobile Responsiveness */
+  @media (max-width: 860px) {
+    .hud-overlay {
+      grid-template-columns: 1fr;
+      grid-template-rows: auto auto 1fr auto;
+      padding: 10px;
+      gap: 10px;
+    }
+    .hud-top-left { grid-column: 1; grid-row: 1; }
+    .hud-top-center {
+      grid-column: 1;
+      grid-row: 2;
+      justify-self: stretch;
+      overflow-x: auto;
+      white-space: nowrap;
+      border-radius: 8px;
+    }
+    .hud-bottom-left { grid-column: 1; grid-row: 4; }
+    .hud-bottom-right { display: none; }
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+
+<div id="webgl-container"></div>
+
+<main class="hud-overlay">
+  <!-- Top Left: Navigation & Telemetry Header -->
+  <div class="hud-card hud-top-left">
+    <div class="hud-header-row">
+      <div style="display:flex; gap:6px;">
+        <a href="/terminal" class="nav-pill">&larr; TERMINAL</a>
+        <a href="/orrery" class="nav-pill">2D RADAR</a>
+      </div>
+      <span class="mode-badge">THREE.JS 3D</span>
+    </div>
+    <div class="title-group">
+      <h1>AGORA // SOL ORRERY 3D</h1>
+      <p>Keplerian Astrodynamics &amp; Transfer Corridors</p>
+    </div>
+    <div class="stats-bar">
+      <div class="stat-item">
+        <span class="stat-label">Telemetry Round</span>
+        <span class="stat-value" id="stat-round">ROUND 42</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-label">Camera Mode</span>
+        <span class="stat-value" id="stat-cam-mode">ORBIT (FREE)</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-label">Active Windows</span>
+        <span class="stat-value green" id="stat-windows">1 OPEN</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-label">Render Engine</span>
+        <span class="stat-value cyan" id="stat-fps">60 FPS</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Top Center: Camera Target Selector -->
+  <div class="hud-top-center">
+    <button class="target-btn active" data-target="sun" onclick="selectFocus('sun')">SOL</button>
+    <button class="target-btn" data-target="earth" onclick="selectFocus('earth')">EARTH</button>
+    <button class="target-btn" data-target="luna" onclick="selectFocus('luna')">LUNA</button>
+    <button class="target-btn" data-target="mars" onclick="selectFocus('mars')">MARS</button>
+    <button class="target-btn" data-target="ceres" onclick="selectFocus('ceres')">CERES</button>
+    <button class="target-btn" data-target="system" onclick="resetSystemView()">RESET VIEW</button>
+  </div>
+
+  <!-- Bottom Left: Astrodynamics Inspector -->
+  <div class="hud-card hud-bottom-left" id="card-inspector">
+    <div class="inspector-title">
+      <span id="insp-name">CERES // PIAZZI DEPOT</span>
+      <span class="mode-badge" id="insp-type">STATION</span>
+    </div>
+    <div class="inspector-data-grid">
+      <div class="data-cell">
+        <span class="data-lbl">Semi-Major Axis</span>
+        <span class="data-val cyan" id="insp-au">2.77 AU</span>
+      </div>
+      <div class="data-cell">
+        <span class="data-lbl">Orbital Period</span>
+        <span class="data-val" id="insp-period">4.60 Earth Yrs</span>
+      </div>
+      <div class="data-cell">
+        <span class="data-lbl">Spot Prices</span>
+        <span class="data-val amber" id="insp-prices">FRAG: 22 &middot; FUEL: 26</span>
+      </div>
+      <div class="data-cell">
+        <span class="data-lbl">Station Status</span>
+        <span class="data-val green" id="insp-status">NOMINAL (10% LULD)</span>
+      </div>
+      <div class="data-cell" style="grid-column: span 2;">
+        <span class="data-lbl">Docked Syndicate Fleets</span>
+        <span class="data-val" id="insp-fleets">Amos (Atlas), Aerial (XVX-016)</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bottom Right: Simulation Controls -->
+  <div class="hud-card hud-bottom-right">
+    <div class="controls-row">
+      <button class="ctrl-btn" id="btn-pause" onclick="toggleSimPause()">PAUSE</button>
+      <button class="ctrl-btn" onclick="toggleTrajectories()">TOGGLE ORBITS</button>
+      <button class="ctrl-btn" onclick="toggleAsteroids()">ASTEROIDS</button>
+    </div>
+    <div class="slider-group">
+      <span>TIME DILATION:</span>
+      <input type="range" id="sim-speed" min="0.1" max="5.0" step="0.1" value="1.0" oninput="updateSimSpeed(this.value)">
+      <span id="sim-speed-val">1.0x</span>
+    </div>
+  </div>
+</main>
+
+<div id="floating-tooltip">
+  <div class="tt-title" id="tt-name">EARTH // LEO DEPOT</div>
+  <div class="tt-meta" id="tt-details">1.00 AU &middot; Click to Track</div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// Simulation Configuration & Astrodynamics Constants
+const AU_SCALE = 80; // 1 Astronomical Unit in Three.js units
+const CELESTIAL_DATA = {
+  sun: {
+    name: "SOL (STAR)",
+    type: "STAR",
+    color: 0xffd700,
+    emissive: 0xffaa00,
+    radius: 7.0,
+    au: 0,
+    period: 0,
+    spotPrices: null
+  },
+  earth: {
+    name: "EARTH // LEO DEPOT",
+    type: "STATION",
+    color: 0x38bdf8,
+    emissive: 0x0369a1,
+    radius: 3.2,
+    au: 1.00,
+    period: 365.25,
+    stationId: "earth"
+  },
+  luna: {
+    name: "LUNA // SHACKLETON",
+    type: "STATION",
+    color: 0xe2e8f0,
+    emissive: 0x64748b,
+    radius: 1.6,
+    parent: "earth",
+    orbitalDist: 9.0,
+    period: 27.32,
+    stationId: "luna"
+  },
+  mars: {
+    name: "MARS // ARCADIA DEPOT",
+    type: "STATION",
+    color: 0xf87171,
+    emissive: 0x991b1b,
+    radius: 2.8,
+    au: 1.524,
+    period: 686.98,
+    stationId: "mars"
+  },
+  ceres: {
+    name: "CERES // PIAZZI DEPOT",
+    type: "STATION",
+    color: 0xc084fc,
+    emissive: 0x6b21a8,
+    radius: 2.5,
+    au: 2.767,
+    period: 1681.6,
+    stationId: "ceres"
+  }
+};
+
+let simState = {
+  time: 0,
+  speed: 1.0,
+  paused: false,
+  targetFocus: null,
+  showTrajectories: true,
+  showAsteroids: true,
+  currentRound: 42
+};
+
+let stationPrices = {
+  earth: { FRAG: 11.0, FUEL: 8.0 },
+  luna:  { FRAG: 12.0, FUEL: 16.0 },
+  mars:  { FRAG: 16.0, FUEL: 14.0 },
+  ceres: { FRAG: 21.0, FUEL: 26.0 }
+};
+
+let fleetLocations = [
+  { agent_id: "amos", station_id: "ceres", status: "docked" },
+  { agent_id: "aerial", station_id: "ceres", status: "docked" },
+  { agent_id: "marvin", station_id: "mars", status: "docked" },
+  { agent_id: "zero", station_id: "in_transit", status: "in_transit", transit: { origin: "earth", destination: "mars", departure_round: 40, arrival_round: 43, commodity: "FRAG", cargo_qty: 150 } }
+];
+
+let orbitalWindows = [
+  { corridor_id: "earth_mars", name: "Earth-Mars Perihelion Opposition", is_active: false },
+  { corridor_id: "mars_ceres", name: "Martian-Ceres Belt Opposition", is_active: true, rounds_remaining: 1 },
+  { corridor_id: "earth_ceres", name: "Sol Direct Corridor", is_active: false }
+];
+
+let circuitBreakerHalts = [];
+
+// Three.js Scene Setup
+const container = document.getElementById("webgl-container");
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x07030e, 0.0009);
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 5000);
+camera.position.set(0, 180, 240);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, logarithmicDepthBuffer: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setClearColor(0x07030e, 1);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.2;
+container.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.maxDistance = 900;
+controls.minDistance = 8;
+controls.target.set(0, 0, 0);
+
+// Lighting
+const ambientLight = new THREE.AmbientLight(0x221738, 1.8);
+scene.add(ambientLight);
+
+const sunLight = new THREE.PointLight(0xfffaed, 3.5, 3000, 0);
+sunLight.position.set(0, 0, 0);
+scene.add(sunLight);
+
+// Background Starfield
+function createStarfield() {
+  const count = 3000;
+  const geometry = new THREE.BufferGeometry();
+  const positions = new Float32Array(count * 3);
+  const colors = new Float32Array(count * 3);
+
+  for (let i = 0; i < count; i++) {
+    const r = 1200 + Math.random() * 800;
+    const theta = Math.random() * Math.PI * 2;
+    const phi = Math.acos((Math.random() * 2) - 1);
+
+    positions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+    positions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+    positions[i * 3 + 2] = r * Math.cos(phi);
+
+    const c = Math.random();
+    if (c > 0.7) {
+      colors[i * 3] = 0.75; colors[i * 3 + 1] = 0.52; colors[i * 3 + 2] = 0.98; // purple tint
+    } else if (c > 0.4) {
+      colors[i * 3] = 0.36; colors[i * 3 + 1] = 0.88; colors[i * 3 + 2] = 0.90; // cyan tint
+    } else {
+      colors[i * 3] = 0.95; colors[i * 3 + 1] = 0.95; colors[i * 3 + 2] = 1.0;
+    }
+  }
+
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+  const material = new THREE.PointsMaterial({ size: 2.2, vertexColors: true, transparent: true, opacity: 0.85 });
+  const points = new THREE.Points(geometry, material);
+  scene.add(points);
+}
+createStarfield();
+
+// Coordinate System Grid Plane (Astrodynamics Ecliptic Plane)
+const gridHelper = new THREE.GridHelper(600, 40, 0x6b21a8, 0x22133a);
+gridHelper.position.y = -0.5;
+scene.add(gridHelper);
+
+// Celestial Objects & Trajectory Meshes
+const celestialMeshes = {};
+const orbitLines = new THREE.Group();
+scene.add(orbitLines);
+
+const hitProxies = []; // Invisible bounding spheres for raycasting
+
+// Build Celestial Bodies & Orbit Arcs
+function initCelestialBodies() {
+  const sphereGeo = new THREE.SphereGeometry(1, 32, 32);
+
+  // 1. Sol (Center)
+  const sunMat = new THREE.MeshStandardMaterial({
+    color: 0xffea75,
+    emissive: 0xffaa00,
+    emissiveIntensity: 1.8,
+    roughness: 0.2
+  });
+  const sunMesh = new THREE.Mesh(sphereGeo, sunMat);
+  sunMesh.scale.setScalar(CELESTIAL_DATA.sun.radius);
+  scene.add(sunMesh);
+  celestialMeshes.sun = sunMesh;
+
+  // Sun Glow Halo (Sprite)
+  const haloGeo = new THREE.SphereGeometry(CELESTIAL_DATA.sun.radius * 1.35, 16, 16);
+  const haloMat = new THREE.MeshBasicMaterial({
+    color: 0xffaa00,
+    transparent: true,
+    opacity: 0.25,
+    wireframe: true
+  });
+  sunMesh.add(new THREE.Mesh(haloGeo, haloMat));
+
+  // 2. Planets & Moon
+  for (const [key, data] of Object.entries(CELESTIAL_DATA)) {
+    if (key === "sun") continue;
+
+    const mat = new THREE.MeshStandardMaterial({
+      color: data.color,
+      emissive: data.emissive,
+      emissiveIntensity: 0.35,
+      roughness: 0.6,
+      metalness: 0.2
+    });
+    const mesh = new THREE.Mesh(sphereGeo, mat);
+    mesh.scale.setScalar(data.radius);
+
+    if (data.parent) {
+      // Moon attached logically in loop update
+      scene.add(mesh);
+    } else {
+      scene.add(mesh);
+
+      // Orbital Trajectory Line (Elliptical)
+      const r = data.au * AU_SCALE;
+      const points = [];
+      const segments = 128;
+      for (let i = 0; i <= segments; i++) {
+        const theta = (i / segments) * Math.PI * 2;
+        points.push(new THREE.Vector3(Math.cos(theta) * r, 0, Math.sin(theta) * r));
+      }
+      const orbitGeo = new THREE.BufferGeometry().setFromPoints(points);
+      const orbitMat = new THREE.LineBasicMaterial({
+        color: data.color,
+        transparent: true,
+        opacity: 0.35
+      });
+      const orbitLine = new THREE.LineLoop(orbitGeo, orbitMat);
+      orbitLines.add(orbitLine);
+    }
+
+    celestialMeshes[key] = mesh;
+
+    // Invisible larger hit proxy for effortless raycast clicking
+    const proxyGeo = new THREE.SphereGeometry(data.radius * 2.8, 12, 12);
+    const proxyMat = new THREE.MeshBasicMaterial({ visible: false });
+    const proxyMesh = new THREE.Mesh(proxyGeo, proxyMat);
+    proxyMesh.userData = { entityKey: key };
+    mesh.add(proxyMesh);
+    hitProxies.push(proxyMesh);
+  }
+
+  // Sun hit proxy
+  const sunProxyGeo = new THREE.SphereGeometry(CELESTIAL_DATA.sun.radius * 1.5, 12, 12);
+  const sunProxyMesh = new THREE.Mesh(sunProxyGeo, new THREE.MeshBasicMaterial({ visible: false }));
+  sunProxyMesh.userData = { entityKey: "sun" };
+  sunMesh.add(sunProxyMesh);
+  hitProxies.push(sunProxyMesh);
+}
+initCelestialBodies();
+
+// Instanced Asteroid Belt (Main Asteroid Belt between Mars & Ceres)
+let asteroidInstancedMesh;
+const ASTEROID_COUNT = 1100;
+const asteroidData = [];
+
+function initAsteroidBelt() {
+  const rockGeo = new THREE.DodecahedronGeometry(0.5, 0);
+  const rockMat = new THREE.MeshStandardMaterial({
+    color: 0x8b72a8,
+    roughness: 0.9,
+    metalness: 0.1
+  });
+
+  asteroidInstancedMesh = new THREE.InstancedMesh(rockGeo, rockMat, ASTEROID_COUNT);
+  const dummy = new THREE.Object3D();
+
+  for (let i = 0; i < ASTEROID_COUNT; i++) {
+    const auDist = 2.15 + Math.random() * 1.15; // 2.15 AU to 3.30 AU
+    const r = auDist * AU_SCALE;
+    const theta = Math.random() * Math.PI * 2;
+    const yOffset = (Math.random() - 0.5) * 8.0; // Incline spread
+    const scale = 0.4 + Math.random() * 0.9;
+    const speed = (0.0008 / Math.sqrt(auDist)) * (0.85 + Math.random() * 0.3);
+
+    asteroidData.push({ r, theta, yOffset, speed, scale });
+
+    dummy.position.set(Math.cos(theta) * r, yOffset, Math.sin(theta) * r);
+    dummy.scale.setScalar(scale);
+    dummy.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+    dummy.updateMatrix();
+
+    asteroidInstancedMesh.setMatrixAt(i, dummy.matrix);
+  }
+
+  asteroidInstancedMesh.instanceMatrix.needsUpdate = true;
+  scene.add(asteroidInstancedMesh);
+}
+initAsteroidBelt();
+
+// Dynamic Hohmann Transfer Arcs
+const transferLinesGroup = new THREE.Group();
+scene.add(transferLinesGroup);
+
+function updateTransferArcs() {
+  while (transferLinesGroup.children.length > 0) {
+    const obj = transferLinesGroup.children[0];
+    obj.geometry.dispose();
+    obj.material.dispose();
+    transferLinesGroup.remove(obj);
+  }
+
+  // Draw active windows
+  orbitalWindows.forEach(w => {
+    if (!w.is_active) return;
+    const [origKey, destKey] = w.corridor_id.split("_");
+    const origMesh = celestialMeshes[origKey];
+    const destMesh = celestialMeshes[destKey];
+    if (!origMesh || !destMesh) return;
+
+    const start = origMesh.position;
+    const end = destMesh.position;
+
+    // Curved transfer trajectory arc
+    const mid = new THREE.Vector3().addVectors(start, end).multiplyScalar(0.5);
+    mid.y += 25.0; // Arc loft in ecliptic frame
+
+    const curve = new THREE.QuadraticBezierCurve3(start, mid, end);
+    const pts = curve.getPoints(40);
+    const geom = new THREE.BufferGeometry().setFromPoints(pts);
+    const mat = new THREE.LineDashedMaterial({
+      color: 0x5ce1e6,
+      dashSize: 3,
+      gapSize: 1.5,
+      transparent: true,
+      opacity: 0.85
+    });
+    const line = new THREE.Line(geom, mat);
+    line.computeLineDistances();
+    transferLinesGroup.add(line);
+  });
+}
+
+// In-Transit Fleet Ship Markers
+const fleetMarkersGroup = new THREE.Group();
+scene.add(fleetMarkersGroup);
+
+function updateFleetPositions() {
+  while (fleetMarkersGroup.children.length > 0) {
+    const obj = fleetMarkersGroup.children[0];
+    fleetMarkersGroup.remove(obj);
+  }
+
+  fleetLocations.forEach(f => {
+    if (f.status === "in_transit" && f.transit) {
+      const orig = celestialMeshes[f.transit.origin];
+      const dest = celestialMeshes[f.transit.destination];
+      if (!orig || !dest) return;
+
+      const totalRounds = Math.max(1, f.transit.arrival_round - f.transit.departure_round);
+      const prog = Math.min(1.0, Math.max(0.0, (simState.currentRound - f.transit.departure_round + 0.5) / totalRounds));
+
+      // Ship Marker Mesh (Arrow Cone)
+      const shipGeo = new THREE.ConeGeometry(1.2, 3.5, 6);
+      const shipMat = new THREE.MeshStandardMaterial({
+        color: 0x5ce1e6,
+        emissive: 0x258387,
+        emissiveIntensity: 0.8
+      });
+      const shipMesh = new THREE.Mesh(shipGeo, shipMat);
+
+      const pos = new THREE.Vector3().lerpVectors(orig.position, dest.position, prog);
+      pos.y += Math.sin(prog * Math.PI) * 15; // Flight loft
+      shipMesh.position.copy(pos);
+      shipMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dest.position.clone().sub(orig.position).normalize());
+
+      fleetMarkersGroup.add(shipMesh);
+    }
+  });
+}
+
+// Raycaster Interaction & Tooltip System
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2(-999, -999);
+const tooltip = document.getElementById("floating-tooltip");
+const ttName = document.getElementById("tt-name");
+const ttDetails = document.getElementById("tt-details");
+
+window.addEventListener("pointermove", (e) => {
+  pointer.x = (e.clientX / window.innerWidth) * 2 - 1;
+  pointer.y = -(e.clientY / window.innerHeight) * 2 + 1;
+
+  tooltip.style.left = e.clientX + "px";
+  tooltip.style.top = e.clientY + "px";
+});
+
+window.addEventListener("pointerdown", (e) => {
+  // Only trigger if clicking canvas directly
+  if (e.target.closest(".hud-card, .hud-top-center")) return;
+
+  raycaster.setFromCamera(pointer, camera);
+  const intersects = raycaster.intersectObjects(hitProxies, false);
+
+  if (intersects.length > 0) {
+    const key = intersects[0].object.userData.entityKey;
+    if (key) selectFocus(key);
+  }
+});
+
+// Focus Selection & Camera Tracking
+window.selectFocus = function(targetKey) {
+  simState.targetFocus = targetKey;
+
+  // Update button active states
+  document.querySelectorAll(".target-btn").forEach(btn => {
+    btn.classList.toggle("active", btn.getAttribute("data-target") === targetKey);
+  });
+
+  const modeEl = document.getElementById("stat-cam-mode");
+  if (targetKey === "sun") {
+    modeEl.textContent = "TRACKING: SOL";
+  } else if (targetKey) {
+    modeEl.textContent = "TRACKING: " + targetKey.toUpperCase();
+  }
+
+  // Update Inspector Card
+  updateInspector(targetKey);
+};
+
+window.resetSystemView = function() {
+  simState.targetFocus = null;
+  document.querySelectorAll(".target-btn").forEach(btn => btn.classList.remove("active"));
+  document.querySelector('[data-target="system"]').classList.add("active");
+  document.getElementById("stat-cam-mode").textContent = "FREE ORBIT";
+
+  // Smooth reset camera position & target
+  controls.target.set(0, 0, 0);
+  camera.position.set(0, 180, 240);
+};
+
+function updateInspector(targetKey) {
+  const data = CELESTIAL_DATA[targetKey];
+  if (!data) return;
+
+  document.getElementById("insp-name").textContent = data.name;
+  document.getElementById("insp-type").textContent = data.type;
+
+  document.getElementById("insp-au").textContent = data.au ? data.au.toFixed(2) + " AU" : (data.parent ? "0.002 AU (LUNAR)" : "0.00 AU");
+  document.getElementById("insp-period").textContent = data.period ? (data.period / 365.25).toFixed(2) + " Earth Yrs" : "STATIONARY";
+
+  const prices = stationPrices[targetKey];
+  if (prices) {
+    document.getElementById("insp-prices").textContent = `FRAG: ${prices.FRAG.toFixed(0)} · FUEL: ${prices.FUEL.toFixed(0)}`;
+  } else {
+    document.getElementById("insp-prices").textContent = "-- CR";
+  }
+
+  const isHalted = circuitBreakerHalts.some(h => (h.station_id || "").toLowerCase() === targetKey);
+  const statusEl = document.getElementById("insp-status");
+  if (isHalted) {
+    statusEl.textContent = "⚠️ TRADING HALTED (LULD)";
+    statusEl.className = "data-val red";
+  } else {
+    statusEl.textContent = "NOMINAL (10% LULD)";
+    statusEl.className = "data-val green";
+  }
+
+  // Fleets docked
+  const docked = fleetLocations.filter(f => f.station_id === targetKey).map(f => f.agent_id.toUpperCase());
+  document.getElementById("insp-fleets").textContent = docked.length > 0 ? docked.join(", ") : "None";
+}
+
+// UI Controls
+window.toggleSimPause = function() {
+  simState.paused = !simState.paused;
+  document.getElementById("btn-pause").textContent = simState.paused ? "RESUME" : "PAUSE";
+};
+
+window.toggleTrajectories = function() {
+  simState.showTrajectories = !simState.showTrajectories;
+  orbitLines.visible = simState.showTrajectories;
+  transferLinesGroup.visible = simState.showTrajectories;
+};
+
+window.toggleAsteroids = function() {
+  simState.showAsteroids = !simState.showAsteroids;
+  if (asteroidInstancedMesh) asteroidInstancedMesh.visible = simState.showAsteroids;
+};
+
+window.updateSimSpeed = function(val) {
+  simState.speed = parseFloat(val);
+  document.getElementById("sim-speed-val").textContent = simState.speed.toFixed(1) + "x";
+};
+
+// Telemetry Poller
+async function fetchTelemetry() {
+  async function apiFetch(endpoint) {
+    let res = await fetch(endpoint, { cache: "no-store" }).catch(() => null);
+    if (!res || !res.ok) {
+      res = await fetch("https://agora-banana-production.up.railway.app" + endpoint, { cache: "no-store" }).catch(() => null);
+    }
+    return res && res.ok ? res.json() : null;
+  }
+
+  const locs = await apiFetch("/stations/locations");
+  if (locs && locs.locations) fleetLocations = locs.locations;
+
+  const wins = await apiFetch("/stations/windows");
+  if (wins && wins.windows) {
+    orbitalWindows = wins.windows;
+    if (wins.current_round) {
+      simState.currentRound = wins.current_round;
+      document.getElementById("stat-round").textContent = "ROUND " + simState.currentRound;
+    }
+    const openCount = orbitalWindows.filter(w => w.is_active).length;
+    document.getElementById("stat-windows").textContent = openCount + " OPEN";
+  }
+
+  const halts = await apiFetch("/circuit_breaker/halts?status=halted");
+  if (halts && halts.halts) circuitBreakerHalts = halts.halts;
+
+  const pData = await apiFetch("/stations/prices");
+  if (pData) {
+    const rawPrices = (pData.data && pData.data.prices) ? pData.data.prices : (pData.data || pData.prices);
+    if (rawPrices && typeof rawPrices === "object") {
+      Object.assign(stationPrices, rawPrices);
+    }
+  }
+
+  updateTransferArcs();
+  updateFleetPositions();
+  if (simState.targetFocus) updateInspector(simState.targetFocus);
+}
+
+// Render Animation Loop
+let lastTime = performance.now();
+let frameCount = 0;
+let lastFpsUpdate = performance.now();
+const dummyObj = new THREE.Object3D();
+
+function animate(currentTime) {
+  requestAnimationFrame(animate);
+
+  const delta = Math.min((currentTime - lastTime) / 1000, 0.1);
+  lastTime = currentTime;
+
+  // FPS Counter
+  frameCount++;
+  if (currentTime - lastFpsUpdate > 1000) {
+    document.getElementById("stat-fps").textContent = Math.round((frameCount * 1000) / (currentTime - lastFpsUpdate)) + " FPS";
+    frameCount = 0;
+    lastFpsUpdate = currentTime;
+  }
+
+  // Advance Simulation Time
+  if (!simState.paused) {
+    simState.time += delta * 0.4 * simState.speed;
+  }
+
+  // Update Planetary Coordinates (Astrodynamics)
+  for (const [key, data] of Object.entries(CELESTIAL_DATA)) {
+    if (key === "sun") continue;
+    const mesh = celestialMeshes[key];
+    if (!mesh) continue;
+
+    if (data.parent) {
+      // Moon orbiting Earth
+      const earthMesh = celestialMeshes[data.parent];
+      if (earthMesh) {
+        const lunarTheta = simState.time * (365.25 / data.period) * 0.8;
+        mesh.position.set(
+          earthMesh.position.x + Math.cos(lunarTheta) * data.orbitalDist,
+          earthMesh.position.y,
+          earthMesh.position.z + Math.sin(lunarTheta) * data.orbitalDist
+        );
+      }
+    } else {
+      // Heliocentric Orbit
+      const r = data.au * AU_SCALE;
+      const theta = simState.time * Math.sqrt(1 / (data.au * data.au * data.au)) * 0.5;
+      mesh.position.set(Math.cos(theta) * r, 0, Math.sin(theta) * r);
+    }
+  }
+
+  // Animate Asteroid Belt Particles
+  if (asteroidInstancedMesh && simState.showAsteroids && !simState.paused) {
+    for (let i = 0; i < ASTEROID_COUNT; i++) {
+      const ast = asteroidData[i];
+      ast.theta += ast.speed * simState.speed;
+
+      dummyObj.position.set(Math.cos(ast.theta) * ast.r, ast.yOffset, Math.sin(ast.theta) * ast.r);
+      dummyObj.scale.setScalar(ast.scale);
+      dummyObj.rotation.y += 0.01;
+      dummyObj.updateMatrix();
+
+      asteroidInstancedMesh.setMatrixAt(i, dummyObj.matrix);
+    }
+    asteroidInstancedMesh.instanceMatrix.needsUpdate = true;
+  }
+
+  // Camera Target Follow
+  if (simState.targetFocus) {
+    const focusMesh = celestialMeshes[simState.targetFocus];
+    if (focusMesh) {
+      controls.target.lerp(focusMesh.position, 0.08);
+    }
+  }
+
+  // Hover Raycasting for Tooltip
+  raycaster.setFromCamera(pointer, camera);
+  const intersects = raycaster.intersectObjects(hitProxies, false);
+
+  if (intersects.length > 0) {
+    const key = intersects[0].object.userData.entityKey;
+    const data = CELESTIAL_DATA[key];
+    if (data) {
+      tooltip.style.display = "block";
+      ttName.textContent = data.name;
+      ttDetails.textContent = data.au ? `${data.au.toFixed(2)} AU · Click to Track` : `Central Star · Click to Track`;
+    }
+  } else {
+    tooltip.style.display = "none";
+  }
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+// Window Resize Handler
+window.addEventListener("resize", () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// Initialization
+selectFocus("ceres");
+fetchTelemetry();
+setInterval(fetchTelemetry, 6000);
+requestAnimationFrame(animate);
+</script>
+</body>
+</html>
