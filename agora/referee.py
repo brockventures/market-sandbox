@@ -53,6 +53,7 @@ class AgoraReferee:
         self.galnet = galnet or GalNetEngine()
         self.spatial = spatial or StationPriceEngine()
         self.depots_enabled = depots
+        self.asymmetric_enabled = asymmetric
         self.current_round: int = 0
         self.last_price: Optional[int] = None
         self.last_qty: Optional[int] = None
@@ -61,7 +62,7 @@ class AgoraReferee:
         self.floor: str = 'open'
         # Multi-station order books across Sol nodes, supporting commodities and equities
         self.books: Dict[str, Dict[str, OrderBook]] = {
-            st: {comm: OrderBook(instrument=comm) for comm in ('FRAG', 'BANANA', 'FUEL', *EQUITY_SYMBOLS)}
+            st: {comm: OrderBook(instrument=comm) for comm in (*COMMODITIES, 'BANANA', *EQUITY_SYMBOLS)}
             for st in STATIONS
         }
         self.book = self.books['ceres'][self.default_instrument if self.default_instrument in self.books['ceres'] else 'FRAG']
@@ -380,7 +381,7 @@ class AgoraReferee:
         self.last_quantities = {}
         self.floor = 'open'
         self.books = {
-            st: {comm: OrderBook(instrument=comm) for comm in ('FRAG', 'BANANA', 'FUEL', *EQUITY_SYMBOLS)}
+            st: {comm: OrderBook(instrument=comm) for comm in (*COMMODITIES, 'BANANA', *EQUITY_SYMBOLS)}
             for st in STATIONS
         }
         self.book = self.books['ceres'][self.default_instrument if self.default_instrument in self.books['ceres'] else 'FRAG']
@@ -391,7 +392,7 @@ class AgoraReferee:
     def reset_to_genesis(
         self,
         depots: Optional[bool] = None,
-        asymmetric: bool = False,
+        asymmetric: Optional[bool] = None,
         spawn_map: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """
@@ -402,6 +403,7 @@ class AgoraReferee:
         """
         if depots is not None:
             self.depots_enabled = depots
+        self.asymmetric_enabled = asymmetric
         if asymmetric or spawn_map:
             mapping = spawn_map or ASYMMETRIC_SPAWN_LOCATIONS
             with self.lock, self.conn:
@@ -424,7 +426,7 @@ class AgoraReferee:
         seed: Optional[int] = None,
         warmup_rounds: Optional[int] = None,
         depots: Optional[bool] = None,
-        asymmetric: bool = False,
+        asymmetric: Optional[bool] = None,
         spawn_map: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """
@@ -436,6 +438,7 @@ class AgoraReferee:
         """
         if depots is not None:
             self.depots_enabled = depots
+        self.asymmetric_enabled = asymmetric
         if asymmetric or spawn_map:
             mapping = spawn_map or ASYMMETRIC_SPAWN_LOCATIONS
             with self.lock, self.conn:
@@ -1203,7 +1206,7 @@ class AgoraReferee:
         if not all([order_id, agent_id, instrument, side, qty is not None, limit_price is not None]):
             return self._reject_envelope(order_id or 'unknown', agent_id or 'unknown', 'invalid_format', 'Missing required order fields')
 
-        if instrument not in ('FRAG', 'BANANA', 'FUEL') and instrument not in EQUITY_SYMBOLS:
+        if instrument not in COMMODITIES and instrument != 'BANANA' and instrument not in EQUITY_SYMBOLS:
             return self._reject_envelope(order_id or 'unknown', agent_id or 'unknown', 'invalid_format', f"Unsupported instrument: {instrument}")
 
         if side not in ('bid', 'ask'):
@@ -1342,7 +1345,7 @@ class AgoraReferee:
         )
 
         # Check if station book is currently halted by circuit breaker (commodities only)
-        is_commodity = instrument.upper() in ('FRAG', 'FUEL', 'BANANA') and not instrument.upper().startswith('EQ_')
+        is_commodity = (instrument.upper() in COMMODITIES or instrument.upper() == 'BANANA') and not instrument.upper().startswith('EQ_')
         if is_commodity and self.circuit_breaker.is_halted(order_station, instrument):
             halt_info = self.circuit_breaker.get_active_halt(order_station, instrument)
             with self.conn:
@@ -1832,7 +1835,11 @@ class AgoraReferee:
                 row = cur.fetchone()
                 if not row:
                     txn_id = f"genesis-depot-{st}"
-                    for inst, amt in [('CR', initial_cr), ('FRAG', initial_qty), ('FUEL', initial_qty)]:
+                    for inst, amt in [('CR', initial_cr), *[(c, initial_qty) for c in COMMODITIES]]:
+                        self.conn.execute(
+                            "INSERT INTO accounts (agent_id, instrument, balance) VALUES ('SYSTEM', ?, 0) ON CONFLICT(agent_id, instrument) DO NOTHING",
+                            (inst,)
+                        )
                         self.conn.execute(
                             "UPDATE accounts SET balance = balance - ? WHERE agent_id = 'SYSTEM' AND instrument = ?",
                             (amt, inst)
@@ -1864,7 +1871,7 @@ class AgoraReferee:
         round_num = getattr(self, 'current_round', 0)
         for st in STATIONS:
             depot_id = f"depot_{st}"
-            for comm in ('FRAG', 'FUEL'):
+            for comm in COMMODITIES:
                 # 1. Clear existing open depot orders for this station and commodity
                 if st in self.books and comm in self.books[st]:
                     book = self.books[st][comm]
@@ -1892,10 +1899,18 @@ class AgoraReferee:
                     bid_1, ask_1 = 10, 11
                 elif st == 'earth' and comm == 'FUEL':
                     bid_1, ask_1 = 8, 9
+                elif st == 'earth' and comm == 'FOOD':
+                    bid_1, ask_1 = 10, 11
+                elif st == 'earth' and comm == 'ORE':
+                    bid_1, ask_1 = 29, 31
                 elif st == 'ceres' and comm == 'FRAG':
                     bid_1, ask_1 = 21, 22
                 elif st == 'ceres' and comm == 'FUEL':
                     bid_1, ask_1 = 25, 26
+                elif st == 'ceres' and comm == 'FOOD':
+                    bid_1, ask_1 = 29, 31
+                elif st == 'ceres' and comm == 'ORE':
+                    bid_1, ask_1 = 10, 11
                 else:
                     mid = int(round(spot))
                     bid_1 = max(1, mid - 1)
@@ -1906,6 +1921,24 @@ class AgoraReferee:
                 if drift_offset != 0:
                     bid_1 = max(1, bid_1 + drift_offset)
                     ask_1 = max(bid_1 + 1, ask_1 + drift_offset)
+
+                if hasattr(self, 'circuit_breaker') and self.circuit_breaker:
+                    try:
+                        bands = self.circuit_breaker.get_bands(st, comm)
+                        if bands:
+                            low = bands.get('lower_limit')
+                            high = bands.get('upper_limit')
+                            if low is not None and high is not None:
+                                max_p = int(math.floor(high))
+                                min_p = int(math.ceil(low))
+                                if max_p >= min_p:
+                                    ask_1 = min(ask_1, max_p)
+                                    bid_1 = min(bid_1, ask_1 - 1)
+                                    bid_1 = max(min_p, bid_1)
+                                    if ask_1 <= bid_1:
+                                        ask_1 = bid_1 + 1
+                    except Exception:
+                        pass
 
                 bid_2 = max(1, bid_1 - 1)
                 ask_2 = ask_1 + 1
@@ -1946,7 +1979,7 @@ class AgoraReferee:
         res = {'depots_enabled': self.depots_enabled, 'stations': {}}
         for st in STATIONS:
             res['stations'][st] = {}
-            for comm in ('FRAG', 'FUEL'):
+            for comm in COMMODITIES:
                 spot = self.spatial.get_station_price(st, comm) if self.spatial else BASE_PRICES[st][comm]
                 book = self.books.get(st, {}).get(comm)
                 depot_bids = [o for o in (book.bids if book else []) if o.agent_id == f"depot_{st}"]
