@@ -613,6 +613,14 @@ class TestAgoraServer(unittest.TestCase):
             self.assertIn('LOWER LULD:', body)
             self.assertIn('UPPER LULD:', body)
             self.assertIn('market-halt-badge', body)
+            self.assertIn('hud-nav-bar', body)
+            self.assertIn('switchHudTab', body)
+            self.assertIn('tab-btn-leaderboard', body)
+            self.assertIn('tab-btn-orbital-radar', body)
+            self.assertIn('tab-btn-market', body)
+            self.assertIn('tab-btn-corporate-warfare', body)
+            self.assertIn('tab-btn-all', body)
+            self.assertIn('terminal-section-pane', body)
 
     def test_orrery_standalone_endpoint(self):
         """Verify /orrery and /orrery.html serve public/orrery.html."""

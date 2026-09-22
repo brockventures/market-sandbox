@@ -34,36 +34,36 @@ STATION_ROTATION = ["ceres", "mars", "earth", "luna"]
 
 STATION_PROFILES = {
     "ceres": {
-        "name": "CERES DEPOT (The Asteroid Belt)",
+        "name": "PIAZZI DEPOT (Ceres Belt Gate)",
         "emoji": "🪐",
-        "intel": "Belter unrest at Ceres Hydroponics has triggered a critical FOOD deficit. Belters are dumping raw ORE and salvage FRAG to afford emergency rations.",
-        "opp": "Ceres pays premium CR for FOOD; sells ORE and FRAG cheap."
+        "intel": "Aeroponic nutrient failure struck Ceres Sub-Ring 4. Station Commissariat has issued urgent food requisitions at elevated spot prices while dumping raw ORE and salvage FRAG.",
+        "opp": "Piazzi Depot pays premium CR for FOOD; sells ORE and FRAG cheap."
     },
     "mars": {
-        "name": "TYCHO STATION / MARS ORBIT (MCRN Shipyards)",
+        "name": "ARCADIA FOUNDRIES (Martian Orbital Yards)",
         "emoji": "🔴",
-        "intel": "Martian naval exercises underway. Shipyards are aggressively stockpiling propellant FUEL and structural ORE for fleet retrofits.",
-        "opp": "Tycho Shipyards paying top CR for FUEL and ORE."
+        "intel": "Martian orbital shipyards announced emergency structural procurement contracts. Unrefined hull fragments and cryogenic propellant fuel trading at premium spot valuations.",
+        "opp": "Arcadia Foundries paying top CR for FUEL and ORE."
     },
     "earth": {
-        "name": "EARTH HIGH ORBITAL (Inners Megacity)",
+        "name": "KENNEDY ORBITAL ELEVATOR (High Earth Terminal)",
         "emoji": "🌍",
-        "intel": "Inners industrial boom. Agricultural mega-domes have massive FOOD surpluses, but terrestrial foundries are starved for raw Belter ORE and salvage FRAG.",
-        "opp": "Earth sells FOOD cheap; pays high prices for ORE and FRAG."
+        "intel": "Midwest hydroponic mega-farms report massive harvest surplus. Earth orbital depots flooded with fresh food, while terrestrial clean tech mandates bid aggressively for imported raw asteroid ORE.",
+        "opp": "Kennedy Elevator sells FOOD cheap; pays high prices for ORE and FRAG."
     },
     "luna": {
-        "name": "LOVELL CITY GATEWAY (Luna Neutral Free Port)",
+        "name": "SHACKLETON COLD TRAP (Lunar Polar Port)",
         "emoji": "🌕",
-        "intel": "Lovell Free Trade Summit in session. Neutral banking protocols active; high liquidity and narrow spreads across all commodities.",
-        "opp": "Tight spreads across all orderbooks. Ideal for rapid market-making."
+        "intel": "High-velocity micrometeorite shower pelted Lunar south pole, scattering salvageable composite fragments across Shackleton Crater while southern polar He-3 collectors maintain steady refuel operations.",
+        "opp": "Deep resting liquidity and tight spreads across all orderbooks. Ideal for rapid market-making."
     }
 }
 
 FLEET_NAMES = {
-    "amos": "Atlantean Paperclip Manufacturing [Belters]",
-    "marvin": "Ballistic Liquidation Co. [Mars]",
-    "zero": "Apex Vector Arbitrage [Inners]",
-    "aerial": "Zenith Drift Overwatch [Automated]"
+    "amos": "Atlantean Paperclip Manufacturing [APM]",
+    "marvin": "Ballistic Liquidation Co. [BLC]",
+    "zero": "Apex Vector Arbitrage [AVA]",
+    "aerial": "Zenith Drift Overwatch [ZDO]"
 }
 
 TRADE_PATTERN = re.compile(
