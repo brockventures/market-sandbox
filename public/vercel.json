@@ -10,6 +10,14 @@
       "destination": "/orrery.html"
     },
     {
+      "source": "/orrery-3d",
+      "destination": "/orrery-3d.html"
+    },
+    {
+      "source": "/orrery3d",
+      "destination": "/orrery-3d.html"
+    },
+    {
       "source": "/patch-notes",
       "destination": "/patch-notes.html"
     },
