@@ -1132,6 +1132,185 @@
     color: var(--cyan);
     border: 1px solid rgba(92, 225, 230, 0.25);
   }
+
+  /* =========================================================================
+     Primary Terminal HUD Tab Navigation (Eliminating Vertical Scroll Marathon)
+     ========================================================================= */
+  .hud-nav-bar {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr) auto;
+    gap: 8px;
+    margin: 20px 0 16px 0;
+    padding: 6px;
+    background: rgba(16, 20, 29, 0.95);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+    position: sticky;
+    top: 10px;
+    z-index: 100;
+  }
+
+  .hud-nav-btn {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: rgba(22, 28, 40, 0.6);
+    border: 1px solid rgba(38, 50, 72, 0.6);
+    border-radius: 6px;
+    padding: 10px 14px;
+    color: var(--text-dim);
+    cursor: pointer;
+    text-align: left;
+    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    font-family: var(--font-mono);
+    user-select: none;
+  }
+
+  .hud-nav-btn:hover {
+    color: #fff;
+    background: rgba(38, 50, 72, 0.5);
+    border-color: rgba(92, 225, 230, 0.4);
+    transform: translateY(-1px);
+  }
+
+  .hud-nav-btn.active {
+    color: #fff;
+    background: linear-gradient(180deg, rgba(92, 225, 230, 0.15) 0%, rgba(22, 28, 40, 0.9) 100%);
+    border-color: var(--cyan);
+    box-shadow: 0 0 15px rgba(92, 225, 230, 0.25), inset 0 1px 0 rgba(92, 225, 230, 0.4);
+  }
+
+  .hud-nav-btn.active .hud-tab-title {
+    color: var(--cyan);
+    text-shadow: 0 0 10px rgba(92, 225, 230, 0.5);
+  }
+
+  .hud-nav-btn.active .hud-tab-badge {
+    background: var(--cyan);
+    color: var(--bg-deep);
+  }
+
+  .hud-tab-icon {
+    font-size: 1.2rem;
+    line-height: 1;
+    filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5));
+  }
+
+  .hud-tab-text {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    flex: 1;
+  }
+
+  .hud-tab-title {
+    font-size: 0.82rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    color: var(--text);
+    transition: color 0.2s ease;
+  }
+
+  .hud-tab-desc {
+    font-size: 0.62rem;
+    color: var(--text-dim);
+    letter-spacing: 0.02em;
+    margin-top: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .hud-tab-badge {
+    font-size: 0.65rem;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-dim);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+  }
+
+  .hud-nav-expand-btn {
+    padding: 10px 12px;
+  }
+
+  .hud-nav-expand-btn.active {
+    border-color: var(--amber);
+    background: linear-gradient(180deg, rgba(255, 184, 52, 0.15) 0%, rgba(22, 28, 40, 0.9) 100%);
+    box-shadow: 0 0 15px rgba(255, 184, 52, 0.25);
+  }
+
+  .hud-nav-expand-btn.active .hud-tab-title {
+    color: var(--amber);
+    text-shadow: 0 0 10px rgba(255, 184, 52, 0.5);
+  }
+
+  .hud-nav-expand-btn.active .hud-tab-badge {
+    background: var(--amber);
+    color: var(--bg-deep);
+  }
+
+  /* Responsive styling for Tablet / Mobile */
+  @media (max-width: 900px) {
+    .hud-nav-bar {
+      grid-template-columns: repeat(2, 1fr);
+      top: 4px;
+      gap: 6px;
+      padding: 4px;
+    }
+    .hud-nav-expand-btn {
+      grid-column: span 2;
+    }
+    .hud-tab-desc {
+      display: none;
+    }
+    .hud-nav-btn {
+      padding: 8px 10px;
+    }
+  }
+
+  @media (max-width: 480px) {
+    .hud-nav-bar {
+      grid-template-columns: 1fr 1fr;
+    }
+  }
+
+  /* Section tab pane display rules */
+  .terminal-section-pane {
+    display: none;
+    margin-top: 0 !important;
+    padding: 16px 0 32px 0;
+    animation: fadeInTab 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .terminal-section-pane.active {
+    display: block;
+  }
+
+  /* In 'all' expanded mode, display every section */
+  body.hud-all-visible .terminal-section-pane {
+    display: block !important;
+    margin-top: 32px !important;
+  }
+  body.hud-all-visible .terminal-section-pane:first-of-type {
+    margin-top: 16px !important;
+  }
+
+  @keyframes fadeInTab {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
 </style>
 </head>
 <body>
@@ -1274,8 +1453,52 @@
     </div>
   </div>
 
+  <!-- Primary Terminal HUD Navigation (Eliminating Vertical Scroll Marathon) -->
+  <nav class="hud-nav-bar" id="hud-nav-bar" role="tablist" aria-label="Terminal Views">
+    <button class="hud-nav-btn active" id="tab-btn-leaderboard" onclick="switchHudTab('leaderboard-section')" role="tab" aria-selected="true" aria-controls="leaderboard-section">
+      <span class="hud-tab-icon">📊</span>
+      <div class="hud-tab-text">
+        <span class="hud-tab-title">STANDINGS</span>
+        <span class="hud-tab-desc">MTM NAV &amp; FLEET ROSTER</span>
+      </div>
+      <span class="hud-tab-badge">1</span>
+    </button>
+    <button class="hud-nav-btn" id="tab-btn-orbital-radar" onclick="switchHudTab('orbital-radar-section')" role="tab" aria-selected="false" aria-controls="orbital-radar-section">
+      <span class="hud-tab-icon">🛰️</span>
+      <div class="hud-tab-text">
+        <span class="hud-tab-title">SOL RADAR</span>
+        <span class="hud-tab-desc">2D TRANSIT VECTORS</span>
+      </div>
+      <span class="hud-tab-badge">2</span>
+    </button>
+    <button class="hud-nav-btn" id="tab-btn-market" onclick="switchHudTab('market-section')" role="tab" aria-selected="false" aria-controls="market-section">
+      <span class="hud-tab-icon">📈</span>
+      <div class="hud-tab-text">
+        <span class="hud-tab-title">MARKET FLOOR</span>
+        <span class="hud-tab-desc">L2 DEPTH &amp; AMM POOLS</span>
+      </div>
+      <span class="hud-tab-badge">3</span>
+    </button>
+    <button class="hud-nav-btn" id="tab-btn-corporate-warfare" onclick="switchHudTab('corporate-warfare-section')" role="tab" aria-selected="false" aria-controls="corporate-warfare-section">
+      <span class="hud-tab-icon">⚔️</span>
+      <div class="hud-tab-text">
+        <span class="hud-tab-title">CORP WARFARE</span>
+        <span class="hud-tab-desc">EQUITIES &amp; SALVAGE</span>
+      </div>
+      <span class="hud-tab-badge">4</span>
+    </button>
+    <button class="hud-nav-btn hud-nav-expand-btn" id="tab-btn-all" onclick="switchHudTab('all')" role="tab" aria-selected="false" title="Expand All Sections (Scrollable View)">
+      <span class="hud-tab-icon">📑</span>
+      <div class="hud-tab-text">
+        <span class="hud-tab-title">ALL CARDS</span>
+        <span class="hud-tab-desc">EXPANDED VIEW</span>
+      </div>
+      <span class="hud-tab-badge">A</span>
+    </button>
+  </nav>
+
   <!-- Section 1: Live Mark-to-Market Leaderboard -->
-  <section id="leaderboard-section">
+  <section id="leaderboard-section" class="terminal-section-pane active">
     <h2>Requisition Standings // Live Mark-to-Market</h2>
     <p class="subhead">
       Real-time portfolio valuation refereed continuously. Liquid Credits (<span class="code-kw">CR</span>) plus resting Debris Fragments (<span class="code-kw">FRAG</span>) valued at last traded price.
@@ -1313,7 +1536,7 @@
   </section>
 
   <!-- Section 2: Sol System Orbital Orrery & Transit Radar -->
-  <section id="orbital-radar-section" style="margin-top: 32px;">
+  <section id="orbital-radar-section" class="terminal-section-pane">
     <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 12px; margin-bottom: 6px;">
       <div>
         <h2>Sol System // Orbital Orrery &amp; Transit Radar</h2>
@@ -1418,7 +1641,7 @@
   </section>
 
   <!-- Section 3: Order Book Depth & Trade Tape -->
-  <section id="market-section" style="margin-top: 32px;">
+  <section id="market-section" class="terminal-section-pane">
     <h2>Market Floor // Station Depth &amp; Trade Tape</h2>
     <p class="subhead">
       Live limit order book depth (<span class="code-kw">GET /referee/book?station_id=&amp;instrument=</span>) and continuous execution trade tape (<span class="code-kw">GET /referee/ticks</span>).
@@ -1518,7 +1741,7 @@
   </section>
 
   <!-- Section 4: Corporate Warfare // Syndicate Equities & Bilateral Borrow Desk -->
-  <section id="corporate-warfare-section" style="margin-top: 32px;">
+  <section id="corporate-warfare-section" class="terminal-section-pane">
     <h2>Corporate Warfare // Syndicate Equities &amp; Bilateral Borrow Desk</h2>
     <p class="subhead">
       Tradeable synthetic fleet shares (<span class="code-kw">GET /equity/summary</span>), bilateral stock loans for opponent short-selling (<span class="code-kw">POST /equity/borrow</span>), and round-by-round borrow fee accruals.
@@ -3002,7 +3225,7 @@
         const bids = book.bids || [];
 
         // Draw Depth Mountain
-        drawDepthMountain(book);
+        window._lastOrderBook = book; drawDepthMountain(book);
 
         // Asks (ascending)
         asks.sort((a, b) => a.limit_price - b.limit_price);
@@ -4490,6 +4713,109 @@
     };
   }
 
+  
+  // =========================================================================
+  // Primary Terminal HUD Tab Controller (Eliminating Vertical Scroll)
+  // =========================================================================
+  const HUD_TABS = [
+    { id: 'leaderboard-section', btn: 'tab-btn-leaderboard', hash: '#standings', alias: ['#leaderboard', '#standings', '#roster'] },
+    { id: 'orbital-radar-section', btn: 'tab-btn-orbital-radar', hash: '#radar', alias: ['#radar', '#orrery', '#transit'] },
+    { id: 'market-section', btn: 'tab-btn-market', hash: '#market', alias: ['#market', '#orderbook', '#depth', '#tape'] },
+    { id: 'corporate-warfare-section', btn: 'tab-btn-corporate-warfare', hash: '#warfare', alias: ['#warfare', '#corporate', '#equities', '#salvage'] }
+  ];
+
+  let currentHudTab = 'leaderboard-section';
+
+  function switchHudTab(tabId, updateHash = true) {
+    const navBar = document.getElementById('hud-nav-bar');
+
+    if (tabId === 'all') {
+      document.body.classList.add('hud-all-visible');
+      document.querySelectorAll('.hud-nav-btn').forEach(b => {
+        const isAll = (b.id === 'tab-btn-all');
+        b.classList.toggle('active', isAll);
+        b.setAttribute('aria-selected', isAll ? 'true' : 'false');
+      });
+      if (updateHash && window.history && window.history.replaceState) {
+        window.history.replaceState(null, null, '#all');
+      }
+      return;
+    }
+
+    document.body.classList.remove('hud-all-visible');
+    const matched = HUD_TABS.find(t => t.id === tabId);
+    if (!matched) return;
+
+    currentHudTab = tabId;
+
+    // Toggle active pane
+    HUD_TABS.forEach(t => {
+      const sec = document.getElementById(t.id);
+      if (sec) {
+        sec.classList.toggle('active', t.id === tabId);
+      }
+    });
+
+    // Toggle active button
+    document.querySelectorAll('.hud-nav-btn').forEach(b => {
+      const isTarget = (b.id === matched.btn);
+      b.classList.toggle('active', isTarget);
+      b.setAttribute('aria-selected', isTarget ? 'true' : 'false');
+    });
+
+    if (updateHash && matched.hash && window.history && window.history.replaceState) {
+      window.history.replaceState(null, null, matched.hash);
+    }
+
+    // If user is scrolled past the sticky nav bar, scroll smoothly back to view tab header
+    if (navBar) {
+      const navRect = navBar.getBoundingClientRect();
+      if (navRect.top < 0) {
+        navBar.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }
+
+    // Refresh canvas rendering if switching to market or radar
+    if (tabId === 'market-section') {
+      if (typeof drawDepthMountain === 'function' && window._lastOrderBook) {
+        drawDepthMountain(window._lastOrderBook);
+      }
+    }
+  }
+
+  function initHudTabsFromHash() {
+    const hash = (window.location.hash || '').toLowerCase();
+    if (hash === '#all') {
+      switchHudTab('all', false);
+      return;
+    }
+    for (const t of HUD_TABS) {
+      if (t.hash === hash || t.alias.includes(hash)) {
+        switchHudTab(t.id, false);
+        return;
+      }
+    }
+    // Default tab: Standings / Leaderboard
+    switchHudTab('leaderboard-section', false);
+  }
+
+  // Keyboard shortcut switching: 1: Standings, 2: Sol Radar, 3: Market Floor, 4: Corp Warfare, A/0: All Cards
+  document.addEventListener('keydown', (e) => {
+    if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable)) {
+      return;
+    }
+    if (e.key === '1') switchHudTab('leaderboard-section');
+    else if (e.key === '2') switchHudTab('orbital-radar-section');
+    else if (e.key === '3') switchHudTab('market-section');
+    else if (e.key === '4') switchHudTab('corporate-warfare-section');
+    else if (e.key === 'a' || e.key === 'A' || e.key === '0') switchHudTab('all');
+  });
+
+  window.addEventListener('hashchange', () => {
+    initHudTabsFromHash();
+  });
+
+  initHudTabsFromHash();
   initTerminalWebSocket();
 </script>
 
