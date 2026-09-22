@@ -13,7 +13,9 @@ Implements Section 3 endpoints of docs/wire-spec.md:
 import hmac
 import json
 import os
+import time
 import urllib.parse
+import uuid
 from http.server import ThreadingHTTPServer, HTTPServer, BaseHTTPRequestHandler
 from typing import Optional, Dict
 from agora.referee import AgoraReferee
@@ -41,6 +43,9 @@ def get_configured_tokens() -> Dict[str, str]:
     admin_val = os.environ.get('AGORA_ADMIN_TOKEN')
     if admin_val:
         tokens['admin'] = admin_val
+    combine_val = os.environ.get('AGORA_COMBINE_TOKEN', 'agora-combine-2026')
+    if combine_val:
+        tokens['combine'] = combine_val
     return tokens
 
 
@@ -964,7 +969,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 self._send_json(200, result)
             return
 
-        if path != '/referee/orders':
+        if path not in ('/referee/orders', '/referee/quick_order'):
             self._send_json(404, {'error': 'not_found', 'path': self.path})
             return
 
@@ -984,7 +989,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
 
         try:
             body = self.rfile.read(content_length)
-            envelope = json.loads(body.decode('utf-8'))
+            raw_data = json.loads(body.decode('utf-8'))
         except Exception as e:
             self._send_json(400, {
                 'v': 1, 'kind': 'reject',
@@ -992,10 +997,29 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             })
             return
 
-        # 2. Impersonation guard: payload agent_id must match authenticated agent
+        if path == '/referee/quick_order':
+            side_str = str(raw_data.get('side', '')).lower()
+            side = 'bid' if side_str in ('buy', 'bid') else 'ask'
+            envelope = {
+                'v': 1,
+                'kind': 'order',
+                'payload': {
+                    'agent_id': raw_data.get('agent_id'),
+                    'side': side,
+                    'qty': int(raw_data.get('qty', 0)),
+                    'limit_price': int(raw_data.get('limit_price', raw_data.get('price', 0))),
+                    'order_id': raw_data.get('order_id') or f"{raw_data.get('agent_id', 'ord')}-{int(time.time())}-{uuid.uuid4().hex[:6]}",
+                    'instrument': (raw_data.get('instrument') or raw_data.get('commodity') or 'FRAG').upper(),
+                    'station_id': (raw_data.get('station_id') or raw_data.get('station') or 'ceres').lower()
+                }
+            }
+        else:
+            envelope = raw_data
+
+        # 2. Impersonation guard: payload agent_id must match authenticated agent (admin and combine bypass)
         payload = envelope.get('payload', {})
         claimed_agent = payload.get('agent_id')
-        if auth_agent != 'admin' and claimed_agent != auth_agent:
+        if auth_agent not in ('admin', 'combine') and claimed_agent != auth_agent:
             self._send_json(403, {
                 'v': 1, 'kind': 'reject',
                 'payload': {

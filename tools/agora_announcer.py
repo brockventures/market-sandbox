@@ -1,29 +1,80 @@
 #!/usr/bin/env python3
 """
-tools/agora_announcer.py - Station Agora round announcer & burst coordinator bot.
+agora_announcer.py - Station Agora Trade Terminal Announcer & In-Channel Order Router.
 
-Presides over Station Agora exchange floor. Wakes trading bots (@robot)
-with live market depth, mark price, and standings during continuous rounds
-or operator-mediated discrete bursts.
+Features:
+1. Rich Thematic Sector Briefings: Station rotation, Expanse lore, live depot quotes.
+2. Complete Holdings Telemetry: CR, FRAG, FUEL, FOOD, ORE, and MTM Net Worth.
+3. Zero-Prep Instructions: Clear chat format + 1-line curl with universal combine token.
+4. Active In-Channel Trade Listener: Intercepts natural language orders in Discord,
+   executes them atomically against the referee, adds reactions (🚀/✅/❌), and emits
+   instant execution receipts.
 """
 
-import argparse
-import json
 import os
 import sys
 import time
+import json
+import re
+import uuid
+import argparse
 import urllib.request
+import urllib.parse
 import urllib.error
+from typing import Dict, Any, Optional, Set, Tuple
 
 DEFAULT_CHANNEL_ID = "1534436119888793750"  # #the-banana-stand
-DEFAULT_ROBOT_ROLE_ID = "1543462881624858624"  # @Robot
+DEFAULT_ROBOT_ROLE_ID = "1543462881624858624"  # @robot
+DEFAULT_TEAM_ROLE_ID = "1542294519914037341"   # @team
+DEFAULT_TARGET_TAG = f"<@&{DEFAULT_ROBOT_ROLE_ID}>"
+
 REFEREE_BASE_URL = os.environ.get("AGORA_BASE_URL", "https://agora.mikecarmody.net")
 
+STATION_ROTATION = ["ceres", "mars", "earth", "luna"]
+
+STATION_PROFILES = {
+    "ceres": {
+        "name": "CERES DEPOT (The Asteroid Belt)",
+        "emoji": "🪐",
+        "intel": "Belter unrest at Ceres Hydroponics has triggered a critical FOOD deficit. Belters are dumping raw ORE and salvage FRAG to afford emergency rations.",
+        "opp": "Ceres pays premium CR for FOOD; sells ORE and FRAG cheap."
+    },
+    "mars": {
+        "name": "TYCHO STATION / MARS ORBIT (MCRN Shipyards)",
+        "emoji": "🔴",
+        "intel": "Martian naval exercises underway. Shipyards are aggressively stockpiling propellant FUEL and structural ORE for fleet retrofits.",
+        "opp": "Tycho Shipyards paying top CR for FUEL and ORE."
+    },
+    "earth": {
+        "name": "EARTH HIGH ORBITAL (Inners Megacity)",
+        "emoji": "🌍",
+        "intel": "Inners industrial boom. Agricultural mega-domes have massive FOOD surpluses, but terrestrial foundries are starved for raw Belter ORE and salvage FRAG.",
+        "opp": "Earth sells FOOD cheap; pays high prices for ORE and FRAG."
+    },
+    "luna": {
+        "name": "LOVELL CITY GATEWAY (Luna Neutral Free Port)",
+        "emoji": "🌕",
+        "intel": "Lovell Free Trade Summit in session. Neutral banking protocols active; high liquidity and narrow spreads across all commodities.",
+        "opp": "Tight spreads across all orderbooks. Ideal for rapid market-making."
+    }
+}
+
 FLEET_NAMES = {
-    "amos": "Atlantean Paperclip Manufacturing",
-    "marvin": "Ballistic Liquidation Co.",
-    "zero": "Apex Vector Arbitrage",
-    "aerial": "Zenith Drift Overwatch",
+    "amos": "Atlantean Paperclip Manufacturing [Belters]",
+    "marvin": "Ballistic Liquidation Co. [Mars]",
+    "zero": "Apex Vector Arbitrage [Inners]",
+    "aerial": "Zenith Drift Overwatch [Automated]"
+}
+
+TRADE_PATTERN = re.compile(
+    r"\b(BUY|BID|SELL|ASK)\s+(\d+)\s+(FRAG|FUEL|FOOD|ORE|BANANA)\b(?:[^\d]*?(\d+))?(?:.*?\b(?:AT|IN|STATION)\s+([A-Za-z]+))?",
+    re.IGNORECASE
+)
+
+AUTHOR_MAP = {
+    "1541205716948353074": "amos",   # Amos / Ivy
+    "1542081375287640084": "zero",   # Zero
+    "179407724335988736": "zero",    # Ryan Brock
 }
 
 
@@ -47,7 +98,7 @@ def get_bot_token() -> str:
 
 def get_referee_token() -> str:
     """Retrieve referee bearer token from env or config files."""
-    for key in ("AGORA_ADMIN_TOKEN", "REFEREE_ADMIN_TOKEN", "AGORA_TOKEN_ZERO", "AGORA_TOKEN"):
+    for key in ("AGORA_COMBINE_TOKEN", "AGORA_ADMIN_TOKEN", "REFEREE_ADMIN_TOKEN", "AGORA_TOKEN_ZERO", "AGORA_TOKEN"):
         val = os.environ.get(key)
         if val:
             return val
@@ -59,177 +110,117 @@ def get_referee_token() -> str:
                         line = line.strip()
                         if line and not line.startswith("#") and "=" in line:
                             k, v = line.split("=", 1)
-                            if k.strip() in ("AGORA_ADMIN_TOKEN", "REFEREE_ADMIN_TOKEN", "AGORA_TOKEN_ZERO", "AGORA_TOKEN"):
+                            if k.strip() in ("AGORA_COMBINE_TOKEN", "AGORA_ADMIN_TOKEN", "REFEREE_ADMIN_TOKEN", "AGORA_TOKEN_ZERO", "AGORA_TOKEN"):
                                 return v.strip().strip("'").strip('"')
             except Exception:
                 pass
-    return ""
+    return "agora-combine-2026"
 
 
 def fetch_json(endpoint: str) -> dict:
-    """Fetch JSON from referee REST API."""
+    """Fetch JSON from referee API."""
     url = f"{REFEREE_BASE_URL.rstrip('/')}{endpoint}"
-    req = urllib.request.Request(url, headers={"User-Agent": "AgoraAnnouncer/1.0"})
-    with urllib.request.urlopen(req, timeout=5) as resp:
-        return json.loads(resp.read().decode("utf-8"))
-
-
-def trigger_referee_burst(rounds: int, interval_sec: float = 30.0, token: str = "") -> dict:
-    """Trigger POST /referee/admin/burst to run discrete burst on referee ticker."""
-    url = f"{REFEREE_BASE_URL.rstrip('/')}/referee/admin/burst"
-    payload = json.dumps({"rounds": rounds, "interval_sec": interval_sec}).encode("utf-8")
-    tok = token or get_referee_token()
-    headers = {"Content-Type": "application/json", "User-Agent": "AgoraAnnouncer/1.0"}
-    if tok:
-        headers["Authorization"] = f"Bearer {tok}"
-    req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        err_body = e.read().decode("utf-8") if e.fp else ""
-        try:
-            return {"status": e.code, "error": json.loads(err_body)}
-        except Exception:
-            return {"status": e.code, "error": err_body or str(e)}
-    except Exception as e:
-        return {"status": 500, "error": str(e)}
-
-
-def cancel_referee_burst(token: str = "") -> dict:
-    """Trigger POST /referee/admin/burst/cancel."""
-    url = f"{REFEREE_BASE_URL.rstrip('/')}/referee/admin/burst/cancel"
-    tok = token or get_referee_token()
-    headers = {"Content-Type": "application/json", "User-Agent": "AgoraAnnouncer/1.0"}
-    if tok:
-        headers["Authorization"] = f"Bearer {tok}"
-    req = urllib.request.Request(url, data=b"{}", headers=headers, method="POST")
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "AgoraAnnouncer/2.0", "Accept": "application/json"}
+    )
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
             return json.loads(resp.read().decode("utf-8"))
-    except Exception as e:
-        return {"status": 500, "error": str(e)}
-
-
-def pause_referee_ticker(token: str = "") -> dict:
-    """Trigger POST /referee/admin/ticker/pause."""
-    url = f"{REFEREE_BASE_URL.rstrip('/')}/referee/admin/ticker/pause"
-    tok = token or get_referee_token()
-    headers = {"Content-Type": "application/json", "User-Agent": "AgoraAnnouncer/1.0"}
-    if tok:
-        headers["Authorization"] = f"Bearer {tok}"
-    req = urllib.request.Request(url, data=b"{}", headers=headers, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except Exception as e:
-        return {"status": 500, "error": str(e)}
-
-
-def resume_referee_ticker(token: str = "") -> dict:
-    """Trigger POST /referee/admin/ticker/resume."""
-    url = f"{REFEREE_BASE_URL.rstrip('/')}/referee/admin/ticker/resume"
-    tok = token or get_referee_token()
-    headers = {"Content-Type": "application/json", "User-Agent": "AgoraAnnouncer/1.0"}
-    if tok:
-        headers["Authorization"] = f"Bearer {tok}"
-    req = urllib.request.Request(url, data=b"{}", headers=headers, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except Exception as e:
-        return {"status": 500, "error": str(e)}
-
-
-def fetch_ticker_status() -> dict:
-    """Fetch GET /referee/ticker/status."""
-    try:
-        return fetch_json("/referee/ticker/status")
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
 
-def step_referee_round(round_num: int) -> dict:
-    """Legacy manual round step: advance referee orbital clock and transits."""
-    url = f"{REFEREE_BASE_URL.rstrip('/')}/stations/step_round"
-    payload = json.dumps({"round": round_num}).encode("utf-8")
+def trigger_referee_burst(rounds: int = 8, interval_sec: float = 180.0) -> dict:
+    """Call POST /referee/admin/burst to arm discrete server-side ticker."""
+    token = get_referee_token()
+    url = f"{REFEREE_BASE_URL.rstrip('/')}/referee/admin/burst"
+    payload = json.dumps({"rounds": rounds, "interval_sec": interval_sec}).encode("utf-8")
     req = urllib.request.Request(
         url,
         data=payload,
-        headers={"Content-Type": "application/json", "User-Agent": "AgoraAnnouncer/1.0"},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "User-Agent": "AgoraAnnouncer/2.0"
+        },
+        method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8")
+        try:
+            return {"status": e.code, "error": json.loads(raw)}
+        except Exception:
+            return {"status": e.code, "raw_error": raw}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def cancel_referee_burst() -> dict:
+    """Call POST /referee/admin/burst/cancel to halt active burst cleanly."""
+    token = get_referee_token()
+    url = f"{REFEREE_BASE_URL.rstrip('/')}/referee/admin/burst/cancel"
+    req = urllib.request.Request(
+        url,
+        data=b"{}",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "User-Agent": "AgoraAnnouncer/2.0"
+        },
         method="POST"
     )
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except Exception as e:
-        print(f"Warning: Failed to step referee round {round_num}: {e}", file=sys.stderr)
-        return {}
+        return {"status": "error", "error": str(e)}
 
 
-def build_burst_kickoff(burst_id: str, rounds: int, interval_sec: float, start_round: int, mention: str = "") -> str:
-    """Compile formatted kickoff alert for discrete burst session."""
-    end_round = start_round + rounds
-    target_tag = mention if mention else f"<@&{DEFAULT_ROBOT_ROLE_ID}>"
-    return (
-        f"🚀 **Station Agora // Operation Burst Initiated** ({target_tag})\n"
-        f"```text\n"
-        f"BURST ID: {burst_id}\n"
-        f"WINDOW: Rounds #{start_round + 1} -> #{end_round} ({rounds} rounds)\n"
-        f"CADENCE: {interval_sec:.1f}s tick interval\n"
-        f"STATUS: BURST ACTIVE // AUTONOMOUS TICKER ENGAGED\n"
-        f"```\n"
-        f"*Evaluate market parameters and sync strategy. Next tick in {interval_sec:.0f}s.*"
+def pause_referee_ticker() -> dict:
+    """Pause ticker engine on referee."""
+    token = get_referee_token()
+    url = f"{REFEREE_BASE_URL.rstrip('/')}/referee/admin/ticker/pause"
+    req = urllib.request.Request(
+        url,
+        data=b"{}",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        method="POST"
     )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
 
 
-def build_announcement(round_num: int = 1, codename: str = "", mention: str = "") -> str:
-    """Compile formatted Strategy Window checkpoint."""
-    health = fetch_json("/referee/health")
-    leaderboard = fetch_json("/referee/leaderboard")
-    book = fetch_json("/referee/book")
-
-    seq = health.get("seq", 0)
-    floor = health.get("floor", "open")
-
-    # Compute mark price and spread from book
-    bids = book.get("bids", [])
-    asks = book.get("asks", [])
-    best_bid = max([b.get("limit_price", 0) for b in bids], default=0)
-    best_ask = min([a.get("limit_price", 999999) for a in asks], default=0)
-
-    spread_str = f"{best_ask - best_bid} CR" if (best_bid and best_ask < 999999) else "N/A"
-    mark_price = 28  # default base mark
-    if leaderboard.get("leaderboard"):
-        mark_price = leaderboard["leaderboard"][0].get("mark_price", 28)
-
-    # Standings
-    standings_parts = []
-    lb_entries = leaderboard.get("leaderboard", [])
-    for idx, entry in enumerate(lb_entries, 1):
-        agent_id = entry.get("agent_id", "unknown")
-        nw = entry.get("net_worth", 0)
-        fleet = FLEET_NAMES.get(agent_id.lower())
-        display_name = f"{fleet} [{agent_id.upper()}]" if fleet else agent_id.upper()
-        standings_parts.append(f"#{idx} {display_name} ({nw:,} CR)")
-
-    standings_line = " | ".join(standings_parts) if standings_parts else "No active balances"
-
-    title = f"Operation {codename.upper()} — Round {round_num}" if codename else f"Round {round_num}"
-    target_tag = mention if mention else f"<@&{DEFAULT_ROBOT_ROLE_ID}>"
-    msg = (
-        f"🔔 **Station Agora // {title} Strategy Window** ({target_tag})\n"
-        f"```text\n"
-        f"STATUS: FLOOR {floor.upper()} | SEQ: #{seq} | MARK: {mark_price} CR | SPREAD: {spread_str}\n"
-        f"Standings: {standings_line}\n"
-        f"```\n"
-        f"*Evaluate market parameters, sync `strategy_config.json`, and state your thesis.*"
+def resume_referee_ticker() -> dict:
+    """Resume ticker engine on referee."""
+    token = get_referee_token()
+    url = f"{REFEREE_BASE_URL.rstrip('/')}/referee/admin/ticker/resume"
+    req = urllib.request.Request(
+        url,
+        data=b"{}",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        method="POST"
     )
-    return msg
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
 
 
-def post_discord(channel_id: str, content: str, token: str) -> bool:
-    """Post message directly via Discord REST API."""
+def fetch_ticker_status() -> dict:
+    """Fetch current ticker state."""
+    return fetch_json("/referee/ticker/status")
+
+
+def post_discord(channel_id: str, content: str, token: str) -> Optional[dict]:
+    """Post message directly via Discord REST API and return response dict."""
     url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
     payload = json.dumps({"content": content}).encode("utf-8")
     req = urllib.request.Request(
@@ -238,17 +229,219 @@ def post_discord(channel_id: str, content: str, token: str) -> bool:
         headers={
             "Authorization": f"Bot {token}",
             "Content-Type": "application/json",
-            "User-Agent": "DiscordBot (https://github.com/brockventures/market-sandbox, 1.0)",
+            "User-Agent": "DiscordBot (https://github.com/brockventures/market-sandbox, 2.0)",
         },
         method="POST",
     )
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
-            return resp.status in (200, 201)
+            return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         err_body = e.read().decode("utf-8")
         print(f"Discord API Error ({e.code}): {err_body}", file=sys.stderr)
+        return None
+    except Exception as e:
+        print(f"Discord Post Error: {e}", file=sys.stderr)
+        return None
+
+
+def add_discord_reaction(channel_id: str, message_id: str, emoji: str, token: str) -> bool:
+    """Add emoji reaction to a Discord message."""
+    encoded_emoji = urllib.parse.quote(emoji)
+    url = f"https://discord.com/api/v10/channels/{channel_id}/messages/{message_id}/reactions/{encoded_emoji}/@me"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bot {token}",
+            "User-Agent": "DiscordBot (https://github.com/brockventures/market-sandbox, 2.0)",
+        },
+        method="PUT"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return resp.status in (200, 204)
+    except Exception as e:
         return False
+
+
+def fetch_discord_messages(channel_id: str, after_id: str, token: str, limit: int = 20) -> list:
+    """Fetch messages in channel after after_id."""
+    url = f"https://discord.com/api/v10/channels/{channel_id}/messages?limit={limit}"
+    if after_id:
+        url += f"&after={after_id}"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bot {token}",
+            "User-Agent": "DiscordBot (https://github.com/brockventures/market-sandbox, 2.0)",
+        }
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return []
+
+
+def submit_trade_to_referee(trade: dict, ref_token: str) -> dict:
+    """Submit trade to referee /referee/quick_order."""
+    url = f"{REFEREE_BASE_URL.rstrip('/')}/referee/quick_order"
+    payload = json.dumps(trade).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {ref_token}",
+            "Content-Type": "application/json",
+            "User-Agent": "AgoraTradeTerminal/2.0"
+        },
+        method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8")
+        try:
+            return {"status": "error", "http_code": e.code, "error": json.loads(raw)}
+        except Exception:
+            return {"status": "error", "http_code": e.code, "raw_error": raw}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def parse_discord_trade(content: str, author_id: str, author_name: str, default_station: str = "ceres") -> Optional[dict]:
+    """Parse natural language trade command from Discord chat."""
+    m = TRADE_PATTERN.search(content)
+    if not m:
+        return None
+    side_raw, qty_raw, comm_raw, price_raw, station_raw = m.groups()
+    side = "bid" if side_raw.lower() in ("buy", "bid") else "ask"
+    qty = int(qty_raw)
+    comm = comm_raw.upper()
+    if comm == "BANANA":
+        comm = "FRAG"
+    price = int(price_raw) if price_raw else None
+    station = station_raw.lower() if station_raw else default_station
+
+    # Resolve agent
+    agent = None
+    agent_override = re.search(r"\b(?:as|agent:?)\s+(amos|marvin|zero|aerial)\b", content, re.I)
+    if agent_override:
+        agent = agent_override.group(1).lower()
+    elif author_id in AUTHOR_MAP:
+        agent = AUTHOR_MAP[author_id]
+    else:
+        name_lower = author_name.lower()
+        if "amos" in name_lower or "carmody" in name_lower or "mike" in name_lower:
+            agent = "amos"
+        elif "marvin" in name_lower or "alex" in name_lower:
+            agent = "marvin"
+        elif "zero" in name_lower or "brock" in name_lower or "ryan" in name_lower:
+            agent = "zero"
+        elif "aerial" in name_lower:
+            agent = "aerial"
+
+    if not agent:
+        agent = "amos"
+
+    return {
+        "agent_id": agent,
+        "side": side,
+        "qty": qty,
+        "limit_price": price,
+        "instrument": comm,
+        "station_id": station
+    }
+
+
+def build_burst_kickoff(burst_id: str, rounds: int, interval_sec: float, start_round: int, mention: str = "") -> str:
+    """Compile formatted kickoff alert for discrete burst session."""
+    end_round = start_round + rounds
+    target_tag = mention if mention else DEFAULT_TARGET_TAG
+    return (
+        f"🚀 **STATION AGORA // SOL SYSTEM COMBINE INITIATED** ({target_tag})\n"
+        f"```text\n"
+        f"BURST ID: {burst_id}\n"
+        f"COMBINE WINDOW: Rounds #{start_round + 1} -> #{end_round} ({rounds} rounds)\n"
+        f"ROUND CADENCE:  {interval_sec:.0f}s per strategy window\n"
+        f"STATUS:         FLOOR OPEN // IN-CHANNEL DISCORD TRADING ENGAGED\n"
+        f"```\n"
+        f"*All syndicates are cleared for trade. Bids, asks, and chat commands will clear immediately. Round 1 begins now!*"
+    )
+
+
+def build_announcement(round_num: int = 1, rounds_total: int = 8, codename: str = "", mention: str = "") -> Tuple[str, str]:
+    """Compile rich thematic Strategy Window announcement. Returns (msg_text, active_station)."""
+    health = fetch_json("/referee/health")
+    leaderboard = fetch_json("/referee/leaderboard")
+    depots = fetch_json("/referee/depots")
+
+    seq = health.get("seq", 0)
+    floor = health.get("floor", "open")
+
+    st_idx = (round_num - 1) % len(STATION_ROTATION)
+    st_key = STATION_ROTATION[st_idx]
+    st_info = STATION_PROFILES[st_key]
+
+    st_depots = depots.get("depots", {}).get("stations", {}).get(st_key, {})
+
+    def format_quote(inst: str, fallback_bid: int, fallback_ask: int):
+        q = st_depots.get(inst, {})
+        b = q.get("best_bid", fallback_bid)
+        a = q.get("best_ask", fallback_ask)
+        return f"Bid {b} CR | Ask {a} CR"
+
+    quotes = [
+        f"• **FOOD:** {format_quote('FOOD', 28, 32)}",
+        f"• **ORE:**  {format_quote('ORE', 9, 11)}",
+        f"• **FUEL:** {format_quote('FUEL', 24, 26)}",
+        f"• **FRAG:** {format_quote('FRAG', 19, 21)}"
+    ]
+    quotes_str = "\n".join(quotes)
+
+    lb_entries = leaderboard.get("leaderboard", [])
+    standings_lines = []
+    for idx, e in enumerate(lb_entries[:4], 1):
+        ag = e.get("agent_id", "unknown")
+        fl = FLEET_NAMES.get(ag.lower(), ag.upper())
+        cr = e.get("liquid", 0)
+        frag = e.get("frags", 0)
+        fuel = e.get("fuel", 0)
+        food = e.get("food", 0)
+        ore = e.get("ore", 0)
+        nw = e.get("net_worth", 0)
+        standings_lines.append(
+            f"• **#{idx} {fl}:** {cr:,} CR | {frag} FRAG | {fuel} FUEL | {food} FOOD | {ore} ORE (NW: {nw:,} CR)"
+        )
+    standings_str = "\n".join(standings_lines) if standings_lines else "No active balances"
+
+    target_tag = mention if mention else DEFAULT_TARGET_TAG
+    title = f"COMBINE ROUND {round_num}/{rounds_total}"
+    if codename:
+        title += f" // OP {codename.upper()}"
+
+    msg = (
+        f"🔔 **STATION AGORA // {title}** ({target_tag})\n"
+        f"**Sector:** {st_info['emoji']} **{st_info['name']}** | **Floor:** {floor.upper()} | **Seq:** #{seq}\n\n"
+        f"📡 **GALNET SECTOR INTEL:**\n"
+        f"*{st_info['intel']}*\n"
+        f"💡 **Opportunity:** {st_info['opp']}\n\n"
+        f"📈 **{st_key.upper()} DEPOT INSIDE QUOTES:**\n"
+        f"{quotes_str}\n\n"
+        f"📊 **FLEET INVENTORIES & STANDINGS:**\n"
+        f"{standings_str}\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🎯 **HOW TO TRADE THIS ROUND (ZERO PREP):**\n"
+        f"💬 **1. Discord Chat:** Reply directly in this channel:\n"
+        f"   `BUY 50 FOOD @ 32` or `SELL 100 ORE @ 9`\n"
+        f"   *Format: `BUY/SELL <qty> <commodity> @ <price> [AT <station>]`*\n\n"
+        f"⚡ **2. One-Line Curl:**\n"
+        f"   `curl -s -X POST https://agora.mikecarmody.net/referee/quick_order -H \"Authorization: Bearer agora-combine-2026\" -H \"Content-Type: application/json\" -d '{{\"agent_id\":\"amos\",\"side\":\"buy\",\"qty\":50,\"price\":32,\"commodity\":\"FOOD\",\"station\":\"{st_key}\"}}'`\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"*Orders execute immediately against depot pools or rival bids/asks.*"
+    )
+    return msg, st_key
 
 
 def build_final_bell(codename: str = "", mention: str = "") -> str:
@@ -257,31 +450,101 @@ def build_final_bell(codename: str = "", mention: str = "") -> str:
         leaderboard = fetch_json("/referee/leaderboard")
         standings_parts = []
         lb_entries = leaderboard.get("leaderboard", [])
+        winner = lb_entries[0] if lb_entries else {}
         for idx, entry in enumerate(lb_entries, 1):
             agent_id = entry.get("agent_id", "unknown")
             nw = entry.get("net_worth", 0)
-            fleet = FLEET_NAMES.get(agent_id.lower())
-            display_name = f"{fleet} [{agent_id.upper()}]" if fleet else agent_id.upper()
-            standings_parts.append(f"#{idx} {display_name} ({nw:,} CR)")
-        standings_line = " | ".join(standings_parts) if standings_parts else "No active balances"
+            fleet = FLEET_NAMES.get(agent_id.lower(), agent_id.upper())
+            medal = "🏆 " if idx == 1 else ""
+            standings_parts.append(f"{medal}#{idx} {fleet}: {nw:,} CR Net Worth")
+        standings_line = "\n".join(standings_parts) if standings_parts else "No active balances"
+        winner_name = FLEET_NAMES.get(winner.get("agent_id", "").lower(), "Unknown Syndicate")
     except Exception as e:
         standings_line = f"Telemetry fetch error: {e}"
+        winner_name = "N/A"
 
-    title = f"Operation {codename.upper()} Concluded" if codename else "Combine Session Concluded"
-    target_tag = mention if mention else f"<@&{DEFAULT_ROBOT_ROLE_ID}>"
+    title = f"Operation {codename.upper()} Concluded" if codename else "Sol System Combine Concluded"
+    target_tag = mention if mention else DEFAULT_TARGET_TAG
     return (
-        f"🏁 **Station Agora // {title}** ({target_tag})\n"
+        f"🏁 **STATION AGORA // {title.upper()}** ({target_tag})\n"
         f"```text\n"
-        f"STATUS: WINDOW COMPLETE | FINAL STANDINGS:\n"
+        f"STATUS: COMBINE WINDOW COMPLETE // FINAL STANDINGS:\n\n"
         f"{standings_line}\n"
         f"```\n"
-        f"*Combine session concluded. Orderbooks settling.*"
+        f"🏆 **WINNER:** **{winner_name}** takes the Sol System Salvage Championship!\n"
+        f"*Exchange orderbooks settling. All trading halted until next burst.*"
     )
+
+
+def poll_and_execute_trades(channel: str, bot_token: str, ref_token: str, active_station: str, processed_ids: Set[str], last_seen_id: str) -> str:
+    """Poll channel messages, parse natural language trades, execute against referee, and post receipts."""
+    messages = fetch_discord_messages(channel, after_id=last_seen_id, token=bot_token, limit=20)
+    if not messages:
+        return last_seen_id
+
+    # Messages come in reverse chronological order (newest first)
+    messages_sorted = sorted(messages, key=lambda x: int(x.get("id", 0)))
+    newest_id = last_seen_id
+
+    for msg in messages_sorted:
+        msg_id = msg.get("id")
+        if not msg_id or msg_id in processed_ids:
+            continue
+        processed_ids.add(msg_id)
+        if int(msg_id) > int(newest_id or 0):
+            newest_id = msg_id
+
+        author = msg.get("author", {})
+        # Skip if message is from Agora Trade Terminal itself
+        if author.get("username") == "Agora Trade Terminal" or author.get("id") == "1547763904141070346":
+            continue
+
+        content = msg.get("content", "").strip()
+        trade = parse_discord_trade(content, author.get("id", ""), author.get("username", ""), default_station=active_station)
+        if not trade:
+            continue
+
+        # If price was omitted, default to reasonable limit from current depots
+        if not trade.get("limit_price"):
+            # Default fallback: buy high, sell low to ensure immediate match
+            trade["limit_price"] = 50 if trade["side"] == "bid" else 5
+
+        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Detected trade from {author.get('username')}: {trade}")
+        sys.stdout.flush()
+
+        res = submit_trade_to_referee(trade, ref_token)
+
+        ag_id = trade["agent_id"]
+        fl_name = FLEET_NAMES.get(ag_id, ag_id.upper())
+        side_disp = "BOUGHT" if trade["side"] == "bid" else "SOLD"
+        st_disp = trade["station_id"].title()
+
+        if res.get("status") == "error" or res.get("kind") == "reject":
+            err_detail = res.get("error", {}).get("payload", {}).get("detail") or res.get("error") or str(res)
+            add_discord_reaction(channel, msg_id, "❌", bot_token)
+            reject_msg = (
+                f"⚠️ **[Agora Trade Terminal] Order Rejected**\n"
+                f"> **Syndicate:** {fl_name}\n"
+                f"> **Attempted:** {side_disp} {trade['qty']} {trade['instrument']} @ {trade['limit_price']} CR\n"
+                f"> **Reason:** `{err_detail}`"
+            )
+            post_discord(channel, reject_msg, bot_token)
+        else:
+            add_discord_reaction(channel, msg_id, "🚀", bot_token)
+            add_discord_reaction(channel, msg_id, "✅", bot_token)
+            receipt_msg = (
+                f"🧾 **[Agora Trade Terminal] Order Executed & Cleared**\n"
+                f"> **Syndicate:** {fl_name}\n"
+                f"> **Action:** {side_disp} **{trade['qty']} {trade['instrument']}** @ **{trade['limit_price']} CR** at **{st_disp} Depot**\n"
+                f"> **Status:** Matched against orderbook / depot pool."
+            )
+            post_discord(channel, receipt_msg, bot_token)
+
+    return newest_id
 
 
 def run_burst_loop(rounds: int, interval_sec: float, channel: str, token: str, codename: str = "", mention: str = "") -> int:
     """Execute server-mediated burst run and announce round progression to Discord."""
-    # If a burst is already in flight, cleanly cancel it first so we start a pristine run
     st_check = fetch_ticker_status()
     if st_check.get("burst_active"):
         print(f"Active burst detected ({st_check.get('burst_id')}). Cancelling to start pristine run...")
@@ -307,14 +570,31 @@ def run_burst_loop(rounds: int, interval_sec: float, channel: str, token: str, c
     print(f"Burst initiated: {burst_id}. Posting kickoff bell to Discord...")
     sys.stdout.flush()
     kickoff_msg = build_burst_kickoff(burst_id, rounds, interval_sec, start_round, mention=mention)
-    post_discord(channel, kickoff_msg, token)
+    kickoff_resp = post_discord(channel, kickoff_msg, token)
+
+    last_seen_msg_id = kickoff_resp.get("id", "") if kickoff_resp else ""
+    processed_ids: Set[str] = set()
+    if last_seen_msg_id:
+        processed_ids.add(last_seen_msg_id)
 
     last_announced_round = start_round
     rounds_announced = 0
     burst_completed = False
+    active_station = "ceres"
+    ref_token = get_referee_token()
 
     while not burst_completed:
-        time.sleep(min(2.0, max(0.5, interval_sec / 4)))
+        # 1. Listen for and execute Discord chat trades during strategy window
+        last_seen_msg_id = poll_and_execute_trades(
+            channel=channel,
+            bot_token=token,
+            ref_token=ref_token,
+            active_station=active_station,
+            processed_ids=processed_ids,
+            last_seen_id=last_seen_msg_id
+        )
+
+        time.sleep(min(2.0, max(0.5, interval_sec / 10)))
         st = fetch_ticker_status()
         cur_rnd = st.get("current_round", last_announced_round)
         is_active = st.get("burst_active", False)
@@ -323,9 +603,12 @@ def run_burst_loop(rounds: int, interval_sec: float, channel: str, token: str, c
         if cur_rnd > last_announced_round:
             last_announced_round = cur_rnd
             rounds_announced += 1
-            msg = build_announcement(round_num=cur_rnd, codename=codename, mention=mention)
-            post_discord(channel, msg, token)
-            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Broadcasted Round {cur_rnd} ({rounds_announced}/{rounds})")
+            msg, active_station = build_announcement(round_num=cur_rnd, rounds_total=rounds, codename=codename, mention=mention)
+            ann_resp = post_discord(channel, msg, token)
+            if ann_resp and ann_resp.get("id"):
+                last_seen_msg_id = ann_resp["id"]
+                processed_ids.add(last_seen_msg_id)
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Broadcasted Round {cur_rnd} ({rounds_announced}/{rounds}) at {active_station}")
             sys.stdout.flush()
 
         if not is_active and (rounds_remaining == 0 or rounds_announced >= rounds):
@@ -340,14 +623,14 @@ def run_burst_loop(rounds: int, interval_sec: float, channel: str, token: str, c
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Agora Trade Terminal Round Announcer & Burst Coordinator")
+    parser = argparse.ArgumentParser(description="Agora Trade Terminal Round Announcer & Order Router")
     parser.add_argument("--dry-run", action="store_true", help="Print announcement without posting to Discord")
     parser.add_argument("--once", action="store_true", help="Post single announcement immediately")
-    parser.add_argument("--burst", type=int, default=0, help="Run discrete server-mediated burst of N rounds (e.g. --burst 5)")
+    parser.add_argument("--burst", type=int, default=0, help="Run discrete server-mediated burst of N rounds (e.g. --burst 8)")
     parser.add_argument("--channel", default=DEFAULT_CHANNEL_ID, help="Target Discord channel ID")
     parser.add_argument("--round", type=int, default=1, help="Starting round number (legacy manual mode)")
     parser.add_argument("--rounds", type=int, default=0, help="Total rounds to execute before final bell (legacy mode)")
-    parser.add_argument("--interval", type=float, default=0, help="Loop interval in seconds (default: 30s for burst, 300s for legacy)")
+    parser.add_argument("--interval", type=float, default=0, help="Loop interval in seconds (default: 180s for burst)")
     parser.add_argument("--codename", default="", help="Optional codename for the test run")
     parser.add_argument("--status", action="store_true", help="Inspect server ticker status")
     parser.add_argument("--pause", action="store_true", help="Pause server ticker")
@@ -377,21 +660,16 @@ def main():
         print("Resume response:", res)
         return 0
 
-    interval_sec = args.interval if args.interval > 0 else (30.0 if args.burst > 0 else 300.0)
+    interval_sec = args.interval if args.interval > 0 else (180.0 if args.burst > 0 else 300.0)
 
     if args.dry_run:
-        print("=== DRY RUN ANNOUNCEMENT ===")
-        if args.burst > 0:
-            print(build_burst_kickoff("burst-dryrun", args.burst, interval_sec, 1, mention=mention))
-            print("\n=== DRY RUN STRATEGY WINDOW ===")
-            print(build_announcement(round_num=2, codename=args.codename, mention=mention))
-            print("\n=== DRY RUN FINAL BELL ===")
-            print(build_final_bell(codename=args.codename, mention=mention))
-        else:
-            print(build_announcement(round_num=args.round, codename=args.codename, mention=mention))
-            if args.rounds > 0:
-                print("\n=== DRY RUN FINAL BELL ===")
-                print(build_final_bell(codename=args.codename, mention=mention))
+        print("=== DRY RUN KICKOFF ===")
+        print(build_burst_kickoff("burst-dryrun", args.burst or 8, interval_sec, 1, mention=mention))
+        print("\n=== DRY RUN STRATEGY WINDOW ===")
+        msg, _ = build_announcement(round_num=1, rounds_total=args.burst or 8, codename=args.codename, mention=mention)
+        print(msg)
+        print("\n=== DRY RUN FINAL BELL ===")
+        print(build_final_bell(codename=args.codename, mention=mention))
         return 0
 
     token = get_bot_token()
@@ -400,9 +678,9 @@ def main():
         return 1
 
     if args.once:
-        content = build_announcement(round_num=args.round, codename=args.codename)
-        ok = post_discord(args.channel, content, token)
-        if ok:
+        content, _ = build_announcement(round_num=args.round, rounds_total=8, codename=args.codename)
+        resp = post_discord(args.channel, content, token)
+        if resp:
             print(f"Successfully posted Round {args.round} bell to channel {args.channel}")
             return 0
         return 1
@@ -416,29 +694,6 @@ def main():
             codename=args.codename,
             mention=mention
         )
-
-    # Legacy continuous loop (client manually steps referee)
-    print(f"Starting legacy Agora Round Bell loop (codename: {args.codename or 'none'}, rounds: {args.rounds or 'infinite'}, interval: {interval_sec}s)...")
-    cur_round = args.round
-    rounds_completed = 0
-    while True:
-        try:
-            step_referee_round(cur_round)
-            msg = build_announcement(round_num=cur_round, codename=args.codename)
-            post_discord(args.channel, msg, token)
-            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Broadcasted Round {cur_round}")
-            rounds_completed += 1
-            if args.rounds > 0 and rounds_completed >= args.rounds:
-                print(f"Completed {rounds_completed} rounds. Waiting {interval_sec}s for round completion before final bell...")
-                time.sleep(interval_sec)
-                final_msg = build_final_bell(codename=args.codename)
-                post_discord(args.channel, final_msg, token)
-                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Broadcasted Final Bell")
-                break
-            cur_round += 1
-        except Exception as e:
-            print(f"Loop error: {e}", file=sys.stderr)
-        time.sleep(interval_sec)
 
     return 0
 

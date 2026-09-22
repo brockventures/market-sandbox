@@ -1793,7 +1793,9 @@ class AgoraReferee:
             SELECT agent_id,
                    SUM(CASE WHEN instrument IN ('CR', 'CREDITS', 'CASH') THEN balance ELSE 0 END) as liquid,
                    SUM(CASE WHEN instrument IN ('FRAG', 'BANANA') THEN balance ELSE 0 END) as frags,
-                   SUM(CASE WHEN instrument = 'FUEL' THEN balance ELSE 0 END) as fuel
+                   SUM(CASE WHEN instrument = 'FUEL' THEN balance ELSE 0 END) as fuel,
+                   SUM(CASE WHEN instrument = 'FOOD' THEN balance ELSE 0 END) as food,
+                   SUM(CASE WHEN instrument = 'ORE' THEN balance ELSE 0 END) as ore
             FROM accounts
             WHERE agent_id != 'SYSTEM' AND agent_id NOT LIKE 'depot_%'
             GROUP BY agent_id
@@ -1808,6 +1810,8 @@ class AgoraReferee:
                 'liquid': r['liquid'],
                 'frags': r['frags'],
                 'fuel': r['fuel'],
+                'food': r['food'] if 'food' in r.keys() else 0,
+                'ore': r['ore'] if 'ore' in r.keys() else 0,
                 'bananas': r['frags'],  # backward compatibility alias
                 'mark_price': mark
             })
