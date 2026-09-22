@@ -659,7 +659,7 @@ class TestAgoraServer(unittest.TestCase):
         status, data = self._post('/equity/borrow', {
             'equity_symbol': 'EQ_AMOS',
             'shares': 50,
-            'collateral_cr': 2700,
+            'collateral_cr': 3500,
             'lender_id': 'amos'
         }, token='tok-zero')
         self.assertEqual(status, 200)
@@ -680,7 +680,7 @@ class TestAgoraServer(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(data['ok'])
         self.assertEqual(data['shares_returned'], 50)
-        self.assertEqual(data['collateral_released'], 2700)
+        self.assertEqual(data['collateral_released'], 3500)
 
         # 7. Verify standing invariants hold completely
         status, data = self._get('/referee/health')
@@ -1054,7 +1054,7 @@ class TestAgoraAdminReset(unittest.TestCase):
         opening = payload['opening_prices']
         self.assertEqual(set(opening.keys()), {'earth', 'luna', 'mars', 'ceres'})
         for station_prices in opening.values():
-            self.assertEqual(set(station_prices.keys()), {'FRAG', 'FUEL'})
+            self.assertEqual(set(station_prices.keys()), {'FRAG', 'FUEL', 'FOOD', 'ORE'})
 
         # Book is empty again.
         status, data = self._get('/referee/book')

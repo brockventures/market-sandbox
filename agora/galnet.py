@@ -92,6 +92,38 @@ NEWS_TEMPLATES = [
         "drift_bias": -0.15,
         "duration_rounds": 2,
     },
+    {
+        "station_id": "earth",
+        "commodity": "FOOD",
+        "headline": "MIDWEST HYDROPONIC MEGA-FARM HARVEST SURPLUS",
+        "body": "Atmospheric dome yields exceeded quarterly projections. Earth orbital depots flooded with fresh calorie supplies, depressing local food prices.",
+        "drift_bias": -0.25,
+        "duration_rounds": 3,
+    },
+    {
+        "station_id": "ceres",
+        "commodity": "FOOD",
+        "headline": "BELT HYDROPONIC BLIGHT SPREADS IN OUTER HABITATS",
+        "body": "Aeroponic nutrient failure struck Ceres Sub-Ring 4. Station Commissariat issues urgent food requisitions at elevated spot prices.",
+        "drift_bias": 0.35,
+        "duration_rounds": 4,
+    },
+    {
+        "station_id": "ceres",
+        "commodity": "ORE",
+        "headline": "MAIN BELT MASS SPECTROMETRY STRIKES HIGH-GRADE ORE",
+        "body": "Autonomous survey drones discovered rich platinum-group vein in Asteroid 101955. Ceres smelting docks operating at full capacity.",
+        "drift_bias": -0.30,
+        "duration_rounds": 4,
+    },
+    {
+        "station_id": "earth",
+        "commodity": "ORE",
+        "headline": "TERRESTRIAL CLEAN TECH MANDATES EXHAUST LOCAL ORE RESERVES",
+        "body": "Orbital solar satellite constellation fabrication ramps up. Earth yards bidding aggressively for imported raw asteroid ores.",
+        "drift_bias": 0.35,
+        "duration_rounds": 3,
+    },
 ]
 
 

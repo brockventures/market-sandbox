@@ -148,7 +148,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             seed = payload.get('seed')
             warmup_rounds = payload.get('warmup_rounds')
             depots = payload.get('depots', payload.get('enable_depots'))
-            asymmetric = payload.get('asymmetric', False)
+            asymmetric = payload.get('asymmetric')
             spawn_locations = payload.get('spawn_locations')
             ref = self.referee or AgoraReferee()
             result = ref.new_game(
@@ -200,7 +200,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 return
 
             depots = payload.get('depots', payload.get('enable_depots'))
-            asymmetric = payload.get('asymmetric', False)
+            asymmetric = payload.get('asymmetric')
             spawn_locations = payload.get('spawn_locations')
             ref = self.referee or AgoraReferee()
             result = ref.reset_to_genesis(
@@ -1377,7 +1377,9 @@ def make_handler(referee: AgoraReferee, auth_tokens: Optional[Dict[str, str]] = 
 def run_server(host: Optional[str] = None, port: int = 8080, referee: Optional[AgoraReferee] = None, auth_tokens: Optional[Dict[str, str]] = None):
     bind_host = host or os.environ.get('AGORA_HOST', '0.0.0.0' if 'PORT' in os.environ else '127.0.0.1')
     db_path = os.environ.get('AGORA_DB_PATH', 'agora.db')
-    ref = referee or AgoraReferee(db_path=db_path)
+    asymmetric = os.environ.get('AGORA_ASYMMETRIC', '1') not in ('0', 'false', 'False')
+    depots = os.environ.get('AGORA_DEPOTS', '1') not in ('0', 'false', 'False')
+    ref = referee or AgoraReferee(db_path=db_path, depots=depots, asymmetric=asymmetric)
     tokens = auth_tokens if auth_tokens is not None else get_configured_tokens()
 
     ticker = None

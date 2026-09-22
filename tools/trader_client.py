@@ -353,45 +353,54 @@ def poll_round_loop(
                     is_docked = (my_loc.get("status", "docked") == "docked") if my_loc else True
                     current_station = my_loc.get("station_id", station_id) if is_docked else "in_transit"
 
-                    # Autonomous Spatial Transit Dispatch
-                    if is_docked and cfg.get("enable_spatial_transit", True) and available_fuel >= 20 and available_frag >= 10:
+                    # Autonomous Spatial Transit Dispatch across all commodities
+                    trade_commodities = ["FRAG", "FOOD", "ORE"]
+                    if is_docked and cfg.get("enable_spatial_transit", True) and available_fuel >= 20:
                         prices_resp = get_stations_prices()
                         prices_data = prices_resp.get("data", {}).get("prices", {}) if isinstance(prices_resp, dict) else {}
-                        cur_p = prices_data.get(current_station, {}).get("FRAG", 0.0)
 
                         routes_resp = get_stations_routes(origin=current_station)
                         routes_list = routes_resp.get("routes", []) if isinstance(routes_resp, dict) else []
 
                         best_dest = None
+                        best_comm = None
                         max_net_margin = 0.0
                         best_req_fuel = 0
+                        best_cargo_qty = 0
 
-                        for r in routes_list:
-                            dest = r.get("destination")
-                            if dest == current_station:
+                        for comm in trade_commodities:
+                            avail_qty = get_balance(comm)
+                            if avail_qty < 10:
                                 continue
-                            dest_p = prices_data.get(dest, {}).get("FRAG", 0.0)
-                            spread = dest_p - cur_p
-                            fuel_req = r.get("fuel", 999)
-                            toll_req = r.get("toll", 0)
+                            cur_p = prices_data.get(current_station, {}).get(comm, 0.0)
 
-                            transit_qty = min(cfg.get("transit_cargo_clip", 50), available_frag)
-                            gross_profit = spread * transit_qty
-                            fuel_cost = fuel_req * 10.0
-                            net_profit = gross_profit - toll_req - fuel_cost
+                            for r in routes_list:
+                                dest = r.get("destination")
+                                if dest == current_station:
+                                    continue
+                                dest_p = prices_data.get(dest, {}).get(comm, 0.0)
+                                spread = dest_p - cur_p
+                                fuel_req = r.get("fuel", 999)
+                                toll_req = r.get("toll", 0)
 
-                            if (net_profit >= cfg.get("min_transit_net_cr", 50.0)
-                                and net_profit > max_net_margin
-                                and available_fuel >= fuel_req
-                                and liquid_cr >= toll_req):
-                                max_net_margin = net_profit
-                                best_dest = dest
-                                best_req_fuel = fuel_req
+                                transit_qty = min(cfg.get("transit_cargo_clip", 50), avail_qty)
+                                gross_profit = spread * transit_qty
+                                fuel_cost = fuel_req * 10.0
+                                net_profit = gross_profit - toll_req - fuel_cost
 
-                        if best_dest and not dry_run:
-                            cargo_qty = min(cfg.get("transit_cargo_clip", 50), available_frag)
-                            tx_res = post_transit(destination=best_dest, commodity="FRAG", cargo_qty=cargo_qty)
-                            print(f"🚀 [Spatial Transit Dispatched] {current_station.upper()} -> {best_dest.upper()} ({cargo_qty} FRAG, fuel={best_req_fuel}, proj net={max_net_margin:.1f} CR): {tx_res.get('status')}")
+                                if (net_profit >= cfg.get("min_transit_net_cr", 50.0)
+                                    and net_profit > max_net_margin
+                                    and available_fuel >= fuel_req
+                                    and liquid_cr >= toll_req):
+                                    max_net_margin = net_profit
+                                    best_dest = dest
+                                    best_comm = comm
+                                    best_req_fuel = fuel_req
+                                    best_cargo_qty = transit_qty
+
+                        if best_dest and best_comm and not dry_run:
+                            tx_res = post_transit(destination=best_dest, commodity=best_comm, cargo_qty=best_cargo_qty)
+                            print(f"🚀 [Spatial Transit Dispatched] {current_station.upper()} -> {best_dest.upper()} ({best_cargo_qty} {best_comm}, fuel={best_req_fuel}, proj net={max_net_margin:.1f} CR): {tx_res.get('status')}")
 
                     # Book inspection & quoting (only when docked at a station)
                     if is_docked:

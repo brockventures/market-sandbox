@@ -12,14 +12,14 @@ from typing import Dict, Any, List, Optional, Tuple
 
 
 STATIONS = ["earth", "luna", "mars", "ceres"]
-COMMODITIES = ["FRAG", "FUEL"]
+COMMODITIES = ["FRAG", "FUEL", "FOOD", "ORE"]
 
 # Base fundamental mean valuations (equilibrium price surface)
 BASE_PRICES = {
-    "earth": {"FRAG": 10.0, "FUEL": 8.0},    # Scrap consumer, high fuel supply
-    "luna":  {"FRAG": 12.0, "FUEL": 16.0},   # Secondary yard, He-3 collection
-    "mars":  {"FRAG": 16.0, "FUEL": 14.0},   # Heavy foundries, balanced fuel
-    "ceres": {"FRAG": 22.0, "FUEL": 26.0},   # Raw scrap source, remote belt fuel depot
+    "earth": {"FRAG": 10.0, "FUEL": 8.0,  "FOOD": 10.0, "ORE": 30.0},   # Scrap consumer, fuel surplus, hydroponics hub, ore importer
+    "luna":  {"FRAG": 12.0, "FUEL": 16.0, "FOOD": 14.0, "ORE": 22.0},   # Secondary yard, He-3 collection
+    "mars":  {"FRAG": 16.0, "FUEL": 14.0, "FOOD": 20.0, "ORE": 16.0},   # Heavy foundries, balanced fuel, dome agriculture
+    "ceres": {"FRAG": 22.0, "FUEL": 26.0, "FOOD": 30.0, "ORE": 10.0},   # Belt mining & scrap source, remote fuel depot, food importer
 }
 
 # Orbital transit distances, discrete rounds, and fuel burn requirements
@@ -47,7 +47,7 @@ BELT_ROUTES = {
 
 BELT_TOLL_CR = 25  # Belt Authority toll booth surcharge (CR)
 BELT_CARGO_DECAY_RATE = 0.05  # 5% perishable cargo degradation per transit round
-PERISHABLE_COMMODITIES = {"ORGANICS", "BIO", "HYDROPONICS"}
+PERISHABLE_COMMODITIES = {"ORGANICS", "BIO", "HYDROPONICS", "FOOD"}
 
 # Planetary orbital alignment corridors (Task #25)
 ALIGNMENT_WINDOWS = [
