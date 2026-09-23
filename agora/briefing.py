@@ -231,6 +231,10 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
                    f"{E.LEAK_ROUNDS} rounds, and a traced raid exposes it at once; an exposed secret is public, named "
                    f"on GalNet as a scandal. A fleet's stake in a rival reaching {E.STAKE_PCT:.0%} is disclosed "
                    f"publicly. What your token can see: `GET /referee/corporate/events`.")
+        out.append('Espionage and sabotage: `POST /referee/covert/wiretap {"target": "<corp>"}` (2,500 CR, '
+                   'reveals secret actions for 10 rounds), `POST /referee/covert/sabotage {"target": "<corp>"}` '
+                   '(4,000 CR, strikes transit or docked cargo; 25% trace chance triggers a 12,000 CR restitution fine). '
+                   'Bilateral grievances and Bad Blood: `GET /referee/corporate/rivalry`.')
         mine = [e for e in ref.events.visible_to(viewer, max(0, rnd - 20), 20)
                 if e['visibility'] != 'public' or e['kind'] == 'stake_20']
         if mine:

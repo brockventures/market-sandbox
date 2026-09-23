@@ -21,6 +21,7 @@ from agora.contracts import ContractDesk, env_contracts
 from agora.corporate import CorporateDesk, env_corporate
 from agora.upgrades import UpgradeDesk, env_upgrades
 from agora.events import EventDesk, env_events
+from agora.covert import CovertDesk
 from agora.fog import FogEngine, env_fog, parse_fog
 
 STOCK_EXCHANGE_STATION = 'ceres'  # the one book every fleet stock trades on
@@ -156,6 +157,7 @@ class AgoraReferee:
         # Owns corp_events, so it comes before CorporateDesk, which logs to it.
         self.events = EventDesk(self)
         self.corporate = CorporateDesk(self)
+        self.covert = CovertDesk(self)
         self.upgrades = UpgradeDesk(self)
         self.hazards = HazardEngine(self.conn, self._hazard_odds)
         self.piracy = PiracyDesk(self, self._piracy_odds)

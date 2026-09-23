@@ -77,10 +77,12 @@ SCANDALS = {
                            "paid for by {actor}. ({how})"),
     'sabotage': ("SCANDAL: {ACTOR} SABOTAGED {VICTIM}",
                  "{actor} has been exposed as the hand behind the sabotage of {victim}. ({how})"),
+    'wiretap': ("SCANDAL: {ACTOR} WIRETAPPED {VICTIM}",
+                "Counter-intelligence operations uncovered an electronic wiretap planted on {victim} by {actor}. ({how})"),
 }
 DEFAULT_SCANDAL = ("SCANDAL: {ACTOR} EXPOSED",
                    "{actor}'s covert {kind} against {victim} has come to light. ({how})")
-HOW = {'leak': 'a source leaked it', 'trace': 'traced by traffic control'}
+HOW = {'leak': 'a source leaked it', 'trace': 'traced by traffic control', 'counter_intel': 'uncovered by counter-intelligence'}
 
 
 def env_events() -> bool:
@@ -261,14 +263,23 @@ class EventDesk:
     def visible_to(self, viewer: Optional[str], since_round: int = 0, limit: int = 50) -> List[Dict[str, Any]]:
         """Events `viewer` may see, newest first. None is the public view,
         'admin' sees everything. A victim of an unexposed private event sees
-        it with actor None and actor_hidden True."""
+        it with actor None and actor_hidden True. An active wiretap on a corp
+        reveals that corp's secret moves and unmasks it as actor."""
         q = "SELECT * FROM corp_events WHERE round >= ?"
         args: List[Any] = [since_round]
+        tapped: set = set()
+        covert = getattr(self.ref, 'covert', None)
+        if covert is not None and viewer and viewer != 'admin':
+            tapped = covert.tapped_targets(viewer)
         if viewer != 'admin':
             q += " AND (visibility = 'public' OR exposed_round IS NOT NULL"
             if viewer:
                 q += " OR actor = ? OR (visibility = 'private' AND victim = ?)"
                 args += [viewer, viewer]
+                if tapped:
+                    placeholders = ', '.join('?' for _ in tapped)
+                    q += f" OR actor IN ({placeholders})"
+                    args.extend(list(tapped))
             q += ")"
         q += " ORDER BY id DESC LIMIT ?"
         args.append(int(limit))
@@ -276,11 +287,13 @@ class EventDesk:
         for r in self.ref.conn.execute(q, args):
             d = dict(r)
             d['exposed'] = d['exposed_round'] is not None
-            hidden = (d['visibility'] != 'public' and not d['exposed'] and viewer not in ('admin', d['actor']))
+            is_listener = (d['actor'] in tapped)
+            hidden = (d['visibility'] != 'public' and not d['exposed'] and viewer not in ('admin', d['actor']) and not is_listener)
             if hidden:
                 d['actor'] = None
                 d['link'] = None
             d['actor_hidden'] = hidden
+            d['wiretapped'] = is_listener
             out.append(d)
         return out
 

@@ -1420,6 +1420,27 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
         elif path == '/referee/corporate':
             self._send_json(200, {'status': 'ok', 'corporate_enabled': ref.corporate_enabled,
                                   'round': ref.current_round, **ref.corporate.summary()})
+        elif path == '/referee/covert/wiretaps':
+            viewer = self._reader()
+            if not viewer:
+                self._send_json(401, {'error': 'unauthorized', 'detail': 'Authentication required'})
+                return
+            self._send_json(200, {'status': 'ok', 'round': ref.current_round,
+                                  'wiretaps': ref.covert.active_wiretaps(viewer)})
+            return
+        elif path == '/referee/covert/intel':
+            viewer = self._reader()
+            if not viewer:
+                self._send_json(401, {'error': 'unauthorized', 'detail': 'Authentication required'})
+                return
+            target = params.get('target', [''])[0]
+            result = ref.covert.get_intel(viewer, target)
+            self._send_json(400 if result.get('kind') == 'reject' else 200, result)
+            return
+        elif path == '/referee/corporate/rivalry':
+            viewer = self._reader()
+            self._send_json(200, {'status': 'ok', **ref.covert.rivalry_scoreboard(viewer)})
+            return
         elif path == '/referee/corporate/events':
             # #153: only what the caller may see. No token = public events and
             # exposed ones; a fleet token adds its own secrets and private
