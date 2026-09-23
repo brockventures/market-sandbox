@@ -49,6 +49,26 @@ def _route_table(round_num: int) -> List[str]:
     return lines
 
 
+def build_state(ref) -> Dict[str, Any]:
+    """Same live data as the markdown briefing, structured (?format=json)."""
+    rnd = ref.current_round
+    locs = {l['agent_id']: l for l in ref.get_all_vessel_locations()}
+    routes = []
+    for o in STATIONS:
+        for d in STATIONS:
+            if o != d:
+                r = get_route(o, d, rnd)
+                if r:
+                    routes.append({'origin': o, 'destination': d, 'rounds': r['rounds'],
+                                   'fuel': r['fuel'], 'toll': r.get('toll', 0),
+                                   'aligned': r.get('is_aligned', False)})
+    fleets = []
+    for row in ref.get_leaderboard():
+        fleets.append({k: row.get(k) for k in ('agent_id', 'net_worth', 'liquid', 'fuel', 'frags', 'food', 'ore')}
+                      | {'location': locs.get(row['agent_id']) or ref.get_vessel_location(row['agent_id'])})
+    return {'round': rnd, 'depots': ref.get_depot_summary(), 'routes': routes, 'fleets': fleets}
+
+
 def build_briefing(ref, base_url: str = "") -> str:
     rnd = ref.current_round
     depots = ref.get_depot_summary()
@@ -119,5 +139,6 @@ def build_briefing(ref, base_url: str = "") -> str:
                    f"{row.get('food') or 0} | {row.get('ore') or 0} | {row['net_worth']} |")
     out.append("")
     if base_url:
+        out.append(f"Same data as JSON: {base_url.rstrip('/')}/referee/briefing?format=json")
         out.append(f"Full rules: {base_url.rstrip('/')}/referee/rules?format=text")
     return "\n".join(out) + "\n"

@@ -48,6 +48,15 @@ class TestBriefing(unittest.TestCase):
         body = build_briefing(self.ref)
         self.assertIn(f"BUY 200 ORE @ {int(q['best_ask'])} AT CERES", body)
 
+    def test_json_format(self):
+        import json
+        with urllib.request.urlopen(self.base + '/referee/briefing?format=json', timeout=5) as r:
+            d = json.loads(r.read().decode())
+        self.assertEqual(d['status'], 'ok')
+        self.assertEqual(set(d['depots']['stations']), {'earth', 'luna', 'mars', 'ceres'})
+        self.assertEqual(len(d['routes']), 12)
+        self.assertTrue(all('location' in f for f in d['fleets']))
+
 
 if __name__ == '__main__':
     unittest.main()

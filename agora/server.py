@@ -1186,7 +1186,10 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 'leaderboard': ref.get_leaderboard()
             })
         elif path in ('/referee/briefing', '/briefing', '/llms.txt'):
-            from agora.briefing import build_briefing
+            from agora.briefing import build_briefing, build_state
+            if query_params.get('format', [''])[0].lower() == 'json':
+                self._send_json(200, {'status': 'ok', **build_state(ref)})
+                return
             host = self.headers.get('Host', '')
             proto = self.headers.get('X-Forwarded-Proto', 'http')
             body = build_briefing(ref, f"{proto}://{host}" if host else "").encode('utf-8')
