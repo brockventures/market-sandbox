@@ -37,8 +37,8 @@ for env_path in ("/workspace/market-sandbox/.env", "/workspace/.env"):
         except Exception:
             pass
 
-DEFAULT_ROBOT_ROLE_ID = "1542294519914037341"  # @robot
-DEFAULT_TEAM_ROLE_ID = "1543462881624858624"   # @team
+DEFAULT_ROBOT_ROLE_ID = "1543462881624858624"  # @Robot
+DEFAULT_TEAM_ROLE_ID = "1543462881624858624"   # @Robot
 DEFAULT_TARGET_TAG = f"<@&{DEFAULT_ROBOT_ROLE_ID}>"
 
 REFEREE_BASE_URL = os.environ.get("AGORA_BASE_URL", "https://agora-banana-production.up.railway.app")
@@ -135,18 +135,23 @@ def get_referee_token() -> str:
     return "agora-combine-2026"
 
 
-def fetch_json(endpoint: str) -> dict:
-    """Fetch JSON from referee API."""
+def fetch_json(endpoint: str, retries: int = 3, backoff_sec: float = 1.0) -> dict:
+    """Fetch JSON from referee API with retries for transient blips."""
     url = f"{REFEREE_BASE_URL.rstrip('/')}{endpoint}"
     req = urllib.request.Request(
         url,
         headers={"User-Agent": "AgoraAnnouncer/2.0", "Accept": "application/json"}
     )
-    try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
+    last_err = None
+    for attempt in range(retries):
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except Exception as e:
+            last_err = e
+            if attempt < retries - 1:
+                time.sleep(backoff_sec * (attempt + 1))
+    return {"status": "error", "error": str(last_err)}
 
 
 def trigger_referee_burst(rounds: int = 8, interval_sec: float = 180.0) -> dict:
@@ -555,7 +560,7 @@ def build_announcement(round_num: int = 1, rounds_total: int = 8, codename: str 
         f"{standings_str}\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🤖 **ROBOT COMBAT DIRECTIVE:**\n"
-        f"{target_tag}: Floor open for Round #{round_num}. Reply in channel with orders:\n"
+        f"Floor open for Round #{round_num}. Reply in channel with orders:\n"
         f"• **Trade:** `BUY 50 FOOD @ 32` or `SELL 100 ORE @ 9`\n"
         f"• **Transit:** `MOVE TO MARS WITH 100 FOOD` or `TRANSIT CERES`\n"
         f"• **API:** {curl_trade}\n"
@@ -771,6 +776,12 @@ def run_burst_loop(rounds: int, interval_sec: float, channel: str, token: str, c
 
         time.sleep(min(2.0, max(0.5, interval_sec / 10)))
         st = fetch_ticker_status()
+        if st.get("status") == "error":
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Warning: transient error fetching ticker status: {st.get('error')}. Retrying...")
+            sys.stdout.flush()
+            time.sleep(2.0)
+            continue
+
         cur_rnd = st.get("current_round", last_announced_round)
         is_active = st.get("burst_active", False)
         rounds_remaining = st.get("rounds_remaining", 0)
