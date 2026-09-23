@@ -459,6 +459,13 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 })
                 return
 
+            if '/' in str(agent_id):
+                self._send_json(400, {
+                    'v': 1, 'kind': 'reject',
+                    'payload': {'reason': 'invalid_format', 'detail': "agent_id must not contain '/'"}
+                })
+                return
+
             ref = self.referee or AgoraReferee()
             ref.conn.execute("""
                 INSERT INTO fleet_roster (agent_id, display_name, home_station, genesis_cr, genesis_frag, genesis_fuel)
@@ -1515,6 +1522,13 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 'status': 'ok',
                 'fleets': [dict(r) for r in rows]
             })
+        elif path == '/referee/vessels':
+            ag = query_params.get('agent_id', [None])[0]
+            vessels = ref.get_vessels(ag)
+            self._send_json(200, {
+                'status': 'ok',
+                'vessels': vessels
+            })
         elif path in ('/referee/instructions', '/referee/rules'):
             format_param = query_params.get('format', ['json'])[0].lower()
             accept_header = self.headers.get('Accept', '')
@@ -1569,6 +1583,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                     'cancel_all': 'POST /referee/orders/cancel_all (auth required)',
                     'health': 'GET /referee/health',
                     'fleets': 'GET /referee/fleets',
+                    'vessels': 'GET /referee/vessels?agent_id= — list fleet vessels',
                     'admin_fleets': 'POST /referee/admin/fleets (admin auth) — add/update a fleet_roster row',
                     'admin_reset': 'POST /referee/admin/reset (admin auth) — {"confirm": true} wipes all trading state and re-seeds genesis from fleet_roster, prices flat at BASE_PRICES (deterministic)',
                     'admin_new_game': 'POST /referee/admin/new_game (amos or zero auth only) — {"confirm": true, "seed": optional int, "warmup_rounds": optional int} wipes the board and rolls a fresh, random opening market for Round 0',

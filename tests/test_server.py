@@ -945,6 +945,20 @@ class TestAgoraAdminReset(unittest.TestCase):
         agent_ids = {f['agent_id'] for f in data['fleets']}
         self.assertEqual(agent_ids, {'amos', 'marvin', 'zero', 'aerial'})
 
+    def test_01b_vessels_endpoint_lists_vessels(self):
+        status, data = self._get('/referee/vessels')
+        self.assertEqual(status, 200)
+        self.assertIn('vessels', data)
+        v_ids = {v['vessel_id'] for v in data['vessels']}
+        self.assertIn('amos/1', v_ids)
+        self.assertIn('zero/1', v_ids)
+
+        # Filter by agent_id
+        status, data = self._get('/referee/vessels?agent_id=amos')
+        self.assertEqual(status, 200)
+        self.assertEqual(len(data['vessels']), 1)
+        self.assertEqual(data['vessels'][0]['vessel_id'], 'amos/1')
+
     def test_02_admin_fleets_rejects_non_admin(self):
         status, data = self._post('/referee/admin/fleets', {
             'agent_id': 'newbie', 'display_name': 'Newbie', 'genesis_cr': 10000,
@@ -957,6 +971,15 @@ class TestAgoraAdminReset(unittest.TestCase):
         status, data = self._post('/referee/admin/fleets', {'agent_id': 'newbie'}, token='tok-admin')
         self.assertEqual(status, 400)
         self.assertEqual(data['payload']['reason'], 'invalid_format')
+
+    def test_03b_admin_fleets_rejects_slashes(self):
+        status, data = self._post('/referee/admin/fleets', {
+            'agent_id': 'bad/corp', 'display_name': 'Slash Corp', 'genesis_cr': 10000,
+            'genesis_frag': 1000, 'genesis_fuel': 500,
+        }, token='tok-admin')
+        self.assertEqual(status, 400)
+        self.assertEqual(data['payload']['reason'], 'invalid_format')
+        self.assertIn("agent_id must not contain '/'", data['payload']['detail'])
 
     def test_04_admin_fleets_add_then_not_retroactive(self):
         status, data = self._post('/referee/admin/fleets', {
