@@ -51,6 +51,7 @@ SCENARIOS = {
     "mixed": {"zero": "hauler", "amos": "hauler", "marvin": "maker", "aerial": "idler"},
     "haulers4": {f: "hauler" for f in FLEETS},
     "idle4": {f: "idler" for f in FLEETS},
+    "market": {"zero": "hauler", "amos": "hauler", "marvin": "inside_maker", "aerial": "hauler"},
 }
 
 
@@ -86,6 +87,77 @@ def location(ref: AgoraReferee, agent: str) -> Optional[str]:
 
 def inventory(ref: AgoraReferee, agent: str) -> Dict[str, int]:
     return {c: ref.get_balance(agent, c) for c in ["CR"] + TRADED}
+
+
+# ------------------------------------------------------------ contracts (#74 prototype)
+
+class ContractBoard:
+    """Station procurement contracts, simulator-only (issue #74 prototype).
+
+    Every EVERY rounds a random station posts a contract for a good it does
+    not produce cheaply: QTY units by DEADLINE rounds from now, paid at
+    PREMIUM x the station's base price. A fleet docked there holding the good
+    delivers into it (partial delivery allowed, first come first served);
+    goods go to SYSTEM and SYSTEM pays, through balanced ledger entries.
+    """
+
+    EVERY = 4
+    QTY = (300, 800)
+    DEADLINE = (6, 10)
+    PREMIUM = (1.3, 1.6)
+
+    def __init__(self, ref: AgoraReferee, seed: int):
+        import random
+        self.ref = ref
+        self.rng = random.Random(seed * 7919)
+        self.open: List[dict] = []
+        self.delivered = 0
+        self.paid = 0
+        self.expired = 0
+        self.posted = 0
+
+    def step(self) -> None:
+        r = self.ref.current_round
+        for c in self.open:
+            if c["deadline"] < r and c["remaining"] > 0:
+                self.expired += 1
+        self.open = [c for c in self.open if c["deadline"] >= r and c["remaining"] > 0]
+        if r % self.EVERY == 0:
+            comm = self.rng.choice(["FRAG", "FOOD", "ORE", "FUEL"])
+            cheap = min(STATIONS, key=lambda st: BASE_PRICES[st][comm])
+            st = self.rng.choice([x for x in STATIONS if x != cheap])
+            self.open.append({"id": f"c{r}-{st}-{comm}", "station": st, "comm": comm,
+                              "remaining": self.rng.randint(*self.QTY),
+                              "deadline": r + self.rng.randint(*self.DEADLINE),
+                              "price": int(round(BASE_PRICES[st][comm] * self.rng.uniform(*self.PREMIUM)))})
+            self.posted += 1
+
+    def best_for(self, st: str, comm: str, arrival: int) -> Optional[dict]:
+        live = [c for c in self.open if c["station"] == st and c["comm"] == comm
+                and c["remaining"] > 0 and c["deadline"] >= arrival]
+        return max(live, key=lambda c: c["price"]) if live else None
+
+    def deliver(self, agent: str, st: str) -> int:
+        ref, got = self.ref, 0
+        for c in sorted(self.open, key=lambda c: -c["price"]):
+            if c["station"] != st or c["remaining"] <= 0:
+                continue
+            qty = min(c["remaining"], ref.get_balance(agent, c["comm"]))
+            if qty <= 0:
+                continue
+            with ref.lock, ref.conn:
+                txn = f"contract-{c['id']}-{agent}-{ref.current_round}"
+                for acct, inst, d in ((agent, c["comm"], -qty), ("SYSTEM", c["comm"], qty),
+                                      (agent, "CR", qty * c["price"]), ("SYSTEM", "CR", -qty * c["price"])):
+                    ref.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, ?, 0)", (acct, inst))
+                    ref.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?", (d, acct, inst))
+                    ref.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)",
+                                     (txn, ref.current_seq, acct, inst, d))
+            c["remaining"] -= qty
+            self.delivered += qty
+            self.paid += qty * c["price"]
+            got += qty
+        return got
 
 
 # ------------------------------------------------------------ strategies
@@ -126,6 +198,11 @@ class Hauler:
             return
         self.plan = None
 
+        board = getattr(ref, "_sim_contracts", None)
+        if board is not None and board.deliver(self.agent, st):
+            stats["contract_deliveries"] += 1
+            inv = inventory(ref, self.agent)
+
         # 1. Sell cargo here only if this is the best market for it; otherwise
         #    it is cargo to haul (e.g. a per-planet genesis export).
         for comm in ("FRAG", "FOOD", "ORE"):
@@ -150,13 +227,18 @@ class Hauler:
                 continue
             for comm in ("FRAG", "FOOD", "ORE"):
                 ask = quotes[st][comm]["best_ask"]
-                bid = quotes[dest][comm]["best_bid"]
+                bid = quotes[dest][comm]["best_bid"] or 0
+                cap = 500
+                if board is not None:
+                    c = board.best_for(dest, comm, ref.current_round + route["rounds"])
+                    if c and c["price"] > bid:
+                        bid, cap = c["price"], min(500, c["remaining"])
                 if not ask or not bid:
                     continue
                 if not band_ok(ref, st, comm, ask) and not self.tolerate_halts:
                     stats["band_blocked"] += 1
                     continue
-                qty = min(quotes[st][comm]["ask_depth"] or 0, 500, max(0, (inv["CR"] - 200) // ask))
+                qty = min(quotes[st][comm]["ask_depth"] or 0, cap, max(0, (inv["CR"] - 200) // ask))
                 if qty <= 0:
                     continue
                 fuel_cost = route["fuel"] * (quotes[st]["FUEL"]["best_ask"] or 20)
@@ -209,9 +291,12 @@ class Maker:
     """Joins the depot's best bid and ask at its home station for every good,
     reposting each round. Resting first gives it time priority."""
 
-    def __init__(self, agent: str, clip: int = 50):
+    def __init__(self, agent: str, clip: int = 50, inside: bool = False):
         self.agent = agent
         self.clip = clip
+        # inside: improve the depot's quotes by 1 CR where the spread allows,
+        # so fleets trading here meet this fleet before the depot.
+        self.inside = inside
 
     def act(self, ref: AgoraReferee, quotes, stats) -> None:
         st = location(ref, self.agent)
@@ -221,10 +306,13 @@ class Maker:
         inv = inventory(ref, self.agent)
         for comm in TRADED:
             q = quotes[st][comm]
-            if q["best_bid"] and inv["CR"] > q["best_bid"] * self.clip * 4 and band_ok(ref, st, comm, q["best_bid"]):
-                order(ref, self.agent, "bid", self.clip, q["best_bid"], comm, st, "mb")
-            if q["best_ask"] and inv[comm] >= self.clip and band_ok(ref, st, comm, q["best_ask"]):
-                order(ref, self.agent, "ask", self.clip, q["best_ask"], comm, st, "ma")
+            bid, ask = q["best_bid"], q["best_ask"]
+            if self.inside and bid and ask and ask - bid >= 3:
+                bid, ask = bid + 1, ask - 1
+            if bid and inv["CR"] > bid * self.clip * 4 and band_ok(ref, st, comm, bid):
+                order(ref, self.agent, "bid", self.clip, bid, comm, st, "mb")
+            if ask and inv[comm] >= self.clip and band_ok(ref, st, comm, ask):
+                order(ref, self.agent, "ask", self.clip, ask, comm, st, "ma")
 
 
 class Idler:
@@ -235,7 +323,8 @@ class Idler:
         return
 
 
-STRATEGY = {"hauler": Hauler, "maker": Maker, "idler": Idler}
+STRATEGY = {"hauler": Hauler, "maker": Maker, "idler": Idler,
+            "inside_maker": lambda a: Maker(a, clip=100, inside=True)}
 
 
 # ------------------------------------------------------------ genesis
@@ -299,7 +388,8 @@ def depot_floor(ref: AgoraReferee) -> int:
 # ------------------------------------------------------------ run
 
 def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict", check_every: int = 25,
-        depot_model: str = "static", band_pct: Optional[float] = None, reactive_bands: bool = True) -> dict:
+        depot_model: str = "static", band_pct: Optional[float] = None, reactive_bands: bool = True,
+        contracts: bool = False) -> dict:
     # Reactive depots are the referee's own implementation (agora/referee.py,
     # AGORA_DEPOT_MODEL), so these numbers describe what would ship.
     ref = AgoraReferee(depots=True, asymmetric=True, depot_model=depot_model,
@@ -310,7 +400,9 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
     fleets = {a: (Hauler(a, tolerate_halts=(mode == "tolerant")) if kind == "hauler" else STRATEGY[kind](a))
               for a, kind in SCENARIOS[scenario].items()}
     start = {a: score(ref, a) for a in FLEETS}
-    stats = {"transits": 0, "halts_caused": 0, "band_blocked": 0, "stranded_events": 0}
+    stats = {"transits": 0, "halts_caused": 0, "band_blocked": 0, "stranded_events": 0, "contract_deliveries": 0}
+    cboard = ContractBoard(ref, seed) if contracts else None
+    ref._sim_contracts = cboard
     first_negative_depot = None
     first_invariant_failure = None
     spread = []  # Earth ORE bid - Ceres ORE ask over time
@@ -319,6 +411,8 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
     for _ in range(rounds):
         quotes = ref.get_depot_summary()["stations"]
         spread.append((quotes["earth"]["ORE"]["best_bid"] or 0) - (quotes["ceres"]["ORE"]["best_ask"] or 0))
+        if cboard is not None:
+            cboard.step()
         for strat in fleets.values():
             strat.act(ref, quotes, stats)
         ref.step_round()
@@ -338,6 +432,8 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
         "scenario": scenario, "genesis": genesis, "mode": mode, "seed": seed, "rounds": rounds,
         "depot_model": depot_model, "band_pct": ref.circuit_breaker.band_pct,
         "reactive_bands": reactive_bands,
+        "contracts": None if cboard is None else {"posted": cboard.posted, "units_delivered": cboard.delivered,
+                                                  "paid": cboard.paid, "expired": cboard.expired},
         "depot_cr_end": {st: ref.get_balance(f"depot_{st}", "CR") for st in STATIONS},
         "seconds": round(elapsed, 2),
         "fleets": {a: {"strategy": SCENARIOS[scenario][a], "start": round(start[a]), "end": round(end[a]),
@@ -366,6 +462,7 @@ def main() -> int:
     ap.add_argument("--band-pct", type=float, default=None, help="override the circuit-breaker band (default 0.10)")
     ap.add_argument("--drip", type=int, nargs=2, metavar=("MAIN", "SIDE"), default=None,
                     help="reactive depots: per-round restock/consumption at the main and other stations (default 100 20)")
+    ap.add_argument("--contracts", action="store_true", help="enable the #74 station contract prototype")
     ap.add_argument("--free-quotes", action="store_true",
                     help="reactive depots: do not hold quotes inside the circuit-breaker band")
     ap.add_argument("--json", action="store_true", help="print raw results as JSON")
@@ -382,7 +479,7 @@ def main() -> int:
                 for seed in range(1, args.seeds + 1):
                     results.append(run(scen, gen, seed, args.rounds, mode,
                                        depot_model=args.depot_model, band_pct=args.band_pct,
-                                       reactive_bands=not args.free_quotes))
+                                       reactive_bands=not args.free_quotes, contracts=args.contracts))
     faulthandler.cancel_dump_traceback_later()
 
     if args.json:
@@ -396,7 +493,7 @@ def main() -> int:
         print(f"  fills {r['fills']}  transits {r['transits']}  halts {r['halts_total']}  "
               f"band-blocked checks {r['band_blocked_checks']}  stranded events {r['stranded_events']}")
         print(f"  Earth ORE bid - Ceres ORE ask, by quarter: {r['ore_spread_by_quarter']}")
-        print(f"  depot CR at end: {r['depot_cr_end']}")
+        print(f"  depot CR at end: {r['depot_cr_end']}  contracts: {r['contracts']}")
         print(f"  first negative depot balance: round {r['first_negative_depot_round']}  "
               f"invariant failure: {r['first_invariant_failure']}")
     return 0

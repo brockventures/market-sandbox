@@ -25,6 +25,13 @@ class TestEconomySim(unittest.TestCase):
         self.assertIsNone(r["first_negative_depot_round"])
         self.assertIsNone(r["first_invariant_failure"])
 
+    def test_contracts_are_delivered_and_balanced(self):
+        r = run("market", "flat", seed=1, rounds=60, mode="tolerant", check_every=20,
+                depot_model="reactive", band_pct=0.25, contracts=True)
+        self.assertGreater(r["contracts"]["posted"], 0)
+        self.assertGreater(r["contracts"]["units_delivered"], 0)
+        self.assertIsNone(r["first_invariant_failure"])
+
     def test_planet_genesis_preserves_value(self):
         r = run("idle4", "planet", seed=1, rounds=1)
         for f in r["fleets"].values():
