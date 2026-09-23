@@ -369,7 +369,7 @@ def poll_round_loop(
                         best_cargo_qty = 0
 
                         for comm in trade_commodities:
-                            avail_qty = get_balance(comm)
+                            avail_qty = balances.get(comm, 0)
                             if avail_qty < 10:
                                 continue
                             cur_p = prices_data.get(current_station, {}).get(comm, 0.0)

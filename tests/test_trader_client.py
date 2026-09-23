@@ -90,6 +90,57 @@ class TestTraderClient(unittest.TestCase):
         self.assertEqual(mock_order.call_count, 2)  # 1 bid, 1 ask
         mock_cancel.assert_called()
 
+    @patch("tools.trader_client.post_transit")
+    @patch("tools.trader_client.get_stations_routes")
+    @patch("tools.trader_client.get_stations_prices")
+    @patch("tools.trader_client.get_stations_locations")
+    @patch("tools.trader_client.cancel_all")
+    @patch("tools.trader_client.submit_order")
+    @patch("tools.trader_client.get_accounts")
+    @patch("tools.trader_client.get_book")
+    @patch("tools.trader_client.get_ticker_status")
+    @patch("tools.trader_client.check_health")
+    @patch("tools.trader_client.time.sleep")
+    def test_poll_round_loop_with_spatial_transit(
+        self, mock_sleep, mock_health, mock_ticker, mock_book, mock_accs, mock_order, mock_cancel, mock_locs, mock_prices, mock_routes, mock_transit
+    ):
+        mock_locs.return_value = {"locations": [{"agent_id": "zero", "status": "docked", "station_id": "ceres"}]}
+        mock_health.return_value = {"status": "ok", "seq": 20, "floor": "open"}
+        mock_ticker.return_value = {
+            "status": "ok",
+            "running": True,
+            "paused": False,
+            "current_round": 1,
+        }
+        mock_book.return_value = {
+            "book": {
+                "bids": [{"limit_price": 14, "qty": 10}],
+                "asks": [{"limit_price": 16, "qty": 10}],
+            }
+        }
+        mock_accs.return_value = [
+            {"agent_id": "zero", "liquid": 10000, "frags": 1000, "fuel": 500}
+        ]
+        mock_prices.return_value = {
+            "data": {
+                "prices": {
+                    "ceres": {"FRAG": 15.0},
+                    "earth": {"FRAG": 25.0},
+                }
+            }
+        }
+        mock_routes.return_value = {
+            "routes": [
+                {"destination": "earth", "fuel": 10, "toll": 50}
+            ]
+        }
+        mock_transit.return_value = {"status": "en_route"}
+        mock_order.return_value = {"status": "accepted"}
+        mock_cancel.return_value = {"status": "cancelled_all", "payload": {"count": 1}}
+
+        trader_client.poll_round_loop(poll_interval=0.01, max_rounds=1)
+        mock_transit.assert_called_once_with(destination="earth", commodity="FRAG", cargo_qty=50)
+
 
 if __name__ == "__main__":
     unittest.main()

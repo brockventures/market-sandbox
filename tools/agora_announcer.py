@@ -240,27 +240,50 @@ def fetch_ticker_status() -> dict:
 def post_discord(channel_id: str, content: str, token: str) -> Optional[dict]:
     """Post message directly via Discord REST API and return response dict."""
     url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
-    payload = json.dumps({"content": content}).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=payload,
-        headers={
-            "Authorization": f"Bot {token}",
-            "Content-Type": "application/json",
-            "User-Agent": "DiscordBot (https://github.com/brockventures/market-sandbox, 2.0)",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        err_body = e.read().decode("utf-8")
-        print(f"Discord API Error ({e.code}): {err_body}", file=sys.stderr)
-        return None
-    except Exception as e:
-        print(f"Discord Post Error: {e}", file=sys.stderr)
-        return None
+    chunks = []
+    if len(content) <= 1950:
+        chunks = [content]
+    else:
+        current = []
+        curr_len = 0
+        for block in content.split("\n\n"):
+            if curr_len + len(block) + 2 > 1950:
+                if current:
+                    chunks.append("\n\n".join(current))
+                    current = [block]
+                    curr_len = len(block)
+                else:
+                    chunks.append(block[:1950])
+            else:
+                current.append(block)
+                curr_len += len(block) + 2
+        if current:
+            chunks.append("\n\n".join(current))
+
+    last_resp = None
+    for chunk in chunks:
+        payload = json.dumps({"content": chunk}).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={
+                "Authorization": f"Bot {token}",
+                "Content-Type": "application/json",
+                "User-Agent": "DiscordBot (https://github.com/brockventures/market-sandbox, 2.0)",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                last_resp = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode("utf-8")
+            print(f"Discord API Error ({e.code}): {err_body}", file=sys.stderr)
+            return None
+        except Exception as e:
+            print(f"Discord Post Error: {e}", file=sys.stderr)
+            return None
+    return last_resp
 
 
 def add_discord_reaction(channel_id: str, message_id: str, emoji: str, token: str) -> bool:
@@ -532,20 +555,10 @@ def build_announcement(round_num: int = 1, rounds_total: int = 8, codename: str 
         f"{standings_str}\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🤖 **ROBOT COMBAT DIRECTIVE:**\n"
-        f"{target_tag}: Floor open for Round #{round_num}. Evaluate fleet balances and active depot quotes above. Submit an actionable order directly in this channel now (e.g. `BUY 50 FOOD @ 10` or `SELL 100 FRAG @ 21`). Do not stay silent.\n\n"
-        f"🎯 **HOW TO TRADE THIS ROUND (ZERO PREP):**\n"
-        f"💬 **1. Discord Chat:** Reply directly in this channel:\n"
-        f"   `BUY 50 FOOD @ 32` or `SELL 100 ORE @ 9`\n"
-        f"   *Format: `BUY/SELL <qty> <commodity> @ <price> [AT <station>]`*\n\n"
-        f"⚡ **2. One-Line Curl:**\n"
-        f"   {curl_trade}\n\n"
-        f"🚀 **INTERPLANETARY TRANSIT (RELOCATE FLEET & CARGO):**\n"
-        f"💬 **1. Discord Chat:** Reply directly in this channel:\n"
-        f"   `MOVE TO MARS WITH 100 FOOD` or `TRANSIT CERES`\n"
-        f"   *Format: `MOVE [TO] <destination> [WITH <qty> <commodity>]`*\n\n"
-        f"⚡ **2. One-Line Curl:**\n"
-        f"   {curl_transit}\n"
-        f"   *Transit burns FUEL and takes 1–3 rounds based on planetary alignment.*\n"
+        f"{target_tag}: Floor open for Round #{round_num}. Reply in channel with orders:\n"
+        f"• **Trade:** `BUY 50 FOOD @ 32` or `SELL 100 ORE @ 9`\n"
+        f"• **Transit:** `MOVE TO MARS WITH 100 FOOD` or `TRANSIT CERES`\n"
+        f"• **API:** {curl_trade}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"*Orders and transits execute immediately against referee state and depot pools.*"
     )
