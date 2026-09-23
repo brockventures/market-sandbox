@@ -18,6 +18,8 @@ from agora.order_book import OrderBook, Order, Trade
 from agora.galnet import GalNetEngine
 from agora.peer import PeerDesk, env_peer_trades
 from agora.fog import FogEngine, env_fog, parse_fog
+
+STOCK_EXCHANGE_STATION = 'ceres'  # the one book every fleet stock trades on
 from agora.spatial import (
     StationPriceEngine, STATIONS, COMMODITIES, BASE_PRICES, get_route, ROUTES,
     get_alignment_windows, PERISHABLE_COMMODITIES
@@ -77,8 +79,12 @@ class AgoraReferee:
         peer_trades: Optional[bool] = None,
         fog: Any = None,
         idle_fee: Optional[int] = None,
+        rival_shares: Optional[int] = None,
     ):
         self.db_path = db_path
+        # Shares of each rival's stock every fleet starts with (0 = issuers
+        # hold all their own stock, the old behaviour).
+        self.rival_shares = max(0, int(rival_shares)) if rival_shares is not None else 0
         # CR charged each round to a docked fleet that did nothing that round
         # (no order, cancel, trip or peer offer/accept). 0 = off.
         self.idle_fee = max(0, int(idle_fee)) if idle_fee is not None else 0
@@ -389,19 +395,25 @@ class AgoraReferee:
 
     def _seed_genesis_equities(self) -> None:
         """Mint each fleet's synthetic equity (FLEET_EQUITIES) at genesis."""
+        # Each rival starts with rival_shares of every other fleet's
+        # stock and the issuer keeps the rest, so there are holders on both
+        # sides from round 0 and a reason to trade.
         for issuer_id, conf in FLEET_EQUITIES.items():
             sym = conf["symbol"]
             total_shares = conf["total_shares"]
-            self.conn.execute("""
-                INSERT INTO accounts (agent_id, instrument, balance) VALUES
-                ('SYSTEM', ?, ?),
-                (?, ?, ?)
-            """, (sym, -total_shares, issuer_id, sym, total_shares))
-            self.conn.execute("""
-                INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES
-                (?, 0, 'SYSTEM', ?, ?),
-                (?, 0, ?, ?, ?)
-            """, (f"genesis-{sym.lower()}", sym, -total_shares, f"genesis-{sym.lower()}", issuer_id, sym, total_shares))
+            rivals = [a for a in FLEET_EQUITIES if a != issuer_id] if self.rival_shares else []
+            per = min(self.rival_shares, total_shares // (len(rivals) + 1)) if rivals else 0
+            grants = [(issuer_id, total_shares - per * len(rivals))] + [(a, per) for a in rivals]
+            txn = f"genesis-{sym.lower()}"
+            self.conn.execute("INSERT INTO accounts (agent_id, instrument, balance) VALUES ('SYSTEM', ?, ?)",
+                              (sym, -total_shares))
+            self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, 0, 'SYSTEM', ?, ?)",
+                              (txn, sym, -total_shares))
+            for holder, qty in grants:
+                self.conn.execute("INSERT INTO accounts (agent_id, instrument, balance) VALUES (?, ?, ?)",
+                                  (holder, sym, qty))
+                self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, 0, ?, ?, ?)",
+                                  (txn, holder, sym, qty))
 
     def _wipe_trading_state(self, note: str) -> None:
         """Shared by reset_to_genesis() and new_game(): clears every trading/
@@ -449,6 +461,7 @@ class AgoraReferee:
         peer_trades: Optional[bool] = None,
         fog: Any = None,
         idle_fee: Optional[int] = None,
+        rival_shares: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Full clean-slate reset, callable live via POST /referee/admin/reset:
@@ -466,6 +479,8 @@ class AgoraReferee:
             self.peer_trades = bool(peer_trades)
         if idle_fee is not None:
             self.idle_fee = max(0, int(idle_fee))
+        if rival_shares is not None:
+            self.rival_shares = max(0, int(rival_shares))
         self._active_this_round = set()
         self.asymmetric_enabled = asymmetric
         if asymmetric or spawn_map:
@@ -498,6 +513,7 @@ class AgoraReferee:
         peer_trades: Optional[bool] = None,
         fog: Any = None,
         idle_fee: Optional[int] = None,
+        rival_shares: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Wipes the board exactly like reset_to_genesis(), but rolls a genuinely
@@ -516,6 +532,8 @@ class AgoraReferee:
             self.peer_trades = bool(peer_trades)
         if idle_fee is not None:
             self.idle_fee = max(0, int(idle_fee))
+        if rival_shares is not None:
+            self.rival_shares = max(0, int(rival_shares))
         self._active_this_round = set()
         self.asymmetric_enabled = asymmetric
         if asymmetric or spawn_map:
@@ -1380,6 +1398,12 @@ class AgoraReferee:
 
         # 2b. Spatial Locality & Docking Audit
         vessel = self.get_vessel_location(agent_id)
+        # Fleet stocks trade on one exchange book, from anywhere, in transit
+        # included (Ryan, #agent-chat 2026-09-22 22:44).
+        is_stock = instrument in EQUITY_SYMBOLS
+        if is_stock:
+            vessel = {'status': 'docked', 'station_id': STOCK_EXCHANGE_STATION}
+            payload = dict(payload, station_id=STOCK_EXCHANGE_STATION)
         if vessel['status'] == 'in_transit':
             dest_station = vessel.get('transit', {}).get('destination', 'destination')
             return self._reject_envelope(
@@ -1716,7 +1740,8 @@ class AgoraReferee:
                         'price': trade.price,
                         'qty': trade.qty,
                         'cost': cost,
-                        'station_id': order_station
+                        'station_id': order_station,
+                        'instrument': instrument
                     })))
 
                     # Update maker resting order in orders table
@@ -1984,8 +2009,45 @@ class AgoraReferee:
                 'mark_price': mark,
                 'commodity_marks': commodity_marks
             })
+        # Rival stocks count at their mark. A fleet's own shares do not count
+        # toward its own net worth (that would be circular), and NAV is built
+        # from the net worth above, before any stock holdings.
+        base = {b['agent_id']: b['net_worth'] for b in board}
+        marks = self.stock_marks(base)
+        holdings: Dict[str, Dict[str, int]] = {}
+        for row in cur.execute("SELECT agent_id, instrument, balance FROM accounts WHERE instrument LIKE 'EQ_%' "
+                               "AND agent_id != 'SYSTEM' AND agent_id NOT LIKE 'depot_%'"):
+            holdings.setdefault(row['agent_id'], {})[row['instrument']] = row['balance']
+        for b in board:
+            own = FLEET_EQUITIES.get(b['agent_id'], {}).get('symbol')
+            held = {sym: q for sym, q in holdings.get(b['agent_id'], {}).items() if sym != own and q}
+            value = int(round(sum(q * marks[sym]['mark'] for sym, q in held.items() if sym in marks)))
+            b['stocks'] = held
+            b['stocks_value'] = value
+            b['net_worth'] += value
         board.sort(key=lambda x: x['net_worth'], reverse=True)
         return board
+
+    def stock_marks(self, base_net_worth: Dict[str, float]) -> Dict[str, Dict[str, Any]]:
+        """Per fleet stock: NAV per share from the issuer's net worth before
+        stock holdings, and the mark used on the leaderboard: the exchange
+        book's mid if both sides rest, else the last trade, else NAV."""
+        out = {}
+        for issuer, conf in FLEET_EQUITIES.items():
+            sym = conf["symbol"]
+            nav = max(1.0, round(base_net_worth.get(issuer, 0) / conf["total_shares"], 2))
+            book = self.books.get(STOCK_EXCHANGE_STATION, {}).get(sym)
+            bid = book.best_bid() if book else None
+            ask = book.best_ask() if book else None
+            if bid is not None and ask is not None:
+                mark, basis = (bid + ask) / 2, 'mid'
+            elif (STOCK_EXCHANGE_STATION, sym) in self.last_prices:
+                mark, basis = float(self.last_prices[(STOCK_EXCHANGE_STATION, sym)]), 'last'
+            else:
+                mark, basis = nav, 'nav'
+            out[sym] = {'symbol': sym, 'issuer': issuer, 'nav': nav, 'mark': mark, 'basis': basis,
+                        'best_bid': bid, 'best_ask': ask}
+        return out
 
     def seed_depots(self, initial_cr: int = 1000000, initial_qty: int = 100000) -> None:
         """
