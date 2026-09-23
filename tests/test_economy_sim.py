@@ -96,6 +96,15 @@ class TestEconomySim(unittest.TestCase):
         r = run("mixed", "flat", seed=1, rounds=30, mode="tolerant")
         self.assertNotIn("stocks", r)
 
+    def test_daytraders_trade_and_spread_scale_restores(self):
+        import agora.spatial as sp
+        before = sp.BASE_PRICES["ceres"]["ORE"]
+        r = run("daytrade_vs_haulers", "flat", seed=1, rounds=80, mode="tolerant", check_every=20,
+                depot_model="reactive", band_pct=0.25, vol=2.4, spread_scale=0.5)
+        self.assertIsNone(r["first_invariant_failure"])
+        self.assertGreater(r["day_trades"], 0)
+        self.assertEqual(sp.BASE_PRICES["ceres"]["ORE"], before)
+
     def test_dock_fee_charges_idlers(self):
         r = run("idle4", "flat", seed=1, rounds=20, dock_fee=10)
         for f in r["fleets"].values():
