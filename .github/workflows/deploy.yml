@@ -41,6 +41,23 @@ jobs:
       # this step is skipped (not failed) if RAILWAY_TOKEN isn't set yet, so
       # this workflow can land and start covering Vercel before Railway's
       # secret is added.
+      # The referee keeps its ledger in memory, so every Railway deploy
+      # restarts the game at genesis. A push to main during a burst wiped
+      # three live bursts on 2026-09-22 (00:30, 00:57 and 01:37 UTC deploys).
+      # Hold the Railway deploy until no burst is running. If the referee is
+      # unreachable, or a burst is still going after 45 minutes, deploy anyway.
+      - name: Wait for any live burst to finish
+        if: env.RAILWAY_TOKEN != ''
+        run: |
+          for i in $(seq 1 90); do
+            active=$(curl -s -m 10 https://agora-banana-production.up.railway.app/referee/ticker/status \
+              | python3 -c "import json,sys; print(json.load(sys.stdin).get('burst_active'))" 2>/dev/null || echo unknown)
+            echo "check $i: burst_active=$active"
+            [ "$active" = "True" ] || exit 0
+            sleep 30
+          done
+          echo "::warning::burst still active after 45 minutes; deploying anyway"
+
       - name: Deploy to Railway
         if: env.RAILWAY_TOKEN != ''
         run: npx -y @railway/cli up --service agora-banana --environment production --detach
