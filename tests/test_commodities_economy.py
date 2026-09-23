@@ -10,6 +10,7 @@ from agora.spatial import (
     PERISHABLE_COMMODITIES, get_route
 )
 from agora.referee import AgoraReferee, ASYMMETRIC_SPAWN_LOCATIONS
+from tests.legacy_surface import pre_162_surface
 
 
 class TestCommoditiesEconomy(unittest.TestCase):
@@ -25,14 +26,20 @@ class TestCommoditiesEconomy(unittest.TestCase):
                 self.assertIn(c, BASE_PRICES[st])
                 self.assertGreater(BASE_PRICES[st][c], 0.0)
 
-        # Economic topology verification:
-        # Earth is rich in FOOD (8) and FUEL (8), consumes ORE (26) and FRAG (10)
-        self.assertEqual(BASE_PRICES['earth']['FOOD'], 10.0)
-        self.assertEqual(BASE_PRICES['earth']['ORE'], 30.0)
+        # Economic topology verification (#162: gaps to the mean narrowed to 75%):
+        # Earth is rich in FOOD and FUEL, consumes ORE
+        self.assertEqual(BASE_PRICES['earth']['FOOD'], 12.1)
+        self.assertEqual(BASE_PRICES['earth']['ORE'], 27.4)
 
-        # Ceres is rich in ORE (8) and scrap, desperately needs FOOD (32) and FUEL (26)
-        self.assertEqual(BASE_PRICES['ceres']['ORE'], 10.0)
-        self.assertEqual(BASE_PRICES['ceres']['FOOD'], 30.0)
+        # Ceres is rich in ORE and scrap, needs FOOD and FUEL
+        self.assertEqual(BASE_PRICES['ceres']['ORE'], 12.4)
+        self.assertEqual(BASE_PRICES['ceres']['FOOD'], 27.1)
+        # Each good's cheapest and dearest station, and its mean, are unchanged.
+        from tests.legacy_surface import PRE_162
+        for c in COMMODITIES:
+            self.assertEqual(min(STATIONS, key=lambda s: BASE_PRICES[s][c]), min(STATIONS, key=lambda s: PRE_162[s][c]))
+            self.assertEqual(max(STATIONS, key=lambda s: BASE_PRICES[s][c]), max(STATIONS, key=lambda s: PRE_162[s][c]))
+            self.assertAlmostEqual(sum(BASE_PRICES[s][c] for s in STATIONS), sum(PRE_162[s][c] for s in STATIONS), delta=0.2)
 
     def test_perishable_flag_and_decay_rates(self):
         """FOOD is perishable and decays in belt transit; ORE is durable."""
@@ -146,6 +153,7 @@ class TestCommoditiesEconomy(unittest.TestCase):
         valid, errors = ref.verify_ledger_invariants()
         self.assertTrue(valid)
 
+    @pre_162_surface()
     def test_depots_have_food_and_ore_liquidity(self):
         """All station depots quote two-sided resting liquidity for FOOD and ORE."""
         ref = AgoraReferee(depots=True)
@@ -169,6 +177,7 @@ class TestCommoditiesEconomy(unittest.TestCase):
         self.assertEqual(summary['stations']['ceres']['ORE']['best_ask'], 11)
         self.assertEqual(summary['stations']['ceres']['FOOD']['best_bid'], 29)
 
+    @pre_162_surface()
     def test_bidirectional_profitable_arbitrage_loops(self):
         """
         Verify both directional trade legs are profitable:

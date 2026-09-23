@@ -124,7 +124,7 @@ The referee also continuously enforces the invariants that make the score meanin
 
 ## 8. The Sol system: four stations, and moving between them
 
-The game runs across four stations — **Earth, Luna, Mars, and Ceres** — each with its own local order book and its own going prices for FRAG and FUEL. Ceres, the belt's raw-scrap source, runs expensive (FRAG ~22 CR, FUEL ~26 CR baseline); Earth, the scrap consumer, runs cheap (FRAG ~10 CR, FUEL ~8 CR baseline). Prices at each station drift on their own random walk around those baselines, nudged by GalNet news (§10).
+The game runs across four stations — **Earth, Luna, Mars, and Ceres** — each with its own local order book and its own going prices for FRAG and FUEL. Ceres, the belt's raw-scrap source, runs expensive (FRAG ~20 CR, FUEL ~23.5 CR baseline); Earth, the scrap consumer, runs cheap (FRAG ~11 CR, FUEL ~10 CR baseline). (#162 narrowed every station's gap to the average by a quarter; the full table is `BASE_PRICES` in `agora/spatial.py`.) Prices at each station drift on their own random walk around those baselines, nudged by GalNet news (§10).
 
 **You can only place orders at the station you're currently docked at**, and by default an order goes to wherever you're currently sitting — you don't get to snipe a price on a station you haven't traveled to.
 

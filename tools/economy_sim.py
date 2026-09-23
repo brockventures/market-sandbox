@@ -75,6 +75,7 @@ from agora import piracy as piracy_mod  # noqa: E402
 from agora.referee import AgoraReferee  # noqa: E402
 from agora.server import build_referee_from_env  # noqa: E402
 from agora.spatial import STATIONS, BASE_PRICES, get_route  # noqa: E402
+from agora import upgrades as upgrades_mod  # noqa: E402
 from agora.upgrades import CATALOG as UPGRADES  # noqa: E402
 
 FLEETS = ["zero", "amos", "marvin", "aerial"]
@@ -230,6 +231,8 @@ def buy_upgrades(ref: AgoraReferee, agent: str, cash_mult: float, stats) -> None
     if not ref.upgrades_enabled or location(ref, agent) is None or debt(ref, agent) > 0:
         return
     for kind in UPGRADE_ORDER:
+        if upgrades_mod.UNLOCKS.get(kind, 0) > ref.current_round:
+            continue  # not on sale yet (the briefing shows the lock)
         t = ref.upgrades.tier(agent, kind)
         prices = UPGRADES[kind]["prices"]
         if t >= len(prices):
@@ -351,12 +354,12 @@ def contract_value(ref: AgoraReferee, agent: str, c: dict, view, one_hop: bool =
         qty = min(rem, 500, max(0, cash // ask))
         fuel_px = view[st]["FUEL"]["best_ask"] or 20
         cost = (leg1["fuel"] + leg2["fuel"]) * fuel_px + leg1.get("toll", 0) + leg2.get("toll", 0)
-        short = contracts_mod.PENALTY * c["price"] * (rem - qty)
+        short = ref.contract_desk.penalty_rate(agent) * c["price"] * (rem - qty)
         best = max(best, (c["price"] - ask) * qty - cost - short)
     if st == c["station_id"] and held > 0:
         qty = min(rem, held)
         best = max(best, (c["price"] - (view[st][comm]["best_bid"] or 0)) * qty
-                   - contracts_mod.PENALTY * c["price"] * (rem - qty))
+                   - ref.contract_desk.penalty_rate(agent) * c["price"] * (rem - qty))
     return int(best)
 
 
@@ -978,7 +981,7 @@ class StockTrader:
     it, never sold its goods, and lost about 9k over 300 rounds at every
     setting tried (#162 sweep): too naive to stand for the style."""
 
-    ENTRY, EXIT, STAKE, MAX_POS = 0.08, 0.0, 0.5, 200
+    ENTRY, EXIT, STAKE, MAX_POS = 0.08, 0.0, 0.5, 400
 
     def __init__(self, agent: str):
         self.agent = agent
@@ -1597,7 +1600,7 @@ def main() -> int:
     g.add_argument("--piracy", type=float, nargs=2, metavar=("P_BELT", "P_INNER"), default=None,
                    help="raid odds on belt and inner routes (live 0.15 0.04); 0 0 turns piracy off")
     g.add_argument("--exchange", type=float, nargs=2, metavar=("SHARES", "VOL"), default=None,
-                   help="the exchange market maker's shares of each fleet and per-round vol (live 100 0.03)")
+                   help="the exchange market maker's shares of each fleet and per-round vol (live 100 0.12)")
     g.add_argument("--idle-fee", type=int, default=None, help="CR per round for a docked fleet that did nothing (live 10)")
     g.add_argument("--free-quotes", action="store_true",
                    help="reactive depots: do not hold quotes inside the circuit-breaker band")

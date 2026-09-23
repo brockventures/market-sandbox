@@ -18,7 +18,8 @@ Spec: docs/fleet-market-spec.md section 2. Simulator evidence: #100, #112,
   pays the price plus the deposit to the seller, and carries the deposit.
 - Lapse. At the deadline the undelivered part lapses. The deposit goes to
   the station, and the owner pays a PENALTY of the undelivered value
-  (Ryan, 2026-09-22 23:24: 50%). A penalty the owner cannot cover is
+  (Ryan, 2026-09-22 23:24: 50%); a corp's first lapse of the game costs
+  FIRST_PENALTY instead (#162). A penalty the owner cannot cover is
   charged to what it holds and the rest is recorded as `shortfall`, for
   corporate debt (#116).
 
@@ -40,6 +41,10 @@ GOODS = ("FRAG", "FOOD", "ORE", "FUEL")
 MAX_OPEN = 2
 BOND_PCT = 0.25
 PENALTY = 0.5
+# A corp's first lapse of the game costs FIRST_PENALTY instead (#162, novice
+# survival: "one bad claim teaches rather than kills"). Every later one
+# costs PENALTY. #162 sweep, 60 seeds: novices out of the game 35% -> 30%.
+FIRST_PENALTY = 0.25
 
 
 def env_contracts() -> bool:
@@ -210,7 +215,8 @@ class ContractDesk:
                                     (round_num,)).fetchall():
             penalty = shortfall = 0
             if row['owner'] and row['qty_remaining'] > 0:
-                penalty = int(row['price'] * row['qty_remaining'] * PENALTY)
+                rate = PENALTY if self.lapses(row['owner']) else FIRST_PENALTY
+                penalty = int(row['price'] * row['qty_remaining'] * rate)
                 paid = min(penalty, max(0, ref.get_balance(row['owner'], 'CR')))
                 shortfall = penalty - paid
                 self._move(f"contract-lapse-{row['contract_id']}", (
@@ -229,6 +235,15 @@ class ContractDesk:
         if round_num % POST_EVERY == 0:
             done['posted'].append(self._post_locked(round_num))
         return done
+
+    def lapses(self, agent: str) -> int:
+        """Contracts this corp has already let lapse with a penalty this game."""
+        return self.ref.conn.execute("SELECT COUNT(*) FROM station_contracts WHERE owner = ? AND status = 'lapsed' "
+                                     "AND penalty > 0", (agent,)).fetchone()[0]
+
+    def penalty_rate(self, agent: str) -> float:
+        """The lapse penalty `agent` would pay next: FIRST_PENALTY until its first lapse."""
+        return PENALTY if self.lapses(agent) else FIRST_PENALTY
 
     def _post_locked(self, round_num: int) -> str:
         comm = self.rng.choice(GOODS)

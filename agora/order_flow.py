@@ -53,8 +53,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from agora.spatial import STATIONS, COMMODITIES, BASE_PRICES
 
 # NPC units per side per round, as a multiple of the depot's drip for that
-# side (main 100, side 20 units a round). Chosen by the #162 sweep.
-FLOW_SCALE = 1.0
+# side (main 100, side 20 units a round). #162 sweep: a maker earns about
+# 33k over 300 rounds per 1.0 of scale; 3.0 puts it in the other styles' band.
+FLOW_SCALE = 3.0
 # Each side's size is scaled by a uniform draw from this range every round.
 FLOW_JITTER = (0.5, 1.5)
 FLOW_GOODS = tuple(COMMODITIES)

@@ -254,7 +254,8 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
         out.append("| Upgrade | Effect | Tier prices |")
         out.append("|---|---|---|")
         for c in ref.upgrades.catalog():
-            out.append(f"| {c['kind']} | {c['what']} | {' / '.join(str(p) for p in c['prices'])} |")
+            lock = (f" (locked until round {c['unlock_round']}: shipyards retooling)" if c.get('locked') else "")
+            out.append(f"| {c['kind']} | {c['what']}{lock} | {' / '.join(str(p) for p in c['prices'])} |")
         rows = ref.conn.execute("SELECT agent_id, kind, tier FROM fleet_upgrades ORDER BY agent_id, kind").fetchall()
         if rows:
             out.append("")
@@ -377,13 +378,15 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
                            f"(bought from {o['seller']}), collect by round {o['pickup_deadline']}")
         out.append("")
     if getattr(ref, 'contracts_enabled', False):
-        from agora.contracts import MAX_OPEN, BOND_PCT, PENALTY
+        from agora.contracts import MAX_OPEN, BOND_PCT, PENALTY, FIRST_PENALTY
         out.append("## Station contracts")
         out.append(f"Stations post contracts to buy a good at a premium by a deadline round. The first fleet to claim one "
                    f"owns it, at most {MAX_OPEN} at a time. Claiming locks a deposit of {int(BOND_PCT * 100)}% of the "
                    f"undelivered value. Only the owner delivers, docked at that station, in part or in full; each "
                    f"delivery is paid at the contract price and returns its share of the deposit. Miss the deadline and "
-                   f"you lose the rest of the deposit and pay a penalty of {int(PENALTY * 100)}% of the undelivered value. "
+                   f"you lose the rest of the deposit and pay a penalty of {int(PENALTY * 100)}% of the undelivered value"
+                   + (f" ({int(FIRST_PENALTY * 100)}% for your first lapse of the game)" if FIRST_PENALTY != PENALTY else "")
+                   + ". "
                    f"You can list a contract you own for sale; the buyer pays your price plus the deposit it carries.")
         out.append("- `POST /referee/contracts/<id>/claim`")
         out.append("- `POST /referee/contracts/<id>/deliver {\"qty\": n}` (docked at the contract's station; omit qty to deliver all you can)")

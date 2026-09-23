@@ -54,7 +54,9 @@ MAX_SHARES = 200
 SEED_CR = 100_000
 ANCHOR_ROUNDS = 20
 REVERSION = 0.1
-DEFAULT_VOL = 0.03
+# 0.03 until #162: the sweep found a stock trader needs 0.12 to earn what the
+# other play styles do over 300 rounds (0.06: ~+60k, 0.09: ~+85k, 0.12: ~+110k).
+DEFAULT_VOL = 0.12
 DEFAULT_SPREAD = 0.03
 DEFAULT_DEPTH = 20
 # Price impact (Ryan, #agent-chat 2026-09-23 08:26: "buying the stock should

@@ -178,7 +178,7 @@ class TestShocks(unittest.TestCase):
         def run():
             ref = game(seed=11, piracy=(0.3, 0.3), hazards=(0.2, 0.3))
             ref.piracy.hire('zero', 'amos')
-            ref.upgrades.buy('marvin', 'hold')
+            ref.upgrades.buy('marvin', 'shielding')
             dest = {'amos': 'mars', 'zero': 'earth', 'marvin': 'luna', 'aerial': 'mars'}
             for r in range(12):
                 for a in sorted(dest):
@@ -197,6 +197,10 @@ class TestCapitalizedUpgrades(unittest.TestCase):
 
     def test_half_the_price_stays_in_net_worth_and_nav(self):
         ref = game(piracy=None, events=False)
+        with ref.conn:  # armor 1 + shielding 1 cost more than the 10,000 CR genesis
+            for acct, d in (('amos', 10_000), ('SYSTEM', -10_000)):
+                ref.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = 'CR'", (d, acct))
+                ref.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES ('t-cash', 0, ?, 'CR', ?)", (acct, d))
         before = self.nw(ref)['net_worth']
         price = U.CATALOG['armor']['prices'][0]
         ref.upgrades.buy('amos', 'armor')
