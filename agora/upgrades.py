@@ -11,12 +11,18 @@ tier at a time. Each tier multiplies an odd:
 - hold:      cargo-loss chance x0.6 / x0.3, and a loss takes 30% less
 - armor:     piracy raid chance x0.7 / x0.4 (read by agora/piracy.py)
 - engines:   one tier; trips of 3+ rounds take one round less
-Upgrades are sunk costs: they add nothing to net worth, so buying one is a
-real trade-off against cash. Prices below are a starting point.
+Upgrades are capitalized at CAPITAL_PCT (50%) of what was paid: net worth,
+and so the stock's NAV, counts half the cost as a fitted asset (#151,
+settled with Zero 2026-09-23 10:33: "a 50% haircut for custom fitting").
+Buying one still costs half its price on the board, so it stays a bet, and
+the purchase is a public event the stock exchange reads as +2% (see
+agora/exchange.py SHOCKS). Prices below are a starting point.
 """
 
 import os
 from typing import Any, Dict, List
+
+CAPITAL_PCT = 0.5
 
 CATALOG: Dict[str, Dict[str, Any]] = {
     "shielding": {"prices": [4_000, 9_000], "factors": [0.7, 0.4],
@@ -67,6 +73,13 @@ class UpgradeDesk:
         t = self.tier(agent, kind)
         return CATALOG[kind]["factors"][t - 1] if t else 1.0
 
+    def book_value(self, agent: str) -> int:
+        """Fitted upgrades as an asset: CAPITAL_PCT of every tier's price."""
+        total = 0
+        for kind, tier in self.holdings(agent).items():
+            total += sum(CATALOG[kind]["prices"][:tier]) if kind in CATALOG else 0
+        return int(total * CAPITAL_PCT)
+
     def holdings(self, agent: str) -> Dict[str, int]:
         return {r["kind"]: r["tier"] for r in self.ref.conn.execute(
             "SELECT kind, tier FROM fleet_upgrades WHERE agent_id = ?", (agent,))}
@@ -104,5 +117,8 @@ class UpgradeDesk:
                                  (txn, seq, acct, d))
             ref.conn.execute("INSERT OR REPLACE INTO fleet_upgrades (agent_id, kind, tier, round) VALUES (?, ?, ?, ?)",
                              (agent, kind, t + 1, ref.current_round))
+            if getattr(ref, 'events_enabled', False):
+                ref.events.record_locked('upgrade', 'public', actor=agent, amount=price,
+                                         detail=f"{agent} fitted {kind} tier {t + 1} for {price} CR")
         return {'v': 1, 'kind': 'upgrade_ok', 'payload': {'agent_id': agent, 'upgrade': kind, 'tier': t + 1,
                                                           'price': price, 'upgrades': self.holdings(agent)}}

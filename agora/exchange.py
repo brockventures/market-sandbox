@@ -26,6 +26,16 @@ raw NAV would pay anyone who times other fleets' trips. VOL is the dial for
 how wild stock prices are. The noise is drawn from a generator seeded by
 the game seed, so a seeded game is reproducible.
 
+Event shocks (#151, Ryan 2026-09-23 10:28): news about a corp moves its
+stock. When an event becomes known (agora/events.py: recorded public, or a
+private/secret one exposed) the reference price of the stock in SHOCKS
+jumps once, multiplicatively, and then fades through REVERSION like any
+other move. NAV is not touched: a cargo loss already lowers NAV, so the
+shock is the market's reaction on top, not a second cut. Private and
+secret events move nothing until exposed. The jump lands on `ref` at
+once and shows in the quotes at the next round's refresh. No randomness:
+a seeded game shocks the same way every time.
+
 Takeover math: rivals start with 300 shares of a corp (3 x 100). A raider
 can reach its own 100 + 200 bought from rivals + whatever the exchange
 holds, so SHARES is capped at MAX_SHARES = 200 to keep 51% (510) out of
@@ -54,6 +64,36 @@ DEFAULT_DEPTH = 20
 # decays only through reversion toward NAV.
 IMPACT = 0.05
 
+# Event kind -> (whose stock moves: 'actor' or 'victim', fractional jump).
+# Starting values from #151 (Amos's comment, settled with Zero 10:33).
+SHOCKS: Dict[str, tuple] = {
+    'upgrade':            ('actor', 0.02),
+    'escort':             ('actor', 0.01),
+    'raid_repelled':      ('victim', 0.01),
+    'contract_lapse':     ('actor', -0.03),
+    'privateer_contract': ('actor', -0.08),   # fires only on exposure
+    'sabotage':           ('actor', -0.08),   # fires only on exposure
+    'stake_20':           ('victim', 0.03),   # takeover premium
+}
+# Cargo lost to a hazard or pirates: LOSS_PER of the price per LOSS_UNIT CR
+# lost (valued at agora.piracy.REF_PRICE), capped at LOSS_CAP.
+LOSS_KINDS = ('hazard_loss', 'pirate_loss')
+LOSS_PER, LOSS_UNIT, LOSS_CAP = -0.01, 10_000, -0.05
+
+
+def shock_for(ev: Dict[str, Any]) -> Optional[tuple]:
+    """(agent whose stock moves, fractional jump) for a known event, or None."""
+    kind = ev.get('kind')
+    if kind in LOSS_KINDS:
+        lost = max(0, int(ev.get('amount') or 0))
+        pct = max(LOSS_CAP, LOSS_PER * lost / LOSS_UNIT)
+        return (ev.get('victim'), pct) if pct else None
+    if kind not in SHOCKS:
+        return None
+    who, pct = SHOCKS[kind]
+    agent = ev.get(who)
+    return (agent, pct) if agent else None
+
 
 def clamp_shares(n: Any) -> int:
     try:
@@ -76,6 +116,7 @@ class EquityExchange:
         self.navs: Dict[str, List[float]] = {}
         self.price: Dict[str, float] = {}
         self.held: Dict[str, int] = {}
+        self.shocks: List[Dict[str, Any]] = []
 
     # ------------------------------------------------------------ genesis
 
@@ -147,8 +188,30 @@ class EquityExchange:
                     VALUES (?, ?, ?, ?, ?, ?, ?, 'open', NULL, 0, ?)
                 """, (oid, EXCHANGE_ID, sym, side, qty, price, seq, EXCHANGE_STATION))
 
+    # ------------------------------------------------------------ shocks
+
+    def event_shock_locked(self, ev: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Apply the one-off jump for an event that just became known.
+        No-op when the exchange is not quoting that stock."""
+        from agora.equity import FLEET_EQUITIES
+        s = shock_for(ev)
+        if not s:
+            return None
+        agent, pct = s
+        sym = FLEET_EQUITIES.get(agent, {}).get('symbol')
+        if not sym or sym not in self.price:
+            return None
+        before = self.price[sym]
+        self.price[sym] = max(1.0, before * (1 + pct))
+        rec = {'round': self.ref.current_round, 'symbol': sym, 'kind': ev.get('kind'), 'event_id': ev.get('id'),
+               'pct': pct, 'before': round(before, 2), 'after': round(self.price[sym], 2)}
+        self.shocks.append(rec)
+        del self.shocks[:-200]
+        return rec
+
     def summary(self) -> Dict[str, Any]:
         ref = self.ref
         return {'account': EXCHANGE_ID, 'vol': self.vol, 'spread': self.spread, 'depth': self.depth,
                 'cr': ref.get_balance(EXCHANGE_ID, 'CR'),
-                'reference_prices': {s: round(p, 2) for s, p in sorted(self.price.items())}}
+                'reference_prices': {s: round(p, 2) for s, p in sorted(self.price.items())},
+                'recent_shocks': self.shocks[-10:]}

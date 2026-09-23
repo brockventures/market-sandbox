@@ -264,6 +264,9 @@ class PiracyDesk:
     def charge_escort_locked(self, transit_id: str, agent: str, fee: int) -> None:
         if fee > 0:
             self._move(f"piracy-escort-{transit_id}", ((agent, 'CR', -fee), ('SYSTEM', 'CR', fee)))
+            if self._secrecy:
+                self.ref.events.record_locked('escort', 'public', actor=agent, amount=fee,
+                                              detail=f"{agent} hired an escort for {fee} CR")
 
     def roll_departure_locked(self, transit_id: str, agent: str, origin: str, dest: str, tolled: bool,
                               commodity: str, qty: int, escort: bool, escort_fee: int,
@@ -379,6 +382,18 @@ class PiracyDesk:
                             delay = ?, fenced_at = ?, resolved_round = ? WHERE transit_id = ?""",
                          (status, choice, int(timed_out), cr_taken, qty_taken, delay, fenced,
                           ref.current_round, tid))
+        # The raid's outcome is public news (#151 prices it; #153 keeps the
+        # sponsor out of it).
+        if self._secrecy:
+            agent = row['agent_id']
+            lost = cr_taken + cargo_value(row['commodity'], qty_taken)
+            if status == 'escaped':
+                ref.events.record_locked('raid_repelled', 'public', victim=agent,
+                                         detail=f"{agent} fought off raiders")
+            elif lost > 0:
+                what = f"paid a {cr_taken} CR ransom" if cr_taken else f"lost {qty_taken} {row['commodity']}"
+                ref.events.record_locked('pirate_loss', 'public', victim=agent, amount=lost,
+                                         detail=f"{agent} {what} to raiders (worth {lost} CR)")
 
     def respond(self, agent: str, transit_id: str, choice: str) -> Dict[str, Any]:
         ref = self.ref

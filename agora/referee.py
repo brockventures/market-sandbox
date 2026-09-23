@@ -36,6 +36,7 @@ from agora.salvage import DerelictSalvageEngine
 from agora.circuit_breaker import CircuitBreakerEngine, DEFAULT_BAND_PCT
 from agora.hazards import HazardEngine, env_hazards, parse_hazards
 from agora.piracy import PiracyDesk, env_piracy, parse_piracy, ESCORT_PCT as PIRACY_ESCORT_PCT
+from agora.piracy import cargo_value as piracy_cargo_value
 from agora.exchange import EquityExchange, EXCHANGE_ID, clamp_shares, DEFAULT_VOL
 
 
@@ -1155,6 +1156,10 @@ class AgoraReferee:
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'in_transit', ?, ?, 0, ?)
                 """, (transit_id, agent_id, origin, dest, dep_round, arr_round, comm, cargo_qty - hz_lost, required_fuel, int(is_perishable), decay_rate, toll_required))
                 self.hazards.record(transit_id, agent_id, dep_round, hz_delay, hz_lost, comm, hz_note)
+                if hz_lost and self.events_enabled:
+                    lost_cr = piracy_cargo_value(comm, hz_lost)
+                    self.events.record_locked('hazard_loss', 'public', victim=agent_id, amount=lost_cr,
+                                              detail=f"{agent_id} lost {hz_lost} {comm} in flight (worth {lost_cr} CR)")
 
                 # Piracy: escort fee, then the raid roll on what is still aboard.
                 self.piracy.charge_escort_locked(transit_id, agent_id, escort_fee)
@@ -2201,12 +2206,16 @@ class AgoraReferee:
         for agent, cr in bonds.items():
             escrow.setdefault(agent, {})
             escrow[agent]['CR'] = escrow[agent].get('CR', 0) + cr
+        upgrades = getattr(self, 'upgrades', None)
         for r in rows:
             adj = escrow.get(r['agent_id'], {})
             food = (r['food'] or 0) + adj.get('FOOD', 0)
             ore = (r['ore'] or 0) + adj.get('ORE', 0)
+            # Fitted ship upgrades at half their cost (agora/upgrades.py,
+            # #151); nothing for a corp that is out of the game.
+            fitted = upgrades.book_value(r['agent_id']) if upgrades and not self.fleet_out(r['agent_id']) else 0
             net_worth = (r['liquid'] + adj.get('CR', 0) + ((r['frags'] or 0) + adj.get('FRAG', 0)) * mark
-                         + food * commodity_marks['FOOD'] + ore * commodity_marks['ORE'])
+                         + food * commodity_marks['FOOD'] + ore * commodity_marks['ORE'] + fitted)
             board.append({
                 'agent_id': r['agent_id'],
                 'net_worth': net_worth,
@@ -2217,7 +2226,8 @@ class AgoraReferee:
                 'ore': r['ore'] if 'ore' in r.keys() else 0,
                 'bananas': r['frags'],  # backward compatibility alias
                 'mark_price': mark,
-                'commodity_marks': commodity_marks
+                'commodity_marks': commodity_marks,
+                'upgrades_value': fitted,
             })
         # Rival stocks count at their mark. A fleet's own shares do not count
         # toward its own net worth (that would be circular), and NAV is built

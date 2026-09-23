@@ -61,13 +61,14 @@ SCHEMA = """CREATE TABLE IF NOT EXISTS corp_events (
     visibility     TEXT NOT NULL DEFAULT 'public',
     link           TEXT,
     exposed_round  INTEGER,
-    exposed_by     TEXT
+    exposed_by     TEXT,
+    amount         INTEGER
 )"""
 
 # Columns added to the #148 corporate log (round, kind, agent_id, detail).
 # A live database made before this change gets them by ALTER TABLE.
 MIGRATE = (('actor', 'TEXT'), ('victim', 'TEXT'), ('visibility', "TEXT NOT NULL DEFAULT 'public'"),
-           ('link', 'TEXT'), ('exposed_round', 'INTEGER'), ('exposed_by', 'TEXT'))
+           ('link', 'TEXT'), ('exposed_round', 'INTEGER'), ('exposed_by', 'TEXT'), ('amount', 'INTEGER'))
 
 # GalNet scandal headlines for an exposed event, by kind.
 SCANDALS = {
@@ -122,10 +123,12 @@ class EventDesk:
 
     def record_locked(self, kind: str, visibility: str = 'public', actor: Optional[str] = None,
                       victim: Optional[str] = None, detail: str = '', round_num: Optional[int] = None,
-                      link: Optional[str] = None, agent_id: Optional[str] = None) -> int:
+                      link: Optional[str] = None, agent_id: Optional[str] = None,
+                      amount: Optional[int] = None) -> int:
         """Write one event and return its id. A new event on a link that is
         already exposed (a raid under a contract already unmasked) is born
-        exposed."""
+        exposed. `amount` is the CR at stake (a loss), when there is one.
+        A public event is news at once (on_known_locked)."""
         if visibility not in VISIBILITIES:
             raise ValueError(f"visibility must be one of {VISIBILITIES}")
         rnd = self.ref.current_round if round_num is None else round_num
@@ -139,8 +142,11 @@ class EventDesk:
                 exposed_round, exposed_by = rnd, prior['exposed_by']
         cur = self.ref.conn.execute(
             "INSERT INTO corp_events (round, kind, agent_id, detail, actor, victim, visibility, link, "
-            "exposed_round, exposed_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (rnd, kind, subject, detail, actor, victim, visibility, link, exposed_round, exposed_by))
+            "exposed_round, exposed_by, amount) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (rnd, kind, subject, detail, actor, victim, visibility, link, exposed_round, exposed_by, amount))
+        if visibility == 'public' and self.enabled:
+            self.on_known_locked(dict(self.ref.conn.execute("SELECT * FROM corp_events WHERE id = ?",
+                                                            (cur.lastrowid,)).fetchone()))
         return cur.lastrowid
 
     def expose_locked(self, event_id: int, by: str, round_num: Optional[int] = None) -> Optional[Dict[str, Any]]:
@@ -167,7 +173,11 @@ class EventDesk:
         return self.expose_locked(row['id'], by, round_num) if row else None
 
     def on_known_locked(self, ev: Dict[str, Any], exposed: bool = False) -> None:
-        """Hook for anything that reacts to news (stock shocks, #151)."""
+        """An event just became known: recorded public, or exposed (once,
+        for the root of a link). The exchange reacts to it (#151)."""
+        exchange = getattr(self.ref, 'exchange', None)
+        if exchange is not None:
+            exchange.event_shock_locked(ev)
 
     def _scandal_locked(self, ev: Dict[str, Any], by: str, round_num: int) -> None:
         if not ev.get('actor'):
@@ -237,7 +247,6 @@ class EventDesk:
                 self._news_locked(f"gn-stake-{eid}", round_num, f"{holder.upper()} TAKES A {pct}% STAKE IN {issuer.upper()}",
                                   f"Exchange filings show {holder} holding {r['balance']} shares of {sym}. "
                                   f"Traders read it as a possible takeover bid.")
-                self.on_known_locked(dict(conn.execute("SELECT * FROM corp_events WHERE id = ?", (eid,)).fetchone()))
                 out.append(eid)
         return out
 

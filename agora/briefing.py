@@ -175,6 +175,15 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
             out.append("The exchange itself always quotes every stock, a few shares a side each round, around a "
                        "price that follows the fleet's recent NAV but swings on its own. You can always buy or "
                        "sell some stock; for size, trade with other fleets.")
+            if getattr(ref, 'events_enabled', False):
+                from agora import exchange as X
+                pc = lambda v: f"{v * 100:+g}%"
+                out.append("News moves that price once, then it drifts back toward NAV: an upgrade "
+                           f"{pc(X.SHOCKS['upgrade'][1])}, an escort or a raid fought off {pc(X.SHOCKS['escort'][1])}, "
+                           f"cargo lost to a hazard or pirates {pc(X.LOSS_PER)} per {X.LOSS_UNIT:,} CR lost (at most "
+                           f"{pc(X.LOSS_CAP)}), a missed contract {pc(X.SHOCKS['contract_lapse'][1])}, a covert move "
+                           f"exposed {pc(X.SHOCKS['privateer_contract'][1])} for whoever paid for it, a rival reaching "
+                           f"20% of the fleet {pc(X.SHOCKS['stake_20'][1])}. Secrets move nothing until exposed.")
         out.append("- `BUY <qty> EQ_<FLEET> @ <price>` / `SELL <qty> EQ_<FLEET> @ <price>` (no `AT` needed)")
         out.append("")
         out.append("| Stock | Fleet | NAV | Board price | Bid / ask |")
@@ -234,7 +243,8 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
     if getattr(ref, 'upgrades_enabled', False):
         out.append("## Ship upgrades")
         out.append("Fitted while docked at any station, paid in CR, permanent for the game, one tier at a time. "
-                   "Upgrades add nothing to net worth: they are a bet that protection pays for itself. "
+                   "Net worth (and your stock's NAV) counts a fitted upgrade at half its price, so buying one "
+                   "is still a bet that protection pays for itself; the purchase itself lifts your stock about 2%. "
                    "`POST /referee/upgrades/buy {\"kind\": \"<kind>\"}`")
         out.append("")
         out.append("| Upgrade | Effect | Tier prices |")
