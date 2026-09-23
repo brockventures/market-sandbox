@@ -33,19 +33,31 @@ jobs:
         run: npx -y vercel@latest deploy --prod --token=${{ secrets.VERCEL_TOKEN }} --yes
 
       # Railway: agora-banana service, production environment.
-      # Hold the Railway deploy briefly for in-flight bursts to finish. If the referee
-      # is unreachable or a burst remains active after the watchdog window, deploy anyway.
+      # The referee's ledger is in memory, so a deploy mid-burst wipes the
+      # burst. Wait while a burst is running (up to 45 min; a burst is at most
+      # 8 x 180s = 24 min). A burst whose round counter has not moved for
+      # 8 minutes is wedged (2026-09-22: a lock deadlock froze one at round 5),
+      # so stop waiting and deploy the fix. Unreachable referee: deploy.
+      # workflow_dispatch skip_burst_wait=true skips the wait entirely.
       - name: Wait for any live burst to finish
         if: env.RAILWAY_TOKEN != '' && github.event.inputs.skip_burst_wait != 'true'
         run: |
-          for i in $(seq 1 12); do
-            active=$(curl -s -m 10 https://agora-banana-production.up.railway.app/referee/ticker/status \
-              | python3 -c "import json,sys; print(json.load(sys.stdin).get('burst_active'))" 2>/dev/null || echo unknown)
-            echo "check $i: burst_active=$active"
+          url=https://agora-banana-production.up.railway.app/referee/ticker/status
+          last_round=""; stalled_since=$(date +%s)
+          for i in $(seq 1 90); do
+            status=$(curl -s -m 10 "$url" || true)
+            active=$(printf '%s' "$status" | python3 -c "import json,sys; print(json.load(sys.stdin).get('burst_active'))" 2>/dev/null || echo unknown)
+            round=$(printf '%s' "$status" | python3 -c "import json,sys; print(json.load(sys.stdin).get('current_round'))" 2>/dev/null || echo unknown)
+            echo "check $i: burst_active=$active round=$round"
             [ "$active" = "True" ] || exit 0
-            sleep 10
+            if [ "$round" != "$last_round" ]; then last_round=$round; stalled_since=$(date +%s); fi
+            if [ $(( $(date +%s) - stalled_since )) -ge 480 ]; then
+              echo "::warning::burst active but round $round unchanged for 8 minutes; treating it as wedged and deploying"
+              exit 0
+            fi
+            sleep 30
           done
-          echo "::warning::burst wait timed out after 2 minutes; deploying anyway"
+          echo "::warning::burst still active after 45 minutes; deploying anyway"
 
       - name: Deploy to Railway
         if: env.RAILWAY_TOKEN != ''
