@@ -250,6 +250,12 @@ def buy_upgrades(ref: AgoraReferee, agent: str, cash_mult: float, stats) -> None
         return
 
 
+def trip_fuel(ref: AgoraReferee, agent: str, route: Optional[dict]) -> int:
+    """FUEL `agent` burns on `route`, as initiate_transit charges it: the
+    route's burn less any engines tier 2 cut (UpgradeDesk.engine_fuel, #189)."""
+    return ref.upgrades.engine_fuel(agent, route["fuel"]) if route else 0
+
+
 def want_escort(ref: AgoraReferee, agent: str, st: str, dest: str, comm: str, qty: int) -> bool:
     """Escort a belt trip when the raid loss it saves beats the fee."""
     if not ref.piracy.enabled or qty <= 0:
@@ -360,7 +366,7 @@ def contract_value(ref: AgoraReferee, agent: str, c: dict, view, one_hop: bool =
             continue
         qty = min(rem, 500, max(0, cash // ask))
         fuel_px = view[st]["FUEL"]["best_ask"] or 20
-        cost = (leg1["fuel"] + leg2["fuel"]) * fuel_px + leg1.get("toll", 0) + leg2.get("toll", 0)
+        cost = (trip_fuel(ref, agent, leg1) + trip_fuel(ref, agent, leg2)) * fuel_px + leg1.get("toll", 0) + leg2.get("toll", 0)
         short = ref.contract_desk.penalty_rate(agent) * c["price"] * (rem - qty)
         best = max(best, (c["price"] - ask) * qty - cost - short)
     if st == c["station_id"] and held > 0:
@@ -454,16 +460,15 @@ class PeerMarket:
         self.ref, self.kinds = ref, kinds
         self.remote = 0
 
-    @staticmethod
-    def _unit_trip_cost(view, st: str, dest: str, qty: int, r: int) -> float:
+    def _unit_trip_cost(self, agent: str, view, st: str, dest: str, qty: int, r: int) -> float:
         route = get_route(st, dest, r)
         if not route or qty <= 0:
             return float("inf")
-        return (route["fuel"] * (view[st]["FUEL"]["best_ask"] or 20) + route.get("toll", 0)) / qty
+        return (trip_fuel(self.ref, agent, route) * (view[st]["FUEL"]["best_ask"] or 20) + route.get("toll", 0)) / qty
 
-    def _best_haul(self, view, st: str, comm: str, qty: int, r: int) -> float:
+    def _best_haul(self, agent: str, view, st: str, comm: str, qty: int, r: int) -> float:
         here = view[st][comm]["best_bid"] or 0
-        away = max(((view[d][comm]["best_bid"] or 0) - self._unit_trip_cost(view, st, d, qty, r)
+        away = max(((view[d][comm]["best_bid"] or 0) - self._unit_trip_cost(agent, view, st, d, qty, r)
                     for d in STATIONS if d != st), default=0)
         return max(here, away)
 
@@ -487,7 +492,7 @@ class PeerMarket:
                 ask = sv[st][comm]["best_ask"]
                 if have < self.MIN_LOT or not ask:
                     continue
-                floor = self._best_haul(sv, st, comm, have, r)
+                floor = self._best_haul(seller, sv, st, comm, have, r)
                 price = max(int((floor + ask) // 2), int(floor) + 1)
                 if price >= ask:
                     continue
@@ -506,8 +511,8 @@ class PeerMarket:
                 loc = ref.get_vessel_location(buyer)
                 at = loc["transit"]["destination"] if loc.get("status") == "in_transit" else loc["station_id"]
                 bv = views[buyer]
-                reach = 0.0 if at == st else self._unit_trip_cost(bv, at, st, qty, r)
-                gain = max((bv[d][comm]["best_bid"] or 0) - self._unit_trip_cost(bv, st, d, qty, r)
+                reach = 0.0 if at == st else self._unit_trip_cost(buyer, bv, at, st, qty, r)
+                gain = max((bv[d][comm]["best_bid"] or 0) - self._unit_trip_cost(buyer, bv, st, d, qty, r)
                            for d in STATIONS if d != st) - reach
                 if gain > price and (best is None or (gain, buyer) > best[:2]):
                     best = (gain, buyer, at != st or loc.get("status") != "docked")
@@ -627,8 +632,9 @@ class Hauler:
                     continue
                 # Keep the CR for the trip's fuel: spending it on cargo left a
                 # hauler stranded with no fuel and no cash (#180).
-                fuel_cost = route["fuel"] * (quotes[st]["FUEL"]["best_ask"] or 20)
-                fuel_buy = max(0, route["fuel"] - inv["FUEL"]) * (quotes[st]["FUEL"]["best_ask"] or 20)
+                fuel = trip_fuel(ref, self.agent, route)
+                fuel_cost = fuel * (quotes[st]["FUEL"]["best_ask"] or 20)
+                fuel_buy = max(0, fuel - inv["FUEL"]) * (quotes[st]["FUEL"]["best_ask"] or 20)
                 qty = min(quotes[st][comm]["ask_depth"] or 0, cap, max(0, (inv["CR"] - 200 - fuel_buy) // ask))
                 if qty <= 0:
                     continue
@@ -704,7 +710,8 @@ class Hauler:
 
     def _fly(self, ref: AgoraReferee, st: str, dest: str, comm: str, inv, stats, empty: bool = False) -> None:
         route = get_route(st, dest, ref.current_round)
-        need = route["fuel"] - inv["FUEL"]
+        fuel = trip_fuel(ref, self.agent, route)
+        need = fuel - inv["FUEL"]
         if need > 0:
             fa = ref.get_depot_summary()["stations"][st]["FUEL"]["best_ask"]
             if fa and inv["CR"] >= need * fa:
@@ -718,7 +725,7 @@ class Hauler:
                         return
                 else:
                     stats["band_blocked"] += 1
-            if ref.get_balance(self.agent, "FUEL") < route["fuel"]:
+            if ref.get_balance(self.agent, "FUEL") < fuel:
                 self.stranded = True
                 stats["stranded_events"] += 1
                 return
@@ -797,7 +804,7 @@ class Maker:
         if self.relocate and st != self.venue:
             cancel_all(ref, self.agent)
             route = get_route(st, self.venue, ref.current_round)
-            if route and ref.get_balance(self.agent, "FUEL") >= route["fuel"]:
+            if route and ref.get_balance(self.agent, "FUEL") >= trip_fuel(ref, self.agent, route):
                 move(ref, self.agent, self.venue, "FRAG", 0, stats)
                 return
             self.venue = st  # cannot get there: make markets here
@@ -929,7 +936,7 @@ class Novice:
                 qty = min(500, max(0, (inv["CR"] - 300) // ask))
                 if qty <= 0:
                     continue
-                fuel_cost = route["fuel"] * (quotes[st]["FUEL"]["best_ask"] or 20)
+                fuel_cost = trip_fuel(ref, self.agent, route) * (quotes[st]["FUEL"]["best_ask"] or 20)
                 profit = (bid - ask) * qty - fuel_cost - route.get("toll", 0)
                 if profit > 0:
                     options.append((profit / route["rounds"], dest, comm, qty))
@@ -957,7 +964,8 @@ class Novice:
 
     def _fly(self, ref: AgoraReferee, st: str, dest: str, comm: str, inv, quotes, stats, empty: bool = False) -> None:
         route = get_route(st, dest, ref.current_round)
-        need = route["fuel"] - inv["FUEL"]
+        fuel = trip_fuel(ref, self.agent, route)
+        need = fuel - inv["FUEL"]
         if need > 0 and self.rng.random() >= self.p_no_fuel:
             fa = quotes[st]["FUEL"]["best_ask"]
             if fa and inv["CR"] >= need * fa and band_ok(ref, st, "FUEL", fa):

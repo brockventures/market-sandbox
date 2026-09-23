@@ -22,8 +22,10 @@ previous tier's, it does not stack on it):
 - hold:      cargo-loss chance x0.75 / x0.45 / x0.25; tiers 2 and 3 also
              make a loss take 30% less (LOSS_SIZE)
 - armor:     piracy raid chance x0.7 / x0.45 / x0.25 (read by agora/piracy.py)
-- engines:   tier 1: trips of 3+ rounds take one round less; tier 2: trips
-             of 5+ rounds take a further round less (ENGINE_CUTS)
+- engines:   tier 1: trips of 3+ rounds take one round less (ENGINE_CUTS);
+             tier 2: every trip burns 40% less FUEL (ENGINE_FUEL_CUT, #189 --
+             the old tier 2, a further round off trips of 5+ rounds, did
+             nothing: no route is longer than 3 rounds)
 Upgrades are capitalized at CAPITAL_PCT (50%) of what was paid: net worth,
 and so the stock's NAV, counts half the cost as a fitted asset (#151,
 settled with Zero 2026-09-23 10:33: "a 50% haircut for custom fitting").
@@ -46,14 +48,17 @@ CATALOG: Dict[str, Dict[str, Any]] = {
     "armor":     {"prices": [7_500, 11_000, 18_000], "factors": [0.7, 0.45, 0.25], "unlocks": [0, 100, 200],
                   "what": "cuts the chance of a pirate raid"},
     "engines":   {"prices": [12_000, 24_000], "factors": [1.0, 1.0], "unlocks": [40, 250],
-                  "what": "tier 1: trips of 3+ rounds take one round less; tier 2: trips of 5+ rounds "
-                          "take a further round less"},
+                  "what": "tier 1: trips of 3+ rounds take one round less; tier 2: every trip "
+                          "burns 40% less fuel"},
 }
 
 # hold: the size of a cargo loss, by tier held (tier 0 first).
 LOSS_SIZE = [1.0, 1.0, 0.7, 0.7]
 # engines: (minimum trip length in rounds, rounds cut) that each tier adds.
-ENGINE_CUTS = [(3, 1), (5, 1)]
+# Tier 2 adds no round cut; it cuts fuel instead (ENGINE_FUEL_CUT).
+ENGINE_CUTS = [(3, 1), (0, 0)]
+# engines: share of a trip's FUEL burn cut, by tier held (tier 0 first) (#189).
+ENGINE_FUEL_CUT = [0.0, 0.0, 0.4]
 
 NEWS_NOUN = {"shielding": "SHIELDING", "hold": "HARDENED HOLDS", "armor": "ARMOR PLATING", "engines": "ENGINES"}
 
@@ -121,6 +126,15 @@ class UpgradeDesk:
             return 0
         t = self.tier(agent, 'engines')
         return sum(cut for need, cut in ENGINE_CUTS[:t] if rounds >= need)
+
+    def engine_fuel(self, agent: str, fuel: int) -> int:
+        """FUEL a trip whose route burns `fuel` actually burns for `agent`:
+        engines tier 2 cuts it by ENGINE_FUEL_CUT (40%), rounded, never below
+        1 on a trip that burns any (#189)."""
+        if fuel <= 0 or not getattr(self.ref, 'upgrades_enabled', False):
+            return fuel
+        cut = ENGINE_FUEL_CUT[min(self.tier(agent, 'engines'), len(ENGINE_FUEL_CUT) - 1)]
+        return max(1, int(round(fuel * (1.0 - cut)))) if cut else fuel
 
     def book_value(self, agent: str) -> int:
         """Fitted upgrades as an asset: CAPITAL_PCT of every tier's price."""

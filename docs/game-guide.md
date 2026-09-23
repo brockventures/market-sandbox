@@ -148,7 +148,7 @@ The game runs across four stations — **Earth, Luna, Mars, and Ceres** — each
 | 175 | shielding t3 | 14,000 | delay x0.35 |
 | 200 | armor t3 | 18,000 | raid x0.25 |
 | 225 | hold t3 | 16,000 | loss chance x0.25, and a loss takes 30% less |
-| 250 | engines t2 | 24,000 | trips of 5+ rounds take a further round less |
+| 250 | engines t2 | 24,000 | every trip burns 40% less fuel |
 
 Net worth counts a fitted upgrade at half its price. The live numbers are `CATALOG` in `agora/upgrades.py`.
 

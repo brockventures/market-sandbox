@@ -1104,7 +1104,8 @@ class AgoraReferee:
                     'payload': {'reason': 'invalid_route', 'detail': f"No route between '{origin}' and '{dest}'"}
                 }
 
-            required_fuel = route['fuel']
+            # Engines tier 2 cuts the burn by 40% (agora/upgrades.py, #189).
+            required_fuel = self.upgrades.engine_fuel(agent_id, route['fuel'])
             fuel_bal = self.get_balance(agent_id, 'FUEL')
             committed_fuel = sum(
                 o.remaining_qty
@@ -1210,8 +1211,8 @@ class AgoraReferee:
                 delay_factor=self.upgrades.factor(agent_id, 'shielding'),
                 loss_factor=self.upgrades.factor(agent_id, 'hold'),
                 loss_size_factor=self.upgrades.loss_size_factor(agent_id))
-            # Engines upgrade: tier 1 cuts a round off trips of 3+ rounds,
-            # tier 2 another off trips of 5+ (agora/upgrades.py ENGINE_CUTS).
+            # Engines upgrade: tier 1 cuts a round off trips of 3+ rounds
+            # (agora/upgrades.py ENGINE_CUTS); tier 2 cut the fuel above.
             base_rounds = route['rounds'] - self.upgrades.engine_cut(agent_id, route['rounds'])
             arr_round = dep_round + base_rounds + hz_delay
 
