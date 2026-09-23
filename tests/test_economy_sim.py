@@ -53,6 +53,16 @@ class TestEconomySim(unittest.TestCase):
         self.assertIsNone(r["first_invariant_failure"])
         self.assertIn("trades", r["peer"])
 
+    def test_corporate_risk_runs_clean_and_is_reproducible(self):
+        a = run("novice_vs_haulers", "flat", seed=3, rounds=60, mode="tolerant", check_every=20,
+                depot_model="reactive", band_pct=0.25, corporate=True)
+        b = run("novice_vs_haulers", "flat", seed=3, rounds=60, mode="tolerant", check_every=20,
+                depot_model="reactive", band_pct=0.25, corporate=True)
+        self.assertIsNone(a["first_invariant_failure"])
+        self.assertGreater(a["corporate"]["claims"], 0)
+        self.assertEqual({k: v["leaderboard_nw"] for k, v in a["fleets"].items()},
+                         {k: v["leaderboard_nw"] for k, v in b["fleets"].items()})
+
     def test_dock_fee_charges_idlers(self):
         r = run("idle4", "flat", seed=1, rounds=20, dock_fee=10)
         for f in r["fleets"].values():
