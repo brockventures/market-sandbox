@@ -145,6 +145,11 @@ class ContractBoard:
         self.owned = owned
         # fleets allowed to buy contracts in trade(); None means every fleet
         self.contractors: Optional[set] = None
+        # Claim deposit (Ryan, #agent-chat 2026-09-23 08:37): the owner of a
+        # claimed contract has BOND_PCT of its face value locked with SYSTEM.
+        # Refunded pro rata on delivery, carried over (buyer pays it to the
+        # seller) on resale, forfeited to the contract's station on lapse.
+        self.bond_pct = 0.0
         self.transfers = 0
         self.transfer_cr = 0
         self.open: List[dict] = []
@@ -182,6 +187,20 @@ class ContractBoard:
                 and c["remaining"] > 0 and c["deadline"] >= arrival and self._mine(c, agent)]
         return max(live, key=lambda c: c["price"]) if live else None
 
+    def _cr(self, txn: str, legs) -> None:
+        ref = self.ref
+        with ref.lock, ref.conn:
+            for acct, d in legs:
+                if not d:
+                    continue
+                ref.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, 'CR', 0)", (acct,))
+                ref.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = 'CR'", (d, acct))
+                ref.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, 'CR', ?)",
+                                 (txn, ref.current_seq, acct, d))
+
+    def bond_for(self, c: dict) -> int:
+        return int(c["price"] * c["remaining"] * self.bond_pct)
+
     def deliver(self, agent: str, st: str) -> int:
         ref, got = self.ref, 0
         for c in sorted(self.open, key=lambda c: -c["price"]):
@@ -198,6 +217,10 @@ class ContractBoard:
                     ref.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?", (d, acct, inst))
                     ref.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)",
                                      (txn, ref.current_seq, acct, inst, d))
+            if c.get("bond"):
+                refund = c["bond"] * qty // c["remaining"]
+                self._cr(f"bond-refund-{c['id']}-{ref.current_round}", ((agent, refund), ("SYSTEM", -refund)))
+                c["bond"] -= refund
             c["remaining"] -= qty
             self.delivered += qty
             self.paid += qty * c["price"]
@@ -262,8 +285,11 @@ class ContractBoard:
             if v - own_v < min_gain:
                 continue
             price = (v + max(0, own_v)) // 2
-            if ref.get_balance(buyer, "CR") < price:
+            bond = c.get("bond", 0)
+            if ref.get_balance(buyer, "CR") < price + bond:
                 continue
+            if bond:
+                self._cr(f"bond-carry-{c['id']}-{ref.current_round}", ((buyer, -bond), (c["owner"], bond)))
             with ref.lock, ref.conn:
                 txn = f"ctrade-{c['id']}-{ref.current_round}"
                 for acct, d in ((buyer, -price), (c["owner"], price)):
@@ -464,10 +490,15 @@ class Corporate:
                 v = self.board.value_to(a, c, views[a])
                 if self.kinds.get(a) == "novice":
                     v = int(max(v, c["price"] * min(c["remaining"], 500) * 0.1) * self.rng.uniform(1.0, 2.5))
-                if v > 0:
+                if v > 0 and self.ref.get_balance(a, "CR") >= self.board.bond_for(c):
                     bids.append((v, a))
             if bids:
                 _, a = max(bids)
+                bond = self.board.bond_for(c)
+                if bond:
+                    self.board._cr(f"bond-{c['id']}", ((a, -bond), ("SYSTEM", bond)))
+                    self.stats["bonds_cr"] = self.stats.get("bonds_cr", 0) + bond
+                c["bond"] = bond
                 c["owner"] = a
                 held[a] += 1
                 self.stats["claims"] += 1
@@ -476,6 +507,10 @@ class Corporate:
         owner = c.get("owner")
         if not owner:
             return
+        if c.get("bond"):
+            self.board._cr(f"bond-forfeit-{c['id']}", (("SYSTEM", -c["bond"]), (f"depot_{c['station']}", c["bond"])))
+            self.stats["bonds_forfeited_cr"] = self.stats.get("bonds_forfeited_cr", 0) + c["bond"]
+            c["bond"] = 0
         pen = int(c["price"] * c["remaining"] * self.PENALTY)
         self.stats["penalties"] += 1
         self.stats["penalty_cr"] += pen
@@ -618,6 +653,41 @@ class Fog:
                     j["best_ask"] = j["best_bid"] + 1
                 out[st][comm] = j
         return out
+
+
+class Hazards:
+    """Bad-luck events on the way (Ryan, #agent-chat 2026-09-23 08:37: "there
+    needs to be pressure and bad luck events"). Each trip that leaves this
+    round has, independently:
+      P_DELAY  a flight delay of 1-3 rounds (a storm, an engine fault), which
+               can blow a contract deadline;
+      P_LOSS   a cargo loss of 30-70% (spoilage, a hull breach). The lost
+               goods stay with SYSTEM, so the ledger still balances.
+    Seeded from the game seed, so runs repeat."""
+
+    def __init__(self, p_delay: float, p_loss: float, seed: int):
+        self.p_delay, self.p_loss = p_delay, p_loss
+        self.rng = random.Random(seed * 104729)
+        self.stats = {"trips": 0, "delays": 0, "delay_rounds": 0, "losses": 0, "units_lost": 0}
+
+    def step(self, ref: AgoraReferee) -> None:
+        rows = ref.conn.execute("SELECT transit_id, cargo_qty, arrival_round FROM transits "
+                                "WHERE status = 'in_transit' AND departure_round = ?", (ref.current_round,)).fetchall()
+        for t in rows:
+            self.stats["trips"] += 1
+            with ref.lock, ref.conn:
+                if self.rng.random() < self.p_delay:
+                    d = self.rng.randint(1, 3)
+                    ref.conn.execute("UPDATE transits SET arrival_round = arrival_round + ? WHERE transit_id = ?",
+                                     (d, t["transit_id"]))
+                    self.stats["delays"] += 1
+                    self.stats["delay_rounds"] += d
+                if t["cargo_qty"] and self.rng.random() < self.p_loss:
+                    lost = int(t["cargo_qty"] * self.rng.uniform(0.3, 0.7))
+                    ref.conn.execute("UPDATE transits SET cargo_qty = cargo_qty - ? WHERE transit_id = ?",
+                                     (lost, t["transit_id"]))
+                    self.stats["losses"] += 1
+                    self.stats["units_lost"] += lost
 
 
 def charge_docking_fees(ref: AgoraReferee, fee: int) -> int:
@@ -1147,6 +1217,7 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
         contracts: bool = False, dock_fee: int = 0, owned_contracts: bool = False,
         fog: Optional[tuple] = None, peer: bool = False, corporate: bool = False,
         equity_mm: Optional[tuple] = None, exchange: Optional[tuple] = None, vol: Optional[float] = None,
+        bond: float = 0.0, hazards: Optional[tuple] = None,
         theta: Optional[float] = None, spread_scale: Optional[float] = None) -> dict:
     """spread_scale compresses each good's base price toward its four-station
     mean (1.0 = live, 0.5 = half the gap). It edits agora.spatial.BASE_PRICES
@@ -1161,14 +1232,16 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
                 spatial_mod.BASE_PRICES[st][c] = round(m + spread_scale * (saved[st][c] - m), 1)
     try:
         return _run(scenario, genesis, seed, rounds, mode, check_every, depot_model, band_pct, reactive_bands,
-                    contracts, dock_fee, owned_contracts, fog, peer, corporate, equity_mm, exchange, vol, theta)
+                    contracts, dock_fee, owned_contracts, fog, peer, corporate, equity_mm, exchange, vol, theta,
+                    bond, hazards)
     finally:
         for st, v in saved.items():
             spatial_mod.BASE_PRICES[st].update(v)
 
 
 def _run(scenario, genesis, seed, rounds, mode, check_every, depot_model, band_pct, reactive_bands,
-         contracts, dock_fee, owned_contracts, fog, peer, corporate, equity_mm, exchange, vol, theta) -> dict:
+         contracts, dock_fee, owned_contracts, fog, peer, corporate, equity_mm, exchange, vol, theta,
+         bond=0.0, hazards=None) -> dict:
     # Reactive depots are the referee's own implementation (agora/referee.py,
     # AGORA_DEPOT_MODEL), so these numbers describe what would ship.
     # corporate: claimed contracts with penalties, debt, distress share
@@ -1213,6 +1286,8 @@ def _run(scenario, genesis, seed, rounds, mode, check_every, depot_model, band_p
               if (contracts or owned_contracts or corporate) else None)
     if cboard is not None:
         cboard.contractors = {a for a, k in SCENARIOS[scenario].items() if k in CONTRACTORS}
+        cboard.bond_pct = bond
+    hz = Hazards(hazards[0], hazards[1], seed) if hazards else None
     corp = Corporate(ref, cboard, SCENARIOS[scenario], seed) if corporate else None
     fogger = Fog(fog[0], fog[1], seed) if fog else None
     desk = PeerDesk(ref) if peer else None
@@ -1248,6 +1323,8 @@ def _run(scenario, genesis, seed, rounds, mode, check_every, depot_model, band_p
         for a in live:
             if a in traders:
                 fleets[a].act(ref, views[a], stats)
+        if hz is not None:
+            hz.step(ref)
         ref.step_round()
         if corp is not None:
             corp.settle()
@@ -1282,6 +1359,10 @@ def _run(scenario, genesis, seed, rounds, mode, check_every, depot_model, band_p
                        for a in FLEETS},
             "nav_end": {sym: m1[sym]["nav"] for sym in EQ_SYM.values()},
         }
+    if hz is not None:
+        extra["hazards"] = hz.stats
+    if bond:
+        extra["bond_pct"] = bond
     return {**extra,
         "scenario": scenario, "genesis": genesis, "mode": mode, "seed": seed, "rounds": rounds,
         "depot_model": depot_model, "band_pct": ref.circuit_breaker.band_pct,
@@ -1351,10 +1432,17 @@ def main() -> int:
     ap.add_argument("--exchange", type=float, nargs=2, metavar=("SHARES", "VOL"), default=None,
                     help="the referee's own stock market maker: SHARES of each fleet (max 200), per-round VOL "
                          "(live default 100 0.03)")
+    ap.add_argument("--bond", type=float, default=0.0,
+                    help="claim deposit as a fraction of contract face value (e.g. 0.25), with --corporate")
+    ap.add_argument("--hazards", type=float, nargs=2, metavar=("P_DELAY", "P_LOSS"), default=None,
+                    help="per-trip chance of a 1-3 round delay and of losing 30-70%% of the cargo")
+    ap.add_argument("--penalty", type=float, default=None, help="contract lapse penalty (default 0.5)")
     ap.add_argument("--json", action="store_true", help="print raw results as JSON")
     ap.add_argument("--hang-timeout", type=int, default=300, help="dump stacks and exit if a run hangs")
     args = ap.parse_args()
 
+    if args.penalty is not None:
+        Corporate.PENALTY = args.penalty
     if args.drip:
         referee_mod.REACTIVE_MAIN_DRIP, referee_mod.REACTIVE_SIDE_DRIP = args.drip
     faulthandler.dump_traceback_later(args.hang_timeout, exit=True)
@@ -1372,7 +1460,8 @@ def main() -> int:
                                        equity_mm=((args.equity_mm[0], int(args.equity_mm[1]))
                                                   if args.equity_mm else None),
                                        exchange=tuple(args.exchange) if args.exchange else None,
-                                       vol=args.vol, theta=args.theta, spread_scale=args.spread_scale))
+                                       vol=args.vol, theta=args.theta, spread_scale=args.spread_scale,
+                                       bond=args.bond, hazards=tuple(args.hazards) if args.hazards else None))
     faulthandler.cancel_dump_traceback_later()
 
     if args.json:

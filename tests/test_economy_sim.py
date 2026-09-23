@@ -112,6 +112,16 @@ class TestEconomySim(unittest.TestCase):
         self.assertGreater(r["day_trades"], 0)
         self.assertEqual(sp.BASE_PRICES["ceres"]["ORE"], before)
 
+    def test_claim_bond_and_hazards_keep_ledger_balanced_and_repeat(self):
+        kw = dict(mode="tolerant", check_every=10, depot_model="reactive", band_pct=0.25,
+                  corporate=True, bond=0.25, hazards=(0.2, 0.1))
+        a = run("novice_vs_haulers", "flat", seed=2, rounds=120, **kw)
+        b = run("novice_vs_haulers", "flat", seed=2, rounds=120, **kw)
+        self.assertIsNone(a["first_invariant_failure"])
+        self.assertGreater(a["hazards"]["delays"] + a["hazards"]["losses"], 0)
+        self.assertGreater(a["corporate"].get("bonds_cr", 0), 0)
+        self.assertEqual({k: v["pnl"] for k, v in a["fleets"].items()}, {k: v["pnl"] for k, v in b["fleets"].items()})
+
     def test_dock_fee_charges_idlers(self):
         r = run("idle4", "flat", seed=1, rounds=20, dock_fee=10)
         for f in r["fleets"].values():
