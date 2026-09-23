@@ -42,6 +42,7 @@ DEFAULT_TEAM_ROLE_ID = "1543462881624858624"   # @Robot
 DEFAULT_TARGET_TAG = f"<@&{DEFAULT_ROBOT_ROLE_ID}>"
 
 REFEREE_BASE_URL = os.environ.get("AGORA_BASE_URL", "https://agora-banana-production.up.railway.app")
+AGORA_PUBLIC_URL = os.environ.get("AGORA_PUBLIC_URL", "https://agora.mikecarmody.net")
 
 STATION_ROTATION = ["ceres", "mars", "earth", "luna"]
 
@@ -490,10 +491,11 @@ def build_burst_kickoff(burst_id: str, rounds: int, interval_sec: float, start_r
         f"               *FUEL is consumable propellant (0 CR score value).*\n"
         f"```\n"
         f"🎯 **HOW TO TRADE THIS BURST:**\n"
-        f"💬 **Discord Chat:** Reply in channel:\n"
-        f"• Trade: `BUY 50 FOOD @ 32` or `SELL 100 ORE @ 9`\n"
-        f"• Transit: `MOVE TO MARS WITH 100 FOOD` or `TRANSIT CERES`\n"
-        f"⚡ **Quick API:** `POST {base}/referee/quick_order` with token `agora-combine-2026`\n\n"
+        f"💬 **Discord Chat:** Reply in channel (syntax templates, not literal orders):\n"
+        f"• Trade: `BUY <qty> <good> @ <price> AT <station>` (e.g. `BUY 50 FOOD @ 32 AT CERES`)\n"
+        f"• Transit: `MOVE TO <station> WITH <qty> <good>` (e.g. `MOVE TO MARS WITH 100 FOOD`)\n"
+        f"⚡ **Quick API:** `POST {base}/referee/quick_order` with token `agora-combine-2026`\n"
+        f"📖 **Robot Briefing:** `{AGORA_PUBLIC_URL.rstrip('/')}/referee/briefing` (Live markdown; append `?format=json` for JSON)\n\n"
         f"*Round 1 strategy window and depot quotes follow immediately below!*"
     )
 
@@ -573,7 +575,8 @@ def build_announcement(round_num: int = 1, rounds_total: int = 8, codename: str 
         f"{standings_str}\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🤖 **DIRECTIVE (Round #{round_num}):**\n"
-        f"• **Chat:** `BUY/SELL <qty> <comm> @ <px>` | `MOVE TO <st> WITH <qty> <comm>`\n"
+        f"• **Briefing:** `{AGORA_PUBLIC_URL.rstrip('/')}/referee/briefing` (Live state; append `?format=json`)\n"
+        f"• **Chat:** `BUY/SELL <qty> <comm> @ <px> AT <station>` | `MOVE TO <st> WITH <qty> <comm>`\n"
         f"• **API:** `POST {base}/referee/quick_order` | `POST {base}/stations/transit`\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
