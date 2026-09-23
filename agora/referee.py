@@ -201,6 +201,12 @@ class AgoraReferee:
                 INSERT OR REPLACE INTO vessel_locations (agent_id, station_id, docked_since, updated_at)
                 SELECT agent_id, home_station, 0, strftime('%Y-%m-%dT%H:%M:%fZ','now') FROM fleet_roster
             """)
+            self.conn.execute("""
+                INSERT OR REPLACE INTO vessels (vessel_id, agent_id, name, station_id, docked_since, status)
+                SELECT agent_id || '/1', agent_id, agent_id || ' Ship 1', home_station, 0, 'docked'
+                FROM fleet_roster
+                WHERE agent_id NOT LIKE 'depot_%' AND agent_id != 'SYSTEM'
+            """)
 
     def get_last_price(self, station_id: str, instrument: str) -> Optional[int]:
         """Return the most recent trade price for a specific station and instrument."""
@@ -234,7 +240,7 @@ class AgoraReferee:
                 if 'fleet_roster' not in tables:
                     self.conn.execute("""
                         CREATE TABLE IF NOT EXISTS fleet_roster (
-                            agent_id        TEXT PRIMARY KEY,
+                            agent_id        TEXT PRIMARY KEY CHECK (agent_id NOT LIKE '%/%'),
                             display_name    TEXT NOT NULL,
                             home_station    TEXT NOT NULL DEFAULT 'ceres',
                             genesis_cr      INTEGER NOT NULL,
@@ -298,6 +304,7 @@ class AgoraReferee:
                         CREATE TABLE IF NOT EXISTS transits (
                             transit_id      TEXT PRIMARY KEY,
                             agent_id        TEXT NOT NULL,
+                            vessel_id       TEXT,
                             origin          TEXT NOT NULL,
                             destination     TEXT NOT NULL,
                             departure_round INTEGER NOT NULL,
@@ -306,6 +313,20 @@ class AgoraReferee:
                             cargo_qty       INTEGER NOT NULL DEFAULT 0,
                             fuel_burned     INTEGER NOT NULL DEFAULT 0,
                             status          TEXT NOT NULL CHECK (status IN ('in_transit', 'arrived', 'cancelled')),
+                            created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                        )
+                    """)
+                if 'vessels' not in tables:
+                    self.conn.execute("""
+                        CREATE TABLE IF NOT EXISTS vessels (
+                            vessel_id       TEXT PRIMARY KEY,
+                            agent_id        TEXT NOT NULL,
+                            name            TEXT NOT NULL,
+                            station_id      TEXT NOT NULL,
+                            docked_since    INTEGER NOT NULL DEFAULT 0,
+                            bought_round    INTEGER NOT NULL DEFAULT 0,
+                            cost            INTEGER NOT NULL DEFAULT 0,
+                            status          TEXT NOT NULL DEFAULT 'docked',
                             created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
                         )
                     """)
@@ -342,6 +363,14 @@ class AgoraReferee:
                 self.conn.execute("""
                     INSERT OR IGNORE INTO vessel_locations (agent_id, station_id, docked_since)
                     SELECT agent_id, home_station, 0 FROM fleet_roster
+                """)
+
+                # Ensure default vessels exist for baseline fleet
+                self.conn.execute("""
+                    INSERT OR IGNORE INTO vessels (vessel_id, agent_id, name, station_id, docked_since, status)
+                    SELECT agent_id || '/1', agent_id, agent_id || ' Ship 1', home_station, 0, 'docked'
+                    FROM fleet_roster
+                    WHERE agent_id NOT LIKE 'depot_%' AND agent_id != 'SYSTEM'
                 """)
 
                 # Ensure genesis fuel exists if pre-dated Phase 2
@@ -394,6 +423,9 @@ class AgoraReferee:
                     self.conn.execute("ALTER TABLE transits ADD COLUMN decayed_qty INTEGER NOT NULL DEFAULT 0")
                 if 'toll_paid' not in t_cols:
                     self.conn.execute("ALTER TABLE transits ADD COLUMN toll_paid INTEGER NOT NULL DEFAULT 0")
+                if 'vessel_id' not in t_cols:
+                    self.conn.execute("ALTER TABLE transits ADD COLUMN vessel_id TEXT")
+                    self.conn.execute("UPDATE transits SET vessel_id = agent_id || '/1' WHERE vessel_id IS NULL")
 
             if 'orders' in tables or 'accounts' not in tables:
                 if not self.default_instrument:
@@ -449,6 +481,10 @@ class AgoraReferee:
                 "INSERT OR REPLACE INTO vessel_locations (agent_id, station_id, docked_since) VALUES (?, ?, 0)",
                 (r['agent_id'], r['home_station'])
             )
+            self.conn.execute(
+                "INSERT OR REPLACE INTO vessels (vessel_id, agent_id, name, station_id, docked_since, status) VALUES (?, ?, ?, ?, 0, 'docked')",
+                (f"{r['agent_id']}/1", r['agent_id'], f"{r['agent_id']} Ship 1", r['home_station'])
+            )
 
     def _seed_genesis_equities(self) -> None:
         """Mint each fleet's synthetic equity (FLEET_EQUITIES) at genesis."""
@@ -491,7 +527,7 @@ class AgoraReferee:
         with self.lock, self.conn:
             for table in (
                 'accounts', 'ledger_entries', 'book_events', 'station_prices',
-                'transits', 'vessel_locations', 'equity_loans', 'distress_beacons',
+                'transits', 'vessel_locations', 'vessels', 'equity_loans', 'distress_beacons',
                 'rescue_rfqs', 'rescue_quotes', 'salvage_claims',
                 'circuit_breaker_halts', 'orders', 'station_escrow', 'station_contracts', 'transit_hazards', 'corp_status', 'corp_events', 'fleet_upgrades',
                 'piracy_raids', 'piracy_privateers',
@@ -967,6 +1003,10 @@ class AgoraReferee:
                     "INSERT OR IGNORE INTO vessel_locations (agent_id, station_id, docked_since) VALUES (?, ?, 0)",
                     (agent_id, home)
                 )
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO vessels (vessel_id, agent_id, name, station_id, docked_since, status) VALUES (?, ?, ?, ?, 0, 'docked')",
+                    (f"{agent_id}/1", agent_id, f"{agent_id} Ship 1", home)
+                )
             return {
                 'agent_id': agent_id,
                 'station_id': home,
@@ -992,6 +1032,24 @@ class AgoraReferee:
         """)
         agents = [r[0] for r in cur.fetchall()]
         return [self.get_vessel_location(a) for a in agents]
+
+    def get_vessels(self, agent_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Return list of registered fleet vessels, optionally filtered by agent_id."""
+        cur = self.conn.cursor()
+        if agent_id:
+            cur.execute("""
+                SELECT vessel_id, agent_id, name, station_id, docked_since, bought_round, cost, status, created_at
+                FROM vessels
+                WHERE agent_id = ?
+                ORDER BY vessel_id ASC
+            """, (agent_id,))
+        else:
+            cur.execute("""
+                SELECT vessel_id, agent_id, name, station_id, docked_since, bought_round, cost, status, created_at
+                FROM vessels
+                ORDER BY agent_id ASC, vessel_id ASC
+            """)
+        return [dict(r) for r in cur.fetchall()]
 
     def get_station_prices(self, station_id: Optional[str] = None, commodity: Optional[str] = None) -> Dict[str, Any]:
         all_prices = self.spatial.get_prices()
@@ -1180,10 +1238,11 @@ class AgoraReferee:
                     self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, 'SYSTEM', ?, ?)", (f"escrow-{transit_id}", next_seq, comm, cargo_qty))
 
                 # 4. Transits record
+                vessel_id = f"{agent_id}/1"
                 self.conn.execute("""
-                    INSERT INTO transits (transit_id, agent_id, origin, destination, departure_round, arrival_round, commodity, cargo_qty, fuel_burned, status, perishable, decay_rate, decayed_qty, toll_paid)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'in_transit', ?, ?, 0, ?)
-                """, (transit_id, agent_id, origin, dest, dep_round, arr_round, comm, cargo_qty - hz_lost, required_fuel, int(is_perishable), decay_rate, toll_required))
+                    INSERT INTO transits (transit_id, agent_id, vessel_id, origin, destination, departure_round, arrival_round, commodity, cargo_qty, fuel_burned, status, perishable, decay_rate, decayed_qty, toll_paid)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'in_transit', ?, ?, 0, ?)
+                """, (transit_id, agent_id, vessel_id, origin, dest, dep_round, arr_round, comm, cargo_qty - hz_lost, required_fuel, int(is_perishable), decay_rate, toll_required))
                 self.hazards.record(transit_id, agent_id, dep_round, hz_delay, hz_lost, comm, hz_note)
                 if hz_lost and self.events_enabled:
                     lost_cr = piracy_cargo_value(comm, hz_lost)
@@ -1196,7 +1255,7 @@ class AgoraReferee:
                     transit_id, agent_id, origin, dest, toll_required > 0, comm,
                     max(0, cargo_qty - hz_lost), escort, escort_fee, dep_round)
 
-                # 5. Vessel locations
+                # 5. Vessel locations & vessels
                 self.conn.execute("""
                     INSERT INTO vessel_locations (agent_id, station_id, docked_since, updated_at)
                     VALUES (?, 'in_transit', ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
@@ -1205,6 +1264,14 @@ class AgoraReferee:
                         docked_since = ?,
                         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
                 """, (agent_id, dep_round, dep_round))
+                self.conn.execute("""
+                    INSERT INTO vessels (vessel_id, agent_id, name, station_id, docked_since, status)
+                    VALUES (?, ?, ?, 'in_transit', ?, 'in_transit')
+                    ON CONFLICT(vessel_id) DO UPDATE SET
+                        station_id = 'in_transit',
+                        docked_since = ?,
+                        status = 'in_transit'
+                """, (vessel_id, agent_id, f"{agent_id} Ship 1", dep_round, dep_round))
 
                 # 6. Book event tick. Ticks are public (GET /referee/ticks), so
                 # with secrecy on (#153) the tick carries the public view of a
@@ -1245,6 +1312,7 @@ class AgoraReferee:
                 'payload': {
                     'transit_id': transit_id,
                     'agent_id': agent_id,
+                    'vessel_id': vessel_id,
                     'origin': origin,
                     'destination': dest,
                     'departure_round': dep_round,
@@ -1298,7 +1366,7 @@ class AgoraReferee:
                 # Settle arriving transits
                 cur = self.conn.cursor()
                 cur.execute("""
-                    SELECT transit_id, agent_id, origin, destination, commodity, cargo_qty, arrival_round, departure_round, perishable, decay_rate
+                    SELECT transit_id, agent_id, vessel_id, origin, destination, commodity, cargo_qty, arrival_round, departure_round, perishable, decay_rate
                     FROM transits
                     WHERE status = 'in_transit' AND arrival_round <= ?
                 """, (new_round,))
@@ -1337,6 +1405,15 @@ class AgoraReferee:
                             docked_since = ?,
                             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
                     """, (ag_id, dest, new_round, dest, new_round))
+                    v_id = a['vessel_id'] if 'vessel_id' in a.keys() and a['vessel_id'] else f"{ag_id}/1"
+                    self.conn.execute("""
+                        INSERT INTO vessels (vessel_id, agent_id, name, station_id, docked_since, status)
+                        VALUES (?, ?, ?, ?, ?, 'docked')
+                        ON CONFLICT(vessel_id) DO UPDATE SET
+                            station_id = ?,
+                            docked_since = ?,
+                            status = 'docked'
+                    """, (v_id, ag_id, f"{ag_id} Ship 1", dest, new_round, dest, new_round))
 
                     arrival_payload = {
                         'transit_id': t_id,

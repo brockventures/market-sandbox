@@ -48,6 +48,7 @@ CREATE TABLE station_prices (
 CREATE TABLE transits (
     transit_id      TEXT PRIMARY KEY,
     agent_id        TEXT NOT NULL,
+    vessel_id       TEXT,
     origin          TEXT NOT NULL,
     destination     TEXT NOT NULL,
     departure_round INTEGER NOT NULL,
@@ -63,7 +64,20 @@ CREATE TABLE transits (
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 
--- Current docked station or transit status per agent vessel.
+-- Fleet vessels tracking per-ship state (ships 1-5).
+CREATE TABLE vessels (
+    vessel_id       TEXT PRIMARY KEY,
+    agent_id        TEXT NOT NULL,
+    name            TEXT NOT NULL,
+    station_id      TEXT NOT NULL,
+    docked_since    INTEGER NOT NULL DEFAULT 0,
+    bought_round    INTEGER NOT NULL DEFAULT 0,
+    cost            INTEGER NOT NULL DEFAULT 0,
+    status          TEXT NOT NULL DEFAULT 'docked',
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+-- Current docked station or transit status per agent vessel (backward-compatible shim).
 CREATE TABLE vessel_locations (
     agent_id        TEXT PRIMARY KEY,
     station_id      TEXT NOT NULL,
@@ -77,7 +91,7 @@ CREATE TABLE vessel_locations (
 -- once from db/seed.sql; every subsequent change should go through
 -- POST /referee/admin/fleets rather than a fixture edit.
 CREATE TABLE fleet_roster (
-    agent_id        TEXT PRIMARY KEY,
+    agent_id        TEXT PRIMARY KEY CHECK (agent_id NOT LIKE '%/%'),
     display_name    TEXT NOT NULL,
     home_station    TEXT NOT NULL DEFAULT 'ceres',
     genesis_cr      INTEGER NOT NULL,
