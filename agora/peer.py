@@ -105,7 +105,9 @@ class PeerDesk:
                 return _reject('too_many_offers', f"At most {MAX_OPEN_OFFERS_PER_FLEET} open offers per fleet")
             if self._available(seller, inst) < int(qty):
                 return _reject('insufficient_balance', f"Offer needs {qty} {inst}; available {self._available(seller, inst)}")
-            eid = f"x{uuid.uuid4().hex[:6]}"
+            # 12 hex digits: 6 (24 bits) collided within one simulated game, where
+            # the peer desk creates and cancels thousands of offers (#162).
+            eid = f"x{uuid.uuid4().hex[:12]}"
             self._move(f"peer-offer-{eid}", ((seller, inst, -int(qty)), ('SYSTEM', inst, int(qty))))
             ref.conn.execute("""INSERT INTO station_escrow
                 (escrow_id, station_id, seller, instrument, qty, price, created_round, status)

@@ -194,6 +194,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 upgrades=payload.get('upgrades'),
                 piracy=payload.get('piracy'),
                 events=payload.get('events'),
+                order_flow=payload.get('order_flow'),
             )
             self._send_json(200, {'v': 1, 'kind': 'new_game_ok', 'payload': result})
             return
@@ -1497,6 +1498,8 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                                   'contracts': ref.contract_desk.list(status=status, station_id=st)})
         elif path == '/referee/piracy':
             self._send_json(200, {'status': 'ok', **ref.piracy.status(self._reader())})
+        elif path == '/referee/order-flow':
+            self._send_json(200, {'status': 'ok', 'round': ref.current_round, **ref.order_flow.status()})
         elif path == '/referee/peer/offers':
             st = query_params.get('station_id', [None])[0]
             status = query_params.get('status', ['offered'])[0]
@@ -1549,6 +1552,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                     'upgrades': 'GET /referee/upgrades?agent_id= ; POST /referee/upgrades/buy {kind}',
                     'contract_actions': 'POST /referee/contracts/{id}/claim | list {price} | buy | deliver {qty}',
                     'piracy': 'GET /referee/piracy (hot station, odds, recent raids, privateer contracts)',
+                    'order_flow': 'GET /referee/order-flow (NPC buy/sell flow each station sends to fleet quotes before its depot)',
                     'piracy_respond': 'POST /referee/piracy/{transit_id}/respond {choice: pay|surrender|fight} (before the next round tick)',
                     'privateers': 'POST /referee/privateers {target} (3,000 CR, +15% raid chance on the target for 20 rounds)',
                     'transit': 'POST /stations/transit {destination, commodity, cargo_qty, escort: optional bool}',
@@ -1786,6 +1790,7 @@ def build_referee_from_env(db_path: str = 'agora.db', **overrides) -> AgoraRefer
       AGORA_HAZARDS=0.2,0.1    per-trip chance of a 1-3 round delay, and of losing 30-70% of the cargo; 0 = off
       AGORA_PIRACY=0.15,0.04   raid chance on belt (tolled) and inner routes, before hot-station and cargo-value scaling; 0 = off
       AGORA_EVENTS=1           secrecy and exposure: private/secret corp events, leak rolls, GalNet scandals
+      AGORA_ORDER_FLOW=1       station order flow: NPC buyers and sellers fill fleet quotes before the depot
 
     overrides: AgoraReferee keyword arguments that replace the env-derived
     ones. The server passes none. The simulator passes only what its CLI
@@ -1811,7 +1816,8 @@ def build_referee_from_env(db_path: str = 'agora.db', **overrides) -> AgoraRefer
                         corporate=_on('AGORA_CORPORATE'),
                         upgrades=_on('AGORA_UPGRADES'),
                         piracy=os.environ.get('AGORA_PIRACY', '0.15,0.04'),
-                        events=_on('AGORA_EVENTS'))
+                        events=_on('AGORA_EVENTS'),
+                        order_flow=_on('AGORA_ORDER_FLOW'))
     kwargs.update(overrides)
     return AgoraReferee(db_path=db_path, **kwargs)
 

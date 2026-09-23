@@ -72,7 +72,7 @@ class _Spy:
 # An environment that would turn features off if anything read it.
 HOSTILE_ENV = {'AGORA_UPGRADES': '0', 'AGORA_PIRACY': '0', 'AGORA_CONTRACTS': '0', 'AGORA_FOG': '0',
                'AGORA_PEER_TRADES': '0', 'AGORA_CORPORATE': '0', 'AGORA_HAZARDS': '0', 'AGORA_IDLE_FEE': '0',
-               'AGORA_EVENTS': '0'}
+               'AGORA_EVENTS': '0', 'AGORA_ORDER_FLOW': '0'}
 
 
 class TestSimulatorPlaysTheLiveGame(unittest.TestCase):
@@ -110,6 +110,7 @@ class TestSimulatorPlaysTheLiveGame(unittest.TestCase):
         self.assertIsNotNone(ref.fog)
         self.assertIsNotNone(ref.hazards.odds)
         self.assertTrue(ref.piracy.enabled)
+        self.assertTrue(ref.order_flow.enabled)
         self.assertGreater(ref.exchange_shares, 0)
         self.assertGreater(ref.idle_fee, 0)
         self.assertGreater(ref.rival_shares, 0)
