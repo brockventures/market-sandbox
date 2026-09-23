@@ -69,6 +69,8 @@ SCENARIOS = {
     # erratic novices. Needs --equity-mm for anyone to trade with.
     "stocks": {"zero": "hauler", "amos": "hauler", "marvin": "stock_trader", "aerial": "hauler"},
     "stocks_vs_novices": {"zero": "novice", "amos": "hauler", "marvin": "stock_trader", "aerial": "novice"},
+    # Day trading from price history (Ryan, #agent-chat 2026-09-22 22:30).
+    "daytrade_vs_haulers": {"zero": "hauler", "amos": "hauler", "marvin": "daytrader", "aerial": "daytrader"},
 }
 
 
@@ -1026,8 +1028,58 @@ class StockTrader:
         self.stock_cash += ref.get_balance(self.agent, "CR") - before
 
 
+class DayTrader:
+    """Never flies. Trades its docked station's goods from price history
+    alone, which is what a public /referee/history would give a player:
+    buys a good when its ask is DIP below the good's WINDOW-round average
+    mid, sells what it bought once the bid is back at that average, or
+    after MAX_HOLD rounds whatever the price."""
+
+    WINDOW, DIP, MAX_HOLD, LOT_CR = 20, 0.08, 12, 10 ** 9  # LOT_CR: all its cash, like a hauler
+
+    def __init__(self, agent: str):
+        self.agent = agent
+        self.mids: Dict[str, List[float]] = {}
+        self.pos: Dict[str, List[int]] = {}  # comm -> [qty, rounds_held]
+
+    def act(self, ref: AgoraReferee, quotes, stats) -> None:
+        st = location(ref, self.agent)
+        if st is None:
+            return
+        cancel_all(ref, self.agent)
+        for comm in ("FRAG", "FOOD", "ORE"):
+            q = quotes[st][comm]
+            bid, ask = q["best_bid"], q["best_ask"]
+            if not bid or not ask:
+                continue
+            hist = self.mids.setdefault(comm, [])
+            hist.append((bid + ask) / 2)
+            del hist[:-self.WINDOW]
+            if len(hist) < self.WINDOW:
+                continue
+            avg = sum(hist) / len(hist)
+            qty, held = self.pos.get(comm, [0, 0])
+            if qty > 0:
+                held += 1
+                if (bid >= avg or held >= self.MAX_HOLD) and band_ok(ref, st, comm, bid):
+                    before = ref.get_balance(self.agent, comm)
+                    order(ref, self.agent, "ask", qty, bid, comm, st, "dtsell")
+                    sold = before - ref.get_balance(self.agent, comm)
+                    qty -= sold
+                    stats["day_trades"] = stats.get("day_trades", 0) + (1 if sold else 0)
+                self.pos[comm] = [qty, held if qty else 0]
+            elif ask <= avg * (1 - self.DIP) and band_ok(ref, st, comm, ask):
+                n = min(q["ask_depth"] or 0, self.LOT_CR // ask, max(0, (ref.get_balance(self.agent, "CR") - 500) // ask))
+                if n > 0:
+                    before = ref.get_balance(self.agent, comm)
+                    order(ref, self.agent, "bid", n, ask, comm, st, "dtbuy")
+                    got = ref.get_balance(self.agent, comm) - before
+                    if got > 0:
+                        self.pos[comm] = [got, 0]
+
+
 STRATEGY = {"hauler": Hauler, "maker": Maker, "idler": Idler, "stock_trader": StockTrader,
-            "inside_maker": lambda a: Maker(a, clip=100, inside=True)}
+            "inside_maker": lambda a: Maker(a, clip=100, inside=True), "daytrader": DayTrader}
 
 
 # ------------------------------------------------------------ genesis
@@ -1094,7 +1146,29 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
         depot_model: str = "static", band_pct: Optional[float] = None, reactive_bands: bool = True,
         contracts: bool = False, dock_fee: int = 0, owned_contracts: bool = False,
         fog: Optional[tuple] = None, peer: bool = False, corporate: bool = False,
-        equity_mm: Optional[tuple] = None) -> dict:
+        equity_mm: Optional[tuple] = None, vol: Optional[float] = None,
+        theta: Optional[float] = None, spread_scale: Optional[float] = None) -> dict:
+    """spread_scale compresses each good's base price toward its four-station
+    mean (1.0 = live, 0.5 = half the gap). It edits agora.spatial.BASE_PRICES
+    in place for the run and restores it; the static depot model hardcodes
+    some Earth/Ceres quotes, so use it with depot_model='reactive'."""
+    import agora.spatial as spatial_mod
+    saved = {st: dict(v) for st, v in spatial_mod.BASE_PRICES.items()}
+    if spread_scale is not None:
+        for c in TRADED:
+            m = sum(saved[st][c] for st in STATIONS) / len(STATIONS)
+            for st in STATIONS:
+                spatial_mod.BASE_PRICES[st][c] = round(m + spread_scale * (saved[st][c] - m), 1)
+    try:
+        return _run(scenario, genesis, seed, rounds, mode, check_every, depot_model, band_pct, reactive_bands,
+                    contracts, dock_fee, owned_contracts, fog, peer, corporate, equity_mm, vol, theta)
+    finally:
+        for st, v in saved.items():
+            spatial_mod.BASE_PRICES[st].update(v)
+
+
+def _run(scenario, genesis, seed, rounds, mode, check_every, depot_model, band_pct, reactive_bands,
+         contracts, dock_fee, owned_contracts, fog, peer, corporate, equity_mm, vol, theta) -> dict:
     # Reactive depots are the referee's own implementation (agora/referee.py,
     # AGORA_DEPOT_MODEL), so these numbers describe what would ship.
     # corporate: claimed contracts with penalties, debt, distress share
@@ -1110,6 +1184,12 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
                  rival_shares=100 if corporate else 0)
     if genesis == "planet":
         apply_planet_genesis(ref)
+    # Price engine knobs (agora/spatial.py StationPriceEngine: vol is the
+    # per-round Gaussian sigma in CR, theta the pull back to base).
+    if vol is not None:
+        ref.spatial.vol = vol
+    if theta is not None:
+        ref.spatial.theta = theta
     def build(a: str, kind: str):
         if kind == "hauler":
             return Hauler(a, tolerate_halts=(mode == "tolerant"))
@@ -1219,6 +1299,8 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
         "band_blocked_checks": stats["band_blocked"],
         "stranded_events": stats["stranded_events"],
         "bad_orders": stats.get("bad_orders", 0),
+        "day_trades": stats.get("day_trades", 0),
+        "vol": ref.spatial.vol, "theta": ref.spatial.theta,
         "rejected_moves": stats.get("rejected_moves", 0),
         "ore_spread_by_quarter": [round(statistics.mean(spread[i:i + q]), 1) for i in range(0, len(spread), q)][:4],
         "first_negative_depot_round": first_negative_depot,
@@ -1244,6 +1326,10 @@ def main() -> int:
                     help="contracts are awarded to one corp, only it can deliver, and corps can sell them to each other")
     ap.add_argument("--corporate", action="store_true",
                     help="claimed contracts with penalties, debt, distress share auctions, 51%% takeovers")
+    ap.add_argument("--vol", type=float, default=None, help="price engine per-round sigma in CR (live default 0.8)")
+    ap.add_argument("--spread-scale", type=float, default=None,
+                    help="compress station price gaps toward each good's mean (1.0 = live); use with reactive depots")
+    ap.add_argument("--theta", type=float, default=None, help="price engine mean reversion (live default 0.15)")
     ap.add_argument("--peer", action="store_true",
                     help="fleet-to-fleet goods trades agreed at a distance, collected at the seller's station")
     ap.add_argument("--fog", type=float, nargs=2, metavar=("LAG", "NOISE"), default=None,
@@ -1273,7 +1359,8 @@ def main() -> int:
                                        fog=(int(args.fog[0]), args.fog[1]) if args.fog else None,
                                        peer=args.peer, corporate=args.corporate,
                                        equity_mm=((args.equity_mm[0], int(args.equity_mm[1]))
-                                                  if args.equity_mm else None)))
+                                                  if args.equity_mm else None),
+                                       vol=args.vol, theta=args.theta, spread_scale=args.spread_scale))
     faulthandler.cancel_dump_traceback_later()
 
     if args.json:
