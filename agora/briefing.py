@@ -211,6 +211,20 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
             out.append("")
             for e in summ['events'][:8]:
                 out.append(f"- round {e['round']}: {e['detail'] if e['detail'].startswith(e['agent_id']) else e['agent_id'] + ': ' + e['detail']}")
+    if getattr(ref, 'upgrades_enabled', False):
+        out.append("## Ship upgrades")
+        out.append("Fitted while docked at any station, paid in CR, permanent for the game, one tier at a time. "
+                   "Upgrades add nothing to net worth: they are a bet that protection pays for itself. "
+                   "`POST /referee/upgrades/buy {\"kind\": \"<kind>\"}`")
+        out.append("")
+        out.append("| Upgrade | Effect | Tier prices |")
+        out.append("|---|---|---|")
+        for c in ref.upgrades.catalog():
+            out.append(f"| {c['kind']} | {c['what']} | {' / '.join(str(p) for p in c['prices'])} |")
+        rows = ref.conn.execute("SELECT agent_id, kind, tier FROM fleet_upgrades ORDER BY agent_id, kind").fetchall()
+        if rows:
+            out.append("")
+            out.append("Fitted: " + "; ".join(f"{r['agent_id']} {r['kind']} {r['tier']}" for r in rows))
         out.append("")
     odds = getattr(getattr(ref, 'hazards', None), 'odds', None)
     if odds:

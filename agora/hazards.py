@@ -77,15 +77,17 @@ class HazardEngine:
     def reset(self, seed: int) -> None:
         self.rng = random.Random(f"hazards-{seed}")
 
-    def roll(self, cargo_qty: int) -> Tuple[int, int, str]:
+    def roll(self, cargo_qty: int, delay_factor: float = 1.0, loss_factor: float = 1.0,
+             loss_size_factor: float = 1.0) -> Tuple[int, int, str]:
         """(extra rounds, units lost, note). Always draws the same number of
         values so one trip's outcome does not shift the next trip's."""
         if not self.odds:
             return 0, 0, ''
         p_delay, p_loss = self.odds
         a, d, b, f = self.rng.random(), self.rng.randint(*DELAY_ROUNDS), self.rng.random(), self.rng.uniform(*LOSS_FRACTION)
-        delay = d if a < p_delay else 0
-        lost = int(cargo_qty * f) if (cargo_qty > 0 and b < p_loss) else 0
+        # *_factor: ship upgrades (agora/upgrades.py) scale the odds and the loss.
+        delay = d if a < p_delay * delay_factor else 0
+        lost = int(cargo_qty * f * loss_size_factor) if (cargo_qty > 0 and b < p_loss * loss_factor) else 0
         notes = []
         if delay:
             notes.append(f"storm on the route: arrival {delay} round{'s' if delay > 1 else ''} late")
