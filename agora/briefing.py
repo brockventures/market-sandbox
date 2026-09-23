@@ -187,6 +187,19 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
             f"{r['agent_id']}: " + (", ".join(f"{q} {sym}" for sym, q in sorted(r.get('stocks', {}).items())) or "none")
             for r in board))
         out.append("")
+    odds = getattr(getattr(ref, 'hazards', None), 'odds', None)
+    if odds:
+        out.append("## Hazards in flight")
+        out.append(f"Every trip risks bad luck, rolled when you leave and reported at once in your move's response: "
+                   f"a {int(round(odds[0] * 100))}% chance of a storm that adds 1-3 rounds to the trip (a late ship can miss "
+                   f"a contract deadline), and a {int(round(odds[1] * 100))}% chance of losing 30-70% of the cargo. "
+                   f"When it happens, work around it: sell a contract you will now miss, raise cash, change plans.")
+        recent = ref.hazards.recent(max(0, ref.current_round - 10))
+        if recent:
+            out.append("")
+            for h in recent[:8]:
+                out.append(f"- round {h['round']}: {h['agent_id']}: {h['note']}")
+        out.append("")
     if getattr(ref, 'peer_trades', False):
         out.append("## Trades between fleets")
         out.append("A fleet docked at a station can offer goods it holds there. Any fleet, anywhere, can accept. "

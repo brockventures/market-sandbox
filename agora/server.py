@@ -189,6 +189,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 exchange_shares=payload.get('exchange_shares'),
                 exchange_vol=payload.get('exchange_vol'),
                 contracts=payload.get('contracts'),
+                hazards=payload.get('hazards'),
             )
             self._send_json(200, {'v': 1, 'kind': 'new_game_ok', 'payload': result})
             return
@@ -1636,6 +1637,7 @@ def build_referee_from_env(db_path: str = 'agora.db') -> AgoraReferee:
       AGORA_EXCHANGE_SHARES=100  shares of each fleet the exchange market maker holds (max 200); 0 = off
       AGORA_EXCHANGE_VOL=0.03  per-round volatility of the exchange's stock prices
       AGORA_CONTRACTS=1        owned, tradable station contracts (25% deposit, 50% lapse penalty)
+      AGORA_HAZARDS=0.2,0.1    per-trip chance of a 1-3 round delay, and of losing 30-70% of the cargo; 0 = off
     """
     def _on(name: str) -> bool:
         return os.environ.get(name, '1').strip().lower() not in ('0', 'false', 'off', 'no')
@@ -1650,7 +1652,8 @@ def build_referee_from_env(db_path: str = 'agora.db') -> AgoraReferee:
                         rival_shares=_int_env('AGORA_RIVAL_SHARES', 100),
                         exchange_shares=_int_env('AGORA_EXCHANGE_SHARES', 100),
                         exchange_vol=_float_env('AGORA_EXCHANGE_VOL', 0.03),
-                        contracts=_on('AGORA_CONTRACTS'))
+                        contracts=_on('AGORA_CONTRACTS'),
+                        hazards=os.environ.get('AGORA_HAZARDS', '0.2,0.1'))
 
 
 def _float_env(name: str, default: float) -> float:
