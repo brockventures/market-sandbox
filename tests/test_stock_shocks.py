@@ -101,11 +101,15 @@ class TestShocks(unittest.TestCase):
         ref.piracy.hire('zero', 'amos')
         ref.piracy.rng = Fixed(0.0, 0.0)
         ref.initiate_transit('amos', 'mars', 'FRAG', CARGO // 2)
-        ref.step_round()
-        ref.step_round()
-        ref.step_round()
+        for _ in range(4):
+            ref.step_round()
+        with ref.lock, ref.conn:
+            ref.piracy._move('test-topup', (('SYSTEM', 'CR', -20_000), ('zero', 'CR', 20_000)))
+        zc = ref.get_balance('zero', 'CR')
         ref.piracy.rng = Fixed(0.0, 0.0)
-        ref.initiate_transit('amos', 'earth', 'FRAG', 50)
+        self.assertTrue(ref.initiate_transit('amos', 'earth', 'FRAG', 50)['payload']['piracy']['raided'])
+        self.assertEqual(ref.conn.execute("SELECT COUNT(*) FROM piracy_raids WHERE traced = 1").fetchone()[0], 2)
+        self.assertEqual(ref.get_balance('zero', 'CR'), zc - P.PRIV_COST * P.PRIV_FINE)
         self.assertEqual(len([s for s in ref.exchange.shocks if s['kind'] == 'privateer_contract']), 1)
 
     def test_upgrade_escort_and_losses_from_live_actions(self):
