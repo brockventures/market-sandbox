@@ -287,9 +287,13 @@ class CovertDesk:
                                                  amount=loss_cr)
 
             if traced:
-                # Treble damages restitution: 12,000 CR fine transferred from actor to victim
+                # Treble damages restitution: 12,000 CR fine paid to victim
+                # If actor cannot pay in full, referee/SYSTEM guarantees victim restitution
+                # and books the shortfall as debt owed by actor to SYSTEM.
                 actor_cr = ref.get_balance(actor, 'CR')
                 fine_paid = min(actor_cr, SABOTAGE_FINE)
+                shortfall = SABOTAGE_FINE - fine_paid
+
                 if fine_paid > 0:
                     seq = ref._get_next_seq()
                     txn = f"sabotage-fine-{actor}-{target}-r{rnd}"
@@ -300,11 +304,21 @@ class CovertDesk:
                         ref.conn.execute(
                             "INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, 'CR', ?)",
                             (txn, seq, acct, d))
-                if fine_paid < SABOTAGE_FINE and getattr(ref, 'corporate_enabled', False):
-                    debt_delta = SABOTAGE_FINE - fine_paid
-                    ref.conn.execute(
-                        "UPDATE corp_status SET debt = debt + ? WHERE agent_id = ?",
-                        (debt_delta, actor))
+
+                if shortfall > 0:
+                    seq_sys = ref._get_next_seq()
+                    txn_sys = f"sabotage-restitution-sys-{target}-r{rnd}"
+                    for acct, d in (('SYSTEM', -shortfall), (target, shortfall)):
+                        ref.conn.execute(
+                            "UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = 'CR'",
+                            (d, acct))
+                        ref.conn.execute(
+                            "INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, 'CR', ?)",
+                            (txn_sys, seq_sys, acct, d))
+                    if getattr(ref, 'corporate_enabled', False):
+                        ref.conn.execute(
+                            "UPDATE corp_status SET debt = debt + ? WHERE agent_id = ?",
+                            (shortfall, actor))
 
                 if ev_id and getattr(ref, 'events_enabled', False):
                     ref.events.expose_locked(ev_id, 'trace', rnd)
@@ -346,9 +360,14 @@ class CovertDesk:
             victim = ev.get('victim')
             kind = ev.get('kind')
             ev_rnd = ev.get('round', 0)
+            hidden = ev.get('actor_hidden', False)
 
-            # Skip events where actor is unknown / hidden
-            if not actor or not victim or actor == victim or actor not in fleets or victim not in fleets:
+            if not victim or victim not in fleets:
+                continue
+
+            if not actor or hidden:
+                actor = 'unknown'
+            elif actor == victim or actor not in fleets:
                 continue
 
             age = max(0, rnd - ev_rnd)
