@@ -3238,7 +3238,7 @@
             return `
             <tr class="ask-row">
               <td style="font-weight: bold;">${Number(o.limit_price).toLocaleString()} CR</td>
-              <td>${Number(o.qty).toLocaleString()} ${currentCommodity}</td>
+              <td>${(o.qty !== null && o.qty !== undefined) ? Number(o.qty).toLocaleString() + ' ' + currentCommodity : '[DEPOT POOL]'}</td>
               <td style="text-align: right; color: var(--text-dim); font-size: 0.75rem;">${syndicate}</td>
             </tr>
           `;
@@ -3256,7 +3256,7 @@
             return `
             <tr class="bid-row">
               <td style="font-weight: bold;">${Number(o.limit_price).toLocaleString()} CR</td>
-              <td>${Number(o.qty).toLocaleString()} ${currentCommodity}</td>
+              <td>${(o.qty !== null && o.qty !== undefined) ? Number(o.qty).toLocaleString() + ' ' + currentCommodity : '[DEPOT POOL]'}</td>
               <td style="text-align: right; color: var(--text-dim); font-size: 0.75rem;">${syndicate}</td>
             </tr>
           `;
@@ -3264,7 +3264,11 @@
         }
 
         // Spread & Mid
-        if (asks.length && bids.length) {
+        if (book.fogged) {
+          const askPx = asks.length ? asks[0].limit_price.toLocaleString() + ' CR' : 'EMPTY';
+          const bidPx = bids.length ? bids[0].limit_price.toLocaleString() + ' CR' : 'EMPTY';
+          spreadEl.textContent = `[FOGGED DEPOT VIEW] TOP OF BOOK: BID ${bidPx} | ASK ${askPx} (${currentStation.toUpperCase()})`;
+        } else if (asks.length && bids.length) {
           const spread = asks[0].limit_price - bids[0].limit_price;
           const mid = (asks[0].limit_price + bids[0].limit_price) / 2;
           spreadEl.textContent = `SPREAD: ${spread.toLocaleString()} CR | MID: ${mid.toLocaleString()} CR`;
@@ -3470,6 +3474,43 @@
       }
     } catch (e) {
       console.warn("GalNet telemetry error:", e);
+    }
+  }
+
+  function applyDepotsTelemetry(depots, fog) {
+    if (!depots || !depots.stations) return;
+    const stations = ["ceres", "mars", "luna", "earth"];
+    stations.forEach(st => {
+      const stData = depots.stations[st] || {};
+      const fragEl = document.getElementById(`price-frag-${st}`);
+      const fuelEl = document.getElementById(`price-fuel-${st}`);
+      if (fragEl && stData.FRAG) {
+        const spot = stData.FRAG.spot_price !== undefined ? stData.FRAG.spot_price : stData.FRAG.best_ask;
+        if (spot !== undefined && spot !== null) fragEl.textContent = Number(spot).toFixed(1);
+      }
+      if (fuelEl && stData.FUEL) {
+        const spot = stData.FUEL.spot_price !== undefined ? stData.FUEL.spot_price : stData.FUEL.best_ask;
+        if (spot !== undefined && spot !== null) fuelEl.textContent = Number(spot).toFixed(1);
+      }
+    });
+
+    const synthPrices = {};
+    stations.forEach(st => {
+      synthPrices[st] = {};
+      const stData = depots.stations[st] || {};
+      Object.keys(stData).forEach(inst => {
+        synthPrices[st][inst] = stData[inst].spot_price || stData[inst].best_ask || stData[inst].best_bid || 0;
+      });
+    });
+    stationPrices = synthPrices;
+    renderArbitrageMatrix(stationPrices);
+
+    if (fog && fog.view === "public") {
+      const statusText = document.getElementById("referee-status-text");
+      if (statusText && statusText.textContent.includes("WS STREAM")) {
+        statusText.textContent = `REFEREE: WS STREAM (FOGGED ±${Math.round((fog.noise || 0.15) * 100)}%)`;
+        statusText.style.color = "var(--amber, #ffb834)";
+      }
     }
   }
 
@@ -4677,11 +4718,14 @@
         if (!frame || !frame.type) return;
 
         if (frame.type === "snapshot") {
+          if (frame.depots) applyDepotsTelemetry(frame.depots, frame.fog);
           pollLeaderboard();
           pollBookAndTape();
           pollCircuitBreakerTelemetry();
           pollStationsTelemetry();
           pollEquityTelemetry();
+        } else if (frame.type === "depots") {
+          if (frame.depots) applyDepotsTelemetry(frame.depots, frame.fog);
         } else if (frame.type === "ticks" || frame.type === "depth_diff") {
           pollBookAndTape();
         } else if (frame.type === "leaderboard") {

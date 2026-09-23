@@ -1761,6 +1761,7 @@ class AgoraReferee:
             raise
 
         # 5. Emit Market Discovery Broadcast (kind: market_tick)
+        order_status = 'filled' if order.is_filled else ('partially_filled' if order.filled_qty > 0 else 'resting')
         return {
             'v': 1,
             'kind': 'market_tick',
@@ -1777,7 +1778,11 @@ class AgoraReferee:
                 'last_price': self.get_last_price(order_station, instrument),
                 'last_qty': self.get_last_qty(order_station, instrument),
                 'status': self.floor,
-                'trades_count': len(trades)
+                'trades_count': len(trades),
+                'order_id': order_id,
+                'order_status': order_status,
+                'filled_qty': order.filled_qty,
+                'remaining_qty': order.remaining_qty
             }
         }
 

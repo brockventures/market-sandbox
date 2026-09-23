@@ -97,6 +97,21 @@ TRANSIT_PATTERN = re.compile(
     re.IGNORECASE
 )
 
+PEER_OFFER_PATTERN = re.compile(
+    r"\b(?:OFFER)\s+(\d+)\s+([A-Za-z]+)\s*(?:@\s*|AT\s+)?(\d+)\s*(?:CR)?\s*(?:AT\s+)?([A-Za-z]+)?\b",
+    re.IGNORECASE
+)
+
+PEER_ACCEPT_PATTERN = re.compile(
+    r"\b(?:ACCEPT)\s+([A-Za-z0-9_\-]+)\b",
+    re.IGNORECASE
+)
+
+PEER_CANCEL_PATTERN = re.compile(
+    r"\b(?:CANCEL)\s+(?:OFFER\s+)?([A-Za-z0-9_\-]+)\b",
+    re.IGNORECASE
+)
+
 AUTHOR_MAP = {
     "1541205716948353074": "amos",   # Amos / Ivy
     "1542081375287640084": "zero",   # Zero
@@ -337,6 +352,82 @@ def fetch_discord_messages(channel_id: str, after_id: str, token: str, limit: in
         return []
 
 
+def submit_peer_to_referee(peer_cmd: dict, ref_token: str) -> dict:
+    """Submit peer trade command (offer, accept, cancel) to referee."""
+    action = peer_cmd.get("action")
+    endpoint = f"/referee/peer/{action}"
+    url = f"{REFEREE_BASE_URL.rstrip('/')}{endpoint}"
+    payload = json.dumps(peer_cmd).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {ref_token}",
+            "Content-Type": "application/json",
+            "User-Agent": "AgoraTradeTerminal/2.0"
+        },
+        method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8")
+        try:
+            return {"status": "error", "http_code": e.code, "error": json.loads(raw)}
+        except Exception:
+            return {"status": "error", "http_code": e.code, "raw_error": raw}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def resolve_discord_agent(author_id: str, author_name: str, content: str = "") -> str:
+    """Map Discord author to Agora fleet agent_id."""
+    agent_override = re.search(r"\b(?:as|agent:?)\s+(amos|marvin|zero|aerial)\b", content, re.I)
+    if agent_override:
+        return agent_override.group(1).lower()
+    if author_id in AUTHOR_MAP:
+        return AUTHOR_MAP[author_id]
+    name_lower = author_name.lower()
+    if "amos" in name_lower or "carmody" in name_lower or "mike" in name_lower:
+        return "amos"
+    elif "marvin" in name_lower or "alex" in name_lower:
+        return "marvin"
+    elif "zero" in name_lower or "brock" in name_lower or "ryan" in name_lower:
+        return "zero"
+    elif "aerial" in name_lower or "coley" in name_lower:
+        return "aerial"
+    return "zero"
+
+
+def parse_discord_peer(content: str, author_id: str, author_name: str, default_station: str = "ceres") -> Optional[dict]:
+    """Parse peer trade commands (OFFER, ACCEPT, CANCEL) from Discord chat."""
+    m_off = PEER_OFFER_PATTERN.search(content)
+    if m_off:
+        qty = int(m_off.group(1))
+        good = m_off.group(2).upper().strip()
+        if good == "BANANA":
+            good = "FRAG"
+        price = int(m_off.group(3))
+        station = (m_off.group(4) or default_station).lower().strip()
+        ag_id = resolve_discord_agent(author_id, author_name, content)
+        return {"action": "offer", "agent_id": ag_id, "station_id": station, "instrument": good, "qty": qty, "price": price}
+
+    m_acc = PEER_ACCEPT_PATTERN.search(content)
+    if m_acc:
+        escrow_id = m_acc.group(1).strip()
+        ag_id = resolve_discord_agent(author_id, author_name, content)
+        return {"action": "accept", "agent_id": ag_id, "escrow_id": escrow_id}
+
+    m_can = PEER_CANCEL_PATTERN.search(content)
+    if m_can:
+        escrow_id = m_can.group(1).strip()
+        ag_id = resolve_discord_agent(author_id, author_name, content)
+        return {"action": "cancel", "agent_id": ag_id, "escrow_id": escrow_id}
+
+    return None
+
+
 def submit_transit_to_referee(transit: dict, ref_token: str) -> dict:
     """Submit interplanetary transit to referee /stations/transit."""
     url = f"{REFEREE_BASE_URL.rstrip('/')}/stations/transit"
@@ -507,6 +598,7 @@ def build_burst_kickoff(burst_id: str, rounds: int, interval_sec: float, start_r
         f"• Trade: `BUY <qty> <good> @ <price> AT <station>` (e.g. `BUY 50 FOOD @ 32 AT CERES`)\n"
         f"• Stock: `BUY <qty> EQ_<FLEET> @ <price>` (e.g. `BUY 10 EQ_ZERO @ 30`)\n"
         f"• Transit: `MOVE TO <station> WITH <qty> <good>` (e.g. `MOVE TO MARS WITH 100 FOOD`)\n"
+        f"• Peer Trades: `OFFER <qty> <good> @ <price> AT <station>` | `ACCEPT <id>` | `CANCEL <id>`\n"
         f"⚡ **Quick API:** `POST {base}/referee/quick_order` with token `agora-combine-2026`\n"
         f"📖 **Robot Briefing:** `{AGORA_PUBLIC_URL.rstrip('/')}/referee/briefing` (Live markdown; append `?format=json` for JSON)\n\n"
         f"*Round 1 strategy window and depot quotes follow immediately below!*"
@@ -656,6 +748,76 @@ def poll_and_execute_trades(channel: str, bot_token: str, ref_token: str, active
             continue
 
         content = msg.get("content", "").strip()
+        peer_cmd = parse_discord_peer(content, author.get("id", ""), author.get("username", ""), default_station=active_station)
+        if peer_cmd:
+            action = peer_cmd.get("action")
+            ag_id = peer_cmd.get("agent_id")
+            fl_name = FLEET_NAMES.get(ag_id, ag_id.upper())
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Detected peer {action} from {author.get('username')}: {peer_cmd}")
+            sys.stdout.flush()
+
+            res = submit_peer_to_referee(peer_cmd, ref_token)
+            if res.get("status") == "error" or res.get("kind") == "reject":
+                err_obj = res.get("error") if isinstance(res.get("error"), dict) else {}
+                err_detail = err_obj.get("payload", {}).get("detail") or res.get("payload", {}).get("detail") or res.get("error") or str(res)
+                add_discord_reaction(channel, msg_id, "❌", bot_token)
+                reject_msg = (
+                    f"⚠️ **[Agora Trade Terminal] Peer {action.title()} Rejected**\n"
+                    f"> **Syndicate:** {fl_name}\n"
+                    f"> **Reason:** `{err_detail}`"
+                )
+                post_discord(channel, reject_msg, bot_token)
+            else:
+                payload = res.get("payload", {})
+                if action == "offer":
+                    eid = payload.get("escrow_id", "unknown")
+                    inst = payload.get("instrument", peer_cmd.get("instrument"))
+                    qty = payload.get("qty", peer_cmd.get("qty"))
+                    px = payload.get("price", peer_cmd.get("price"))
+                    st = payload.get("station_id", peer_cmd.get("station_id")).title()
+                    add_discord_reaction(channel, msg_id, "🤝", bot_token)
+                    add_discord_reaction(channel, msg_id, "✅", bot_token)
+                    rcpt = (
+                        f"🤝 **[Agora Trade Terminal] Peer Goods Offer Placed**\n"
+                        f"> **Seller:** {fl_name}\n"
+                        f"> **Offer ID:** `{eid}`\n"
+                        f"> **Terms:** {qty} {inst} @ {px} CR at {st}\n"
+                        f"> **Status:** Held in station escrow awaiting buyer accept."
+                    )
+                    post_discord(channel, rcpt, bot_token)
+                elif action == "accept":
+                    eid = payload.get("escrow_id", peer_cmd.get("escrow_id"))
+                    seller = payload.get("seller", "unknown")
+                    seller_name = FLEET_NAMES.get(seller, seller.upper())
+                    inst = payload.get("instrument", "")
+                    qty = payload.get("qty", 0)
+                    cost = payload.get("cost", 0)
+                    st = payload.get("station_id", "").title()
+                    deadline = payload.get("pickup_deadline", "?")
+                    add_discord_reaction(channel, msg_id, "🤝", bot_token)
+                    add_discord_reaction(channel, msg_id, "✅", bot_token)
+                    rcpt = (
+                        f"🤝 **[Agora Trade Terminal] Peer Goods Offer Accepted**\n"
+                        f"> **Buyer:** {fl_name} (from seller {seller_name})\n"
+                        f"> **Offer ID:** `{eid}`\n"
+                        f"> **Terms:** {qty} {inst} for {cost} CR at {st}\n"
+                        f"> **Pickup Deadline:** Round #{deadline}\n"
+                        f"> **Status:** Escrow locked. Buyer must dock at {st} to collect."
+                    )
+                    post_discord(channel, rcpt, bot_token)
+                else: # cancel
+                    eid = payload.get("escrow_id", peer_cmd.get("escrow_id"))
+                    add_discord_reaction(channel, msg_id, "🗑️", bot_token)
+                    add_discord_reaction(channel, msg_id, "✅", bot_token)
+                    rcpt = (
+                        f"🗑️ **[Agora Trade Terminal] Peer Goods Offer Cancelled**\n"
+                        f"> **Seller:** {fl_name}\n"
+                        f"> **Offer ID:** `{eid}`\n"
+                        f"> **Status:** Offer retracted and goods returned from escrow."
+                    )
+                    post_discord(channel, rcpt, bot_token)
+            continue
+
         trade = parse_discord_trade(content, author.get("id", ""), author.get("username", ""), default_station=active_station)
         if not trade:
             transit = parse_discord_transit(content, author.get("id", ""), author.get("username", ""))
@@ -728,17 +890,47 @@ def poll_and_execute_trades(channel: str, bot_token: str, ref_token: str, active
             )
             post_discord(channel, reject_msg, bot_token)
         else:
-            add_discord_reaction(channel, msg_id, "🚀", bot_token)
-            add_discord_reaction(channel, msg_id, "✅", bot_token)
             is_stock = trade["instrument"].startswith("EQ_")
             loc_disp = "Stock Exchange (Ceres)" if is_stock else f"{st_disp} Depot"
             status_disp = "Matched against equity orderbook." if is_stock else "Matched against orderbook / depot pool."
-            receipt_msg = (
-                f"🧾 **[Agora Trade Terminal] Order Executed & Cleared**\n"
-                f"> **Syndicate:** {fl_name}\n"
-                f"> **Action:** {side_disp} **{trade['qty']} {trade['instrument']}** @ **{trade['limit_price']} CR** ({loc_disp})\n"
-                f"> **Status:** {status_disp}"
-            )
+
+            payload = res.get("payload", {})
+            order_status = payload.get("order_status")
+            trades_count = payload.get("trades_count", 0)
+            filled_qty = payload.get("filled_qty", 0)
+            remaining_qty = payload.get("remaining_qty", trade["qty"])
+
+            # Fallback for older referee payload
+            if not order_status:
+                order_status = "filled" if trades_count > 0 else "resting"
+
+            if order_status == "resting":
+                add_discord_reaction(channel, msg_id, "📝", bot_token)
+                add_discord_reaction(channel, msg_id, "✅", bot_token)
+                receipt_msg = (
+                    f"📝 **[Agora Trade Terminal] Order Resting on Book**\n"
+                    f"> **Syndicate:** {fl_name}\n"
+                    f"> **Action:** {side_disp} **{trade['qty']} {trade['instrument']}** @ **{trade['limit_price']} CR** ({loc_disp})\n"
+                    f"> **Status:** Resting on {loc_disp} orderbook (unfilled)."
+                )
+            elif order_status == "partially_filled":
+                add_discord_reaction(channel, msg_id, "⚡", bot_token)
+                add_discord_reaction(channel, msg_id, "✅", bot_token)
+                receipt_msg = (
+                    f"⚡ **[Agora Trade Terminal] Order Partially Filled**\n"
+                    f"> **Syndicate:** {fl_name}\n"
+                    f"> **Action:** {side_disp} **{trade['qty']} {trade['instrument']}** @ **{trade['limit_price']} CR** ({loc_disp})\n"
+                    f"> **Status:** Filled {filled_qty}/{trade['qty']} {trade['instrument']}. Remaining {remaining_qty} resting on {loc_disp} orderbook."
+                )
+            else:
+                add_discord_reaction(channel, msg_id, "🚀", bot_token)
+                add_discord_reaction(channel, msg_id, "✅", bot_token)
+                receipt_msg = (
+                    f"🧾 **[Agora Trade Terminal] Order Executed & Cleared**\n"
+                    f"> **Syndicate:** {fl_name}\n"
+                    f"> **Action:** {side_disp} **{trade['qty']} {trade['instrument']}** @ **{trade['limit_price']} CR** ({loc_disp})\n"
+                    f"> **Status:** {status_disp}"
+                )
             post_discord(channel, receipt_msg, bot_token)
 
     return newest_id
