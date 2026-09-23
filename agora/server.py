@@ -1711,8 +1711,8 @@ def make_handler(referee: AgoraReferee, auth_tokens: Optional[Dict[str, str]] = 
     return CustomHandler
 
 
-def build_referee_from_env(db_path: str = 'agora.db') -> AgoraReferee:
-    """The live server's referee.
+def build_referee_from_env(db_path: str = 'agora.db', **overrides) -> AgoraReferee:
+    """The live server's referee, and the simulator's (tools/economy_sim.py, #155).
 
     Every shipped game feature is ON unless its env var turns it off (Ryan,
     #agent-chat 2026-09-22 22:39: "default to all features being on").
@@ -1736,6 +1736,12 @@ def build_referee_from_env(db_path: str = 'agora.db') -> AgoraReferee:
       AGORA_HAZARDS=0.2,0.1    per-trip chance of a 1-3 round delay, and of losing 30-70% of the cargo; 0 = off
       AGORA_PIRACY=0.15,0.04   raid chance on belt (tolled) and inner routes, before hot-station and cargo-value scaling; 0 = off
       AGORA_EVENTS=1           secrecy and exposure: private/secret corp events, leak rolls, GalNet scandals
+
+    overrides: AgoraReferee keyword arguments that replace the env-derived
+    ones. The server passes none. The simulator passes only what its CLI
+    was asked to change, so by default it plays exactly this game, and a
+    feature added here reaches it without a second flag list
+    (tests/test_sim_live_parity.py fails otherwise).
     """
     def _on(name: str) -> bool:
         return os.environ.get(name, '1').strip().lower() not in ('0', 'false', 'off', 'no')
@@ -1743,7 +1749,7 @@ def build_referee_from_env(db_path: str = 'agora.db') -> AgoraReferee:
         band_pct = float(os.environ.get('AGORA_BAND_PCT', '0.25'))
     except ValueError:
         band_pct = 0.25
-    return AgoraReferee(db_path=db_path, depots=_on('AGORA_DEPOTS'), asymmetric=_on('AGORA_ASYMMETRIC'),
+    kwargs = dict(depots=_on('AGORA_DEPOTS'), asymmetric=_on('AGORA_ASYMMETRIC'),
                         depot_model=os.environ.get('AGORA_DEPOT_MODEL', 'reactive').strip().lower(),
                         band_pct=band_pct, peer_trades=_on('AGORA_PEER_TRADES'),
                         fog=_fog_from_env(), idle_fee=_int_env('AGORA_IDLE_FEE', 10),
@@ -1756,6 +1762,8 @@ def build_referee_from_env(db_path: str = 'agora.db') -> AgoraReferee:
                         upgrades=_on('AGORA_UPGRADES'),
                         piracy=os.environ.get('AGORA_PIRACY', '0.15,0.04'),
                         events=_on('AGORA_EVENTS'))
+    kwargs.update(overrides)
+    return AgoraReferee(db_path=db_path, **kwargs)
 
 
 def _float_env(name: str, default: float) -> float:
