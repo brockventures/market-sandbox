@@ -811,7 +811,8 @@ class AgoraReferee:
                 for b in self.books[origin].values():
                     for o in list(b.bids) + list(b.asks):
                         if o.agent_id == agent_id:
-                            self.cancel_order(agent_id, o.order_id)
+                            # Already inside self.lock: use the lock-free body.
+                            self._cancel_order_locked(agent_id, o.order_id)
 
             transit_id = f"tx-{agent_id}-{time.time_ns()}"
             dep_round = self.current_round
@@ -1618,57 +1619,65 @@ class AgoraReferee:
         Cancel one resting order across all station order books.
         """
         with self.lock:
-            removed = None
-            for st_books in self.books.values():
-                for b in st_books.values():
-                    removed = b.remove_order(order_id, agent_id)
-                    if removed is not None:
-                        break
+            return self._cancel_order_locked(agent_id, order_id)
+
+    def _cancel_order_locked(self, agent_id: str, order_id: str) -> Dict[str, Any]:
+        """
+        cancel_order() body. Caller must already hold self.lock, which is a
+        plain (non-reentrant) Lock: calling cancel_order() while holding it
+        blocks that thread forever and every later lock-taker behind it.
+        """
+        removed = None
+        for st_books in self.books.values():
+            for b in st_books.values():
+                removed = b.remove_order(order_id, agent_id)
                 if removed is not None:
                     break
+            if removed is not None:
+                break
 
-            if removed is None:
-                cur = self.conn.cursor()
-                cur.execute(
-                    "SELECT status FROM orders WHERE agent_id = ? AND order_id = ?",
-                    (agent_id, order_id)
-                )
-                row = cur.fetchone()
-                if row is None:
-                    detail = f"No order '{order_id}' found for agent '{agent_id}'"
-                else:
-                    detail = f"Order '{order_id}' is already '{row['status']}', not resting"
-                return self._reject_envelope(order_id, agent_id, 'order_not_cancellable', detail)
+        if removed is None:
+            cur = self.conn.cursor()
+            cur.execute(
+                "SELECT status FROM orders WHERE agent_id = ? AND order_id = ?",
+                (agent_id, order_id)
+            )
+            row = cur.fetchone()
+            if row is None:
+                detail = f"No order '{order_id}' found for agent '{agent_id}'"
+            else:
+                detail = f"Order '{order_id}' is already '{row['status']}', not resting"
+            return self._reject_envelope(order_id, agent_id, 'order_not_cancellable', detail)
 
-            next_seq = self.current_seq + 1
-            with self.conn:
-                self.conn.execute(
-                    "UPDATE orders SET status = 'cancelled' WHERE agent_id = ? AND order_id = ?",
-                    (agent_id, order_id)
-                )
-                self.conn.execute(
-                    "INSERT INTO book_events (seq, kind, payload) VALUES (?, 'cancel', ?)",
-                    (next_seq, json.dumps({
-                        'order_id': order_id,
-                        'agent_id': agent_id,
-                        'side': removed.side,
-                        'remaining_qty': removed.remaining_qty,
-                    }))
-                )
-
-            return {
-                'v': 1,
-                'kind': 'status',
-                'reply': 'none',
-                'status': 'cancelled',
-                'floor': self.floor,
-                'payload': {
+        next_seq = self.current_seq + 1
+        with self.conn:
+            self.conn.execute(
+                "UPDATE orders SET status = 'cancelled' WHERE agent_id = ? AND order_id = ?",
+                (agent_id, order_id)
+            )
+            self.conn.execute(
+                "INSERT INTO book_events (seq, kind, payload) VALUES (?, 'cancel', ?)",
+                (next_seq, json.dumps({
                     'order_id': order_id,
                     'agent_id': agent_id,
-                    'seq': self.current_seq,
-                    'released_qty': removed.remaining_qty,
-                }
+                    'side': removed.side,
+                    'remaining_qty': removed.remaining_qty,
+                }))
+            )
+
+        return {
+            'v': 1,
+            'kind': 'status',
+            'reply': 'none',
+            'status': 'cancelled',
+            'floor': self.floor,
+            'payload': {
+                'order_id': order_id,
+                'agent_id': agent_id,
+                'seq': self.current_seq,
+                'released_qty': removed.remaining_qty,
             }
+        }
 
     def cancel_all(self, agent_id: str) -> Dict[str, Any]:
         """Cancel every resting order across all stations for one agent."""
