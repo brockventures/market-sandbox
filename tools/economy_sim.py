@@ -936,9 +936,9 @@ def stock_navs(ref: AgoraReferee) -> Dict[str, dict]:
     return ref.stock_marks(base)
 
 
-def stock_value(ref: AgoraReferee, agent: str, marks: Dict[str, dict]) -> float:
-    """Rival shares held, at NAV. Own shares count for nothing, as on the leaderboard."""
-    return sum(ref.get_balance(agent, sym) * marks[sym]["nav"] for a, sym in EQ_SYM.items() if a != agent)
+def stock_value(ref: AgoraReferee, agent: str, marks: Dict[str, dict], basis: str = "nav") -> float:
+    """Rival shares held, at NAV (or the board mark). Own shares count for nothing, as on the leaderboard."""
+    return sum(ref.get_balance(agent, sym) * marks[sym][basis] for a, sym in EQ_SYM.items() if a != agent)
 
 
 def cancel_stock_orders(ref: AgoraReferee, agent: str) -> None:
@@ -1146,7 +1146,7 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
         depot_model: str = "static", band_pct: Optional[float] = None, reactive_bands: bool = True,
         contracts: bool = False, dock_fee: int = 0, owned_contracts: bool = False,
         fog: Optional[tuple] = None, peer: bool = False, corporate: bool = False,
-        equity_mm: Optional[tuple] = None, vol: Optional[float] = None,
+        equity_mm: Optional[tuple] = None, exchange: Optional[tuple] = None, vol: Optional[float] = None,
         theta: Optional[float] = None, spread_scale: Optional[float] = None) -> dict:
     """spread_scale compresses each good's base price toward its four-station
     mean (1.0 = live, 0.5 = half the gap). It edits agora.spatial.BASE_PRICES
@@ -1161,14 +1161,14 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
                 spatial_mod.BASE_PRICES[st][c] = round(m + spread_scale * (saved[st][c] - m), 1)
     try:
         return _run(scenario, genesis, seed, rounds, mode, check_every, depot_model, band_pct, reactive_bands,
-                    contracts, dock_fee, owned_contracts, fog, peer, corporate, equity_mm, vol, theta)
+                    contracts, dock_fee, owned_contracts, fog, peer, corporate, equity_mm, exchange, vol, theta)
     finally:
         for st, v in saved.items():
             spatial_mod.BASE_PRICES[st].update(v)
 
 
 def _run(scenario, genesis, seed, rounds, mode, check_every, depot_model, band_pct, reactive_bands,
-         contracts, dock_fee, owned_contracts, fog, peer, corporate, equity_mm, vol, theta) -> dict:
+         contracts, dock_fee, owned_contracts, fog, peer, corporate, equity_mm, exchange, vol, theta) -> dict:
     # Reactive depots are the referee's own implementation (agora/referee.py,
     # AGORA_DEPOT_MODEL), so these numbers describe what would ship.
     # corporate: claimed contracts with penalties, debt, distress share
@@ -1177,11 +1177,14 @@ def _run(scenario, genesis, seed, rounds, mode, check_every, depot_model, band_p
     ref = AgoraReferee(depots=True, asymmetric=True, depot_model=depot_model,
                        band_pct=band_pct, reactive_bands=reactive_bands,
                        rival_shares=100 if corporate else 0)
+    # exchange: (SHARES, VOL) for the referee's own stock market maker
+    # (agora/exchange.py), as the live server runs it.
+    xkw = {"exchange_shares": int(exchange[0]), "exchange_vol": float(exchange[1])} if exchange else {}
     # warmup_rounds is fixed: left unset, new_game draws it from SystemRandom
     # and identical runs diverge (found 2026-09-22; runs before this were not
     # reproducible run to run, only statistically comparable).
     ref.new_game(seed=seed, warmup_rounds=5, depots=True, asymmetric=True, depot_model=depot_model,
-                 rival_shares=100 if corporate else 0)
+                 rival_shares=100 if corporate else 0, **xkw)
     if genesis == "planet":
         apply_planet_genesis(ref)
     # Price engine knobs (agora/spatial.py StationPriceEngine: vol is the
@@ -1200,7 +1203,7 @@ def _run(scenario, genesis, seed, rounds, mode, check_every, depot_model, band_p
     start = {a: score(ref, a) for a in FLEETS}
     eq_liq = EquityLiquidity(*equity_mm) if equity_mm else None
     traders = [a for a, k in SCENARIOS[scenario].items() if k == "stock_trader"]
-    track_stocks = bool(eq_liq or traders)
+    track_stocks = bool(eq_liq or traders or exchange)
     stocks_start = {}
     if track_stocks:
         m0 = stock_navs(ref)
@@ -1268,10 +1271,15 @@ def _run(scenario, genesis, seed, rounds, mode, check_every, depot_model, band_p
         m1 = stock_navs(ref)
         extra["stocks"] = {
             "equity_mm": list(equity_mm) if equity_mm else None,
+            "exchange": (None if not exchange else dict(ref.exchange.summary(), shares=int(exchange[0]))),
             "fleets": {a: {"value_start": round(stocks_start[a]), "value_end": round(stock_value(ref, a, m1)),
                            "stock_cash": fleets[a].stock_cash if a in traders else None,
                            "stock_pnl": (round(fleets[a].stock_cash + stock_value(ref, a, m1) - stocks_start[a])
-                                         if a in traders else None)} for a in FLEETS},
+                                         if a in traders else None),
+                           # holdings at the board mark (what the leaderboard pays), not NAV
+                           "stock_pnl_at_mark": (round(fleets[a].stock_cash + stock_value(ref, a, m1, "mark")
+                                                       - stocks_start[a]) if a in traders else None)}
+                       for a in FLEETS},
             "nav_end": {sym: m1[sym]["nav"] for sym in EQ_SYM.values()},
         }
     return {**extra,
@@ -1340,6 +1348,9 @@ def main() -> int:
     ap.add_argument("--equity-mm", type=float, nargs=2, metavar=("SPREAD", "DEPTH"), default=None,
                     help="stand-in stock liquidity: non-trader fleets quote rival shares at NAV +/- SPREAD, "
                          "DEPTH shares a side a round (e.g. 0.05 20); the live game has no equity depot")
+    ap.add_argument("--exchange", type=float, nargs=2, metavar=("SHARES", "VOL"), default=None,
+                    help="the referee's own stock market maker: SHARES of each fleet (max 200), per-round VOL "
+                         "(live default 100 0.03)")
     ap.add_argument("--json", action="store_true", help="print raw results as JSON")
     ap.add_argument("--hang-timeout", type=int, default=300, help="dump stacks and exit if a run hangs")
     args = ap.parse_args()
@@ -1360,6 +1371,7 @@ def main() -> int:
                                        peer=args.peer, corporate=args.corporate,
                                        equity_mm=((args.equity_mm[0], int(args.equity_mm[1]))
                                                   if args.equity_mm else None),
+                                       exchange=tuple(args.exchange) if args.exchange else None,
                                        vol=args.vol, theta=args.theta, spread_scale=args.spread_scale))
     faulthandler.cancel_dump_traceback_later()
 

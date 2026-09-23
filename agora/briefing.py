@@ -171,6 +171,10 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
                    "(NAV) is its fleet's net worth before stocks / 1,000; the board price is set by trading. "
                    "Rival shares count toward your net worth at the board price. Stocks trade on one exchange, "
                    "from anywhere, even in transit, and are never fogged.")
+        if getattr(ref, 'exchange_shares', 0):
+            out.append("The exchange itself always quotes every stock, a few shares a side each round, around a "
+                       "price that follows the fleet's recent NAV but swings on its own. You can always buy or "
+                       "sell some stock; for size, trade with other fleets.")
         out.append("- `BUY <qty> EQ_<FLEET> @ <price>` / `SELL <qty> EQ_<FLEET> @ <price>` (no `AT` needed)")
         out.append("")
         out.append("| Stock | Fleet | NAV | Board price | Bid / ask |")

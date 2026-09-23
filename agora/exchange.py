@@ -1,0 +1,154 @@
+"""
+agora.exchange - the stock exchange's own market maker.
+
+Stations quote goods; until this, nothing quoted fleet stocks, so a stock
+order filled only if another fleet happened to rest the other side (found
+2026-09-23 building the #119 stock-trader sim; Ryan approved an exchange
+quote the same morning: "this is also how you will control the volatility
+and fluctuation in price of the corps").
+
+The exchange is an account, `depot_exchange`. The `depot_` prefix keeps it
+off the leaderboard and out of fleet stock holdings, like station depots.
+At genesis it takes SHARES of each fleet's stock from that fleet's treasury
+(nothing is minted, the 1,000 total holds) and SEED_CR credits from SYSTEM.
+
+Each round it quotes every stock two-sided around a reference price:
+
+    anchor = mean of the fleet's NAV over the last ANCHOR_ROUNDS rounds,
+             carried forward along that window's trend (a plain mean lags)
+    ref   += REVERSION * (anchor - ref) + VOL * ref * N(0, 1)
+           + IMPACT * ref * (shares the exchange sold - bought last round) / DEPTH
+    bid    = ref * (1 - SPREAD), ask = ref * (1 + SPREAD), DEPTH shares a side
+
+The anchor is smoothed because raw NAV drops whenever a hauler's cargo is
+in flight (escrowed, marked at zero) and recovers when it docks; quoting
+raw NAV would pay anyone who times other fleets' trips. VOL is the dial for
+how wild stock prices are. The noise is drawn from a generator seeded by
+the game seed, so a seeded game is reproducible.
+
+Takeover math: rivals start with 300 shares of a corp (3 x 100). A raider
+can reach its own 100 + 200 bought from rivals + whatever the exchange
+holds, so SHARES is capped at MAX_SHARES = 200 to keep 51% (510) out of
+reach without distress sales.
+"""
+
+import math
+import random
+from typing import Any, Dict, List, Optional
+
+from agora.order_book import Order
+
+EXCHANGE_ID = 'depot_exchange'
+EXCHANGE_STATION = 'ceres'
+MAX_SHARES = 200
+SEED_CR = 100_000
+ANCHOR_ROUNDS = 20
+REVERSION = 0.1
+DEFAULT_VOL = 0.03
+DEFAULT_SPREAD = 0.03
+DEFAULT_DEPTH = 20
+# Price impact (Ryan, #agent-chat 2026-09-23 08:26: "buying the stock should
+# make the price go up"): each share the exchange sold since last round
+# lifts its price by IMPACT / DEPTH, each share it bought lowers it. A full
+# side of DEPTH shares moves the price IMPACT (5%). The move persists and
+# decays only through reversion toward NAV.
+IMPACT = 0.05
+
+
+def clamp_shares(n: Any) -> int:
+    try:
+        return max(0, min(MAX_SHARES, int(n)))
+    except (TypeError, ValueError):
+        return 0
+
+
+class EquityExchange:
+    def __init__(self, ref, vol: float = DEFAULT_VOL, spread: float = DEFAULT_SPREAD,
+                 depth: int = DEFAULT_DEPTH, seed: int = 0):
+        self.ref = ref
+        self.vol = max(0.0, float(vol))
+        self.spread = min(0.5, max(0.005, float(spread)))
+        self.depth = max(1, int(depth))
+        self.reset(seed)
+
+    def reset(self, seed: int) -> None:
+        self.rng = random.Random(f"exchange-{seed}")
+        self.navs: Dict[str, List[float]] = {}
+        self.price: Dict[str, float] = {}
+        self.held: Dict[str, int] = {}
+
+    # ------------------------------------------------------------ genesis
+
+    @staticmethod
+    def genesis_cr_legs() -> List[tuple]:
+        return [(EXCHANGE_ID, 'CR', SEED_CR), ('SYSTEM', 'CR', -SEED_CR)]
+
+    # ------------------------------------------------------------ quoting
+
+    def _clear_locked(self, sym: str) -> None:
+        book = self.ref.books[EXCHANGE_STATION][sym]
+        book.bids = [o for o in book.bids if o.agent_id != EXCHANGE_ID]
+        book.asks = [o for o in book.asks if o.agent_id != EXCHANGE_ID]
+        self.ref.conn.execute("DELETE FROM orders WHERE agent_id = ? AND instrument = ? AND status = 'open'",
+                              (EXCHANGE_ID, sym))
+
+    def refresh_locked(self) -> None:
+        """Called under ref.lock inside a transaction, once a round."""
+        ref = self.ref
+        base = {b['agent_id']: b['net_worth'] - b.get('stocks_value', 0) for b in ref.get_leaderboard()}
+        marks = ref.stock_marks(base)
+        cr_budget = max(0, ref.get_balance(EXCHANGE_ID, 'CR'))
+        round_num = ref.current_round
+        for sym in sorted(marks):
+            nav = float(marks[sym]['nav'])
+            hist = self.navs.setdefault(sym, [])
+            hist.append(nav)
+            del hist[:-ANCHOR_ROUNDS]
+            # A window mean lags a growing NAV by half the window, which
+            # left the exchange quoting below value and paid any buyer a
+            # riskless drift (#119 sweep, 2026-09-23). Carry the mean
+            # forward along the window's own trend to cancel the lag.
+            anchor = sum(hist) / len(hist)
+            if len(hist) >= 4:
+                h = len(hist) // 2
+                slope = (sum(hist[-h:]) / h - sum(hist[:h]) / h) / (len(hist) - h)
+                anchor += slope * (len(hist) - 1) / 2
+            anchor = max(1.0, anchor)
+            p = self.price.get(sym, anchor)
+            now_held = ref.get_balance(EXCHANGE_ID, sym)
+            net_sold = self.held.get(sym, now_held) - now_held
+            self.held[sym] = now_held
+            p = (p + REVERSION * (anchor - p) + self.vol * p * self.rng.gauss(0.0, 1.0)
+                 + IMPACT * p * net_sold / self.depth)
+            p = max(1.0, p)
+            self.price[sym] = p
+
+            self._clear_locked(sym)
+            ask = max(2, int(math.ceil(p * (1 + self.spread))))
+            bid = max(1, min(ask - 1, int(math.floor(p * (1 - self.spread)))))
+            ask_qty = min(self.depth, max(0, ref.get_balance(EXCHANGE_ID, sym)))
+            bid_qty = min(self.depth, cr_budget // bid)
+            cr_budget -= bid_qty * bid
+            book = ref.books[EXCHANGE_STATION][sym]
+            seq = ref.current_seq
+            for side, price, qty in (('bid', bid, bid_qty), ('ask', ask, ask_qty)):
+                if qty <= 0:
+                    continue
+                oid = f"{EXCHANGE_ID}-{sym.lower()}-{side}-r{round_num}"
+                order = Order(order_id=oid, agent_id=EXCHANGE_ID, instrument=sym, side=side,
+                              qty=qty, limit_price=price, seq_seen=seq)
+                if side == 'bid':
+                    book._insert_bid(order)
+                else:
+                    book._insert_ask(order)
+                ref.conn.execute("""
+                    INSERT OR REPLACE INTO orders (order_id, agent_id, instrument, side, qty, limit_price, seq_seen,
+                                                  status, resolved_seq, filled_qty, station_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'open', NULL, 0, ?)
+                """, (oid, EXCHANGE_ID, sym, side, qty, price, seq, EXCHANGE_STATION))
+
+    def summary(self) -> Dict[str, Any]:
+        ref = self.ref
+        return {'account': EXCHANGE_ID, 'vol': self.vol, 'spread': self.spread, 'depth': self.depth,
+                'cr': ref.get_balance(EXCHANGE_ID, 'CR'),
+                'reference_prices': {s: round(p, 2) for s, p in sorted(self.price.items())}}
