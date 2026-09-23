@@ -80,8 +80,15 @@ FLEET_NAMES = {
     "aerial": "Zenith Drift Overwatch [ZDO]"
 }
 
+STOCK_TICKERS = {
+    "AMOS": "EQ_AMOS",
+    "MARV": "EQ_MARV",
+    "ZERO": "EQ_ZERO",
+    "AERL": "EQ_AERL",
+}
+
 TRADE_PATTERN = re.compile(
-    r"\b(BUY|BID|SELL|ASK)\s+(\d+)\s+(FRAG|FUEL|FOOD|ORE|BANANA)\b(?:[^\d]*?(\d+))?(?:.*?\b(?:AT|IN|STATION)\s+([A-Za-z]+))?",
+    r"\b(BUY|BID|SELL|ASK)\s+(\d+)\s+(FRAG|FUEL|FOOD|ORE|BANANA|EQ_[A-Za-z0-9_]+|EQ\s+[A-Za-z0-9_]+|AMOS|MARV|ZERO|AERL)\b(?:[^\d]*?(\d+))?(?:.*?\b(?:AT|IN|STATION)\s+([A-Za-z]+))?",
     re.IGNORECASE
 )
 
@@ -437,11 +444,16 @@ def parse_discord_trade(content: str, author_id: str, author_name: str, default_
     side_raw, qty_raw, comm_raw, price_raw, station_raw = m.groups()
     side = "bid" if side_raw.lower() in ("buy", "bid") else "ask"
     qty = int(qty_raw)
-    comm = comm_raw.upper()
+    comm = comm_raw.upper().strip().replace(" ", "_")
     if comm == "BANANA":
         comm = "FRAG"
+    elif comm in STOCK_TICKERS:
+        comm = STOCK_TICKERS[comm]
     price = int(price_raw) if price_raw else None
-    station = station_raw.lower() if station_raw else default_station
+    if comm.startswith("EQ_"):
+        station = "ceres"
+    else:
+        station = station_raw.lower() if station_raw else default_station
 
     # Resolve agent
     agent = None
@@ -493,6 +505,7 @@ def build_burst_kickoff(burst_id: str, rounds: int, interval_sec: float, start_r
         f"🎯 **HOW TO TRADE THIS BURST:**\n"
         f"💬 **Discord Chat:** Reply in channel (syntax templates, not literal orders):\n"
         f"• Trade: `BUY <qty> <good> @ <price> AT <station>` (e.g. `BUY 50 FOOD @ 32 AT CERES`)\n"
+        f"• Stock: `BUY <qty> EQ_<FLEET> @ <price>` (e.g. `BUY 10 EQ_ZERO @ 30`)\n"
         f"• Transit: `MOVE TO <station> WITH <qty> <good>` (e.g. `MOVE TO MARS WITH 100 FOOD`)\n"
         f"⚡ **Quick API:** `POST {base}/referee/quick_order` with token `agora-combine-2026`\n"
         f"📖 **Robot Briefing:** `{AGORA_PUBLIC_URL.rstrip('/')}/referee/briefing` (Live markdown; append `?format=json` for JSON)\n\n"
@@ -717,11 +730,14 @@ def poll_and_execute_trades(channel: str, bot_token: str, ref_token: str, active
         else:
             add_discord_reaction(channel, msg_id, "🚀", bot_token)
             add_discord_reaction(channel, msg_id, "✅", bot_token)
+            is_stock = trade["instrument"].startswith("EQ_")
+            loc_disp = "Stock Exchange (Ceres)" if is_stock else f"{st_disp} Depot"
+            status_disp = "Matched against equity orderbook." if is_stock else "Matched against orderbook / depot pool."
             receipt_msg = (
                 f"🧾 **[Agora Trade Terminal] Order Executed & Cleared**\n"
                 f"> **Syndicate:** {fl_name}\n"
-                f"> **Action:** {side_disp} **{trade['qty']} {trade['instrument']}** @ **{trade['limit_price']} CR** at **{st_disp} Depot**\n"
-                f"> **Status:** Matched against orderbook / depot pool."
+                f"> **Action:** {side_disp} **{trade['qty']} {trade['instrument']}** @ **{trade['limit_price']} CR** ({loc_disp})\n"
+                f"> **Status:** {status_disp}"
             )
             post_discord(channel, receipt_msg, bot_token)
 
