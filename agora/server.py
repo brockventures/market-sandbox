@@ -6,6 +6,7 @@ Implements Section 3 endpoints of docs/wire-spec.md:
 - GET  /referee/ticks
 - GET  /referee/accounts
 - GET  /referee/leaderboard
+- GET  /referee/briefing (alias /briefing, /llms.txt)
 - GET  /referee/health
 - GET  /referee/instructions (alias /referee/rules)
 """
@@ -1184,6 +1185,18 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 'status': 'ok',
                 'leaderboard': ref.get_leaderboard()
             })
+        elif path in ('/referee/briefing', '/briefing', '/llms.txt'):
+            from agora.briefing import build_briefing
+            host = self.headers.get('Host', '')
+            proto = self.headers.get('X-Forwarded-Proto', 'http')
+            body = build_briefing(ref, f"{proto}://{host}" if host else "").encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/markdown; charset=utf-8')
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         elif path == '/referee/fleets':
             rows = ref.conn.execute(
                 "SELECT agent_id, display_name, home_station, genesis_cr, genesis_frag, genesis_fuel FROM fleet_roster ORDER BY agent_id"
@@ -1223,6 +1236,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 'endpoints': {
                     'book': 'GET /referee/book',
                     'leaderboard': 'GET /referee/leaderboard',
+                    'briefing': 'GET /referee/briefing (plain-text rules + live board for LLM players)',
                     'ticks': 'GET /referee/ticks?since_seq=0',
                     'accounts': 'GET /referee/accounts (auth required)',
                     'orders': 'POST /referee/orders (auth required)',
