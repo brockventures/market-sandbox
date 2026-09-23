@@ -188,6 +188,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 rival_shares=payload.get('rival_shares'),
                 exchange_shares=payload.get('exchange_shares'),
                 exchange_vol=payload.get('exchange_vol'),
+                contracts=payload.get('contracts'),
             )
             self._send_json(200, {'v': 1, 'kind': 'new_game_ok', 'payload': result})
             return
@@ -1063,6 +1064,48 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             self._send_json(400 if result.get('kind') == 'reject' else 200, result)
             return
 
+        # Station contracts (#115): POST /referee/contracts/{id}/{claim|list|buy|deliver}
+        parts = path.strip('/').split('/')
+        if len(parts) == 4 and parts[:2] == ['referee', 'contracts'] and parts[3] in ('claim', 'list', 'buy', 'deliver'):
+            auth_agent, auth_err = self._authenticate_request()
+            if auth_err:
+                self._send_json(401, auth_err)
+                return
+            try:
+                length = int(self.headers.get('Content-Length', 0))
+                data = json.loads(self.rfile.read(length).decode('utf-8')) if length else {}
+            except Exception as e:
+                self._send_json(400, {'v': 1, 'kind': 'reject',
+                                      'payload': {'reason': 'invalid_format', 'detail': f'Malformed JSON: {e}'}})
+                return
+            ref = self.referee or AgoraReferee()
+            if not ref.contracts_enabled:
+                self._send_json(409, {'v': 1, 'kind': 'reject', 'payload': {
+                    'reason': 'contracts_disabled',
+                    'detail': 'Contracts are off in this game. Start one with new_game {"contracts": true}.'}})
+                return
+            agent = data.get('agent_id') if auth_agent in ('admin', 'combine') else auth_agent
+            if not agent:
+                self._send_json(400, {'v': 1, 'kind': 'reject',
+                                      'payload': {'reason': 'agent_required', 'detail': 'agent_id is required with this token'}})
+                return
+            cid, action = parts[2], parts[3]
+            try:
+                if action == 'claim':
+                    result = ref.contract_desk.claim(agent, cid)
+                elif action == 'list':
+                    price = data.get('price')
+                    result = ref.contract_desk.list_for_sale(agent, cid, None if price is None else int(price))
+                elif action == 'buy':
+                    result = ref.contract_desk.buy(agent, cid)
+                else:
+                    qty = data.get('qty')
+                    result = ref.contract_desk.deliver(agent, cid, None if qty is None else int(qty))
+            except (TypeError, ValueError):
+                result = {'v': 1, 'kind': 'reject', 'payload': {'reason': 'invalid_format', 'detail': 'price/qty must be integers'}}
+            self._send_json(400 if result.get('kind') == 'reject' else 200, result)
+            return
+
         if path not in ('/referee/orders', '/referee/quick_order'):
             self._send_json(404, {'error': 'not_found', 'path': self.path})
             return
@@ -1310,6 +1353,12 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        elif path == '/referee/contracts':
+            status = query_params.get('status', ['open'])[0]
+            st = query_params.get('station_id', [None])[0]
+            self._send_json(200, {'status': 'ok', 'contracts_enabled': ref.contracts_enabled,
+                                  'round': ref.current_round,
+                                  'contracts': ref.contract_desk.list(status=status, station_id=st)})
         elif path == '/referee/peer/offers':
             st = query_params.get('station_id', [None])[0]
             status = query_params.get('status', ['offered'])[0]
@@ -1356,6 +1405,8 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                     'leaderboard': 'GET /referee/leaderboard',
                     'briefing': 'GET /referee/briefing (plain-text rules + live board for LLM players)',
                     'peer_offers': 'GET /referee/peer/offers?station_id=&status=offered|accepted',
+                    'contracts': 'GET /referee/contracts?status=open|fulfilled|lapsed&station_id=',
+                    'contract_actions': 'POST /referee/contracts/{id}/claim | list {price} | buy | deliver {qty}',
                     'peer_offer': 'POST /referee/peer/offer {station_id, instrument, qty, price} (docked at station_id)',
                     'peer_accept': 'POST /referee/peer/accept {escrow_id} (from anywhere)',
                     'peer_cancel': 'POST /referee/peer/cancel {escrow_id} (seller, before acceptance)',
@@ -1584,6 +1635,7 @@ def build_referee_from_env(db_path: str = 'agora.db') -> AgoraReferee:
       AGORA_RIVAL_SHARES=100   shares of each rival's stock every fleet starts with
       AGORA_EXCHANGE_SHARES=100  shares of each fleet the exchange market maker holds (max 200); 0 = off
       AGORA_EXCHANGE_VOL=0.03  per-round volatility of the exchange's stock prices
+      AGORA_CONTRACTS=1        owned, tradable station contracts (25% deposit, 50% lapse penalty)
     """
     def _on(name: str) -> bool:
         return os.environ.get(name, '1').strip().lower() not in ('0', 'false', 'off', 'no')
@@ -1597,7 +1649,8 @@ def build_referee_from_env(db_path: str = 'agora.db') -> AgoraReferee:
                         fog=_fog_from_env(), idle_fee=_int_env('AGORA_IDLE_FEE', 10),
                         rival_shares=_int_env('AGORA_RIVAL_SHARES', 100),
                         exchange_shares=_int_env('AGORA_EXCHANGE_SHARES', 100),
-                        exchange_vol=_float_env('AGORA_EXCHANGE_VOL', 0.03))
+                        exchange_vol=_float_env('AGORA_EXCHANGE_VOL', 0.03),
+                        contracts=_on('AGORA_CONTRACTS'))
 
 
 def _float_env(name: str, default: float) -> float:

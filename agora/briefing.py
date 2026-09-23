@@ -213,6 +213,31 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
                 out.append(f"- {o['buyer']}: {o['qty']} {o['instrument']} at {o['station_id'].capitalize()} "
                            f"(bought from {o['seller']}), collect by round {o['pickup_deadline']}")
         out.append("")
+    if getattr(ref, 'contracts_enabled', False):
+        from agora.contracts import MAX_OPEN, BOND_PCT, PENALTY
+        out.append("## Station contracts")
+        out.append(f"Stations post contracts to buy a good at a premium by a deadline round. The first fleet to claim one "
+                   f"owns it, at most {MAX_OPEN} at a time. Claiming locks a deposit of {int(BOND_PCT * 100)}% of the "
+                   f"undelivered value. Only the owner delivers, docked at that station, in part or in full; each "
+                   f"delivery is paid at the contract price and returns its share of the deposit. Miss the deadline and "
+                   f"you lose the rest of the deposit and pay a penalty of {int(PENALTY * 100)}% of the undelivered value. "
+                   f"You can list a contract you own for sale; the buyer pays your price plus the deposit it carries.")
+        out.append("- `POST /referee/contracts/<id>/claim`")
+        out.append("- `POST /referee/contracts/<id>/deliver {\"qty\": n}` (docked at the contract's station; omit qty to deliver all you can)")
+        out.append("- `POST /referee/contracts/<id>/list {\"price\": p}` (0 unlists) / `POST /referee/contracts/<id>/buy`")
+        rows = ref.contract_desk.list()
+        out.append("")
+        if rows:
+            out.append("| Contract | Station | Good | Left / total | Price each | Deadline round | Owner | For sale |")
+            out.append("|---|---|---|---|---|---|---|---|")
+            for c in rows:
+                sale = f"{c['list_price']} + {c['bond']} deposit" if c['list_price'] else "-"
+                out.append(f"| {c['contract_id']} | {c['station_id'].capitalize()} | {c['instrument']} | "
+                           f"{c['qty_remaining']} / {c['qty_total']} | {c['price']} | {c['deadline']} | "
+                           f"{c['owner'] or 'unclaimed'} | {sale} |")
+        else:
+            out.append("No open contracts.")
+        out.append("")
     if base_url:
         out.append(f"Same data as JSON: {base_url.rstrip('/')}/referee/briefing?format=json")
         out.append(f"Full rules: {base_url.rstrip('/')}/referee/rules?format=text")
