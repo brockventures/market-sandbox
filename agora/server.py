@@ -614,7 +614,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 return
 
             claimed_agent = payload.get('agent_id')
-            if auth_agent != 'admin' and claimed_agent and claimed_agent != auth_agent:
+            if auth_agent not in ('admin', 'combine') and claimed_agent and claimed_agent != auth_agent:
                 self._send_json(403, {
                     'v': 1, 'kind': 'reject',
                     'payload': {
@@ -624,7 +624,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 })
                 return
 
-            target_agent = auth_agent if auth_agent != 'admin' else (claimed_agent or auth_agent)
+            target_agent = claimed_agent if (auth_agent in ('admin', 'combine') and claimed_agent) else auth_agent
             destination = payload.get('destination')
             if not destination:
                 self._send_json(400, {

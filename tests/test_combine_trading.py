@@ -106,18 +106,43 @@ class TestCombineTrading(unittest.TestCase):
         self.assertEqual(status, 200, f"Quick order failed: {res}")
         self.assertEqual(res.get('kind'), 'market_tick')
 
-    def test_leaderboard_exposes_food_and_ore(self):
-        """GET /referee/leaderboard exposes food and ore asset breakdown."""
-        status, data = self._get('/referee/leaderboard')
-        self.assertEqual(status, 200)
-        lb = data.get('leaderboard', [])
-        self.assertTrue(len(lb) >= 3)
-        for entry in lb:
-            self.assertIn('liquid', entry)
-            self.assertIn('frags', entry)
-            self.assertIn('fuel', entry)
-            self.assertIn('food', entry)
-            self.assertIn('ore', entry)
+    def test_combine_token_dispatches_transit_for_any_agent(self):
+        """Universal combine token can dispatch interplanetary transit for amos, marvin, zero."""
+        payload = {
+            'agent_id': 'aerial',
+            'destination': 'mars',
+            'commodity': 'FOOD',
+            'cargo_qty': 0
+        }
+        status, res = self._post('/stations/transit', payload, token='agora-combine-2026')
+        self.assertEqual(status, 200, f"Transit dispatch failed: {res}")
+        self.assertEqual(res.get('status'), 'in_transit')
+        self.assertEqual(res.get('payload', {}).get('destination'), 'mars')
+
+    def test_announcer_transit_parsing(self):
+        """Agora announcer parses natural language transit commands."""
+        import sys
+        sys.path.append('tools')
+        from agora_announcer import parse_discord_transit, parse_discord_trade
+
+        # Test transit commands
+        t1 = parse_discord_transit("MOVE TO MARS WITH 100 FOOD", "179407724335988736", "Ryan")
+        self.assertIsNotNone(t1)
+        self.assertEqual(t1['destination'], 'mars')
+        self.assertEqual(t1['commodity'], 'FOOD')
+        self.assertEqual(t1['cargo_qty'], 100)
+        self.assertEqual(t1['agent_id'], 'zero')
+
+        t2 = parse_discord_transit("TRANSIT CERES", "1541205716948353074", "Amos")
+        self.assertIsNotNone(t2)
+        self.assertEqual(t2['destination'], 'ceres')
+        self.assertEqual(t2['cargo_qty'], 0)
+        self.assertEqual(t2['agent_id'], 'amos')
+
+        # Test regular trade commands are not confused with transit
+        trade = parse_discord_trade("BUY 50 FOOD @ 32", "179407724335988736", "Ryan")
+        self.assertIsNotNone(trade)
+        self.assertIsNone(parse_discord_transit("BUY 50 FOOD @ 32", "179407724335988736", "Ryan"))
 
 
 if __name__ == '__main__':

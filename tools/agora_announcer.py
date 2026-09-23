@@ -24,11 +24,24 @@ import urllib.error
 from typing import Dict, Any, Optional, Set, Tuple
 
 DEFAULT_CHANNEL_ID = "1534436119888793750"  # #the-banana-stand
-DEFAULT_ROBOT_ROLE_ID = "1543462881624858624"  # @robot
-DEFAULT_TEAM_ROLE_ID = "1542294519914037341"   # @team
+# Load environment variables early so AGORA_BASE_URL and tokens are populated
+for env_path in ("/workspace/market-sandbox/.env", "/workspace/.env"):
+    if os.path.exists(env_path):
+        try:
+            with open(env_path, "r", encoding="utf-8") as f:
+                for eline in f:
+                    eline = eline.strip()
+                    if eline and not eline.startswith("#") and "=" in eline:
+                        k, v = eline.split("=", 1)
+                        os.environ.setdefault(k.strip(), v.strip())
+        except Exception:
+            pass
+
+DEFAULT_ROBOT_ROLE_ID = "1542294519914037341"  # @robot
+DEFAULT_TEAM_ROLE_ID = "1543462881624858624"   # @team
 DEFAULT_TARGET_TAG = f"<@&{DEFAULT_ROBOT_ROLE_ID}>"
 
-REFEREE_BASE_URL = os.environ.get("AGORA_BASE_URL", "https://agora.mikecarmody.net")
+REFEREE_BASE_URL = os.environ.get("AGORA_BASE_URL", "https://agora-banana-production.up.railway.app")
 
 STATION_ROTATION = ["ceres", "mars", "earth", "luna"]
 
@@ -68,6 +81,11 @@ FLEET_NAMES = {
 
 TRADE_PATTERN = re.compile(
     r"\b(BUY|BID|SELL|ASK)\s+(\d+)\s+(FRAG|FUEL|FOOD|ORE|BANANA)\b(?:[^\d]*?(\d+))?(?:.*?\b(?:AT|IN|STATION)\s+([A-Za-z]+))?",
+    re.IGNORECASE
+)
+
+TRANSIT_PATTERN = re.compile(
+    r"\b(?:MOVE|TRANSIT|FLY|WARP|GO)\s+(?:TO\s+)?([A-Za-z]+)(?:\s+(?:WITH|CARRYING|LOAD)\s+(\d+)\s+([A-Za-z]+))?",
     re.IGNORECASE
 )
 
@@ -283,6 +301,78 @@ def fetch_discord_messages(channel_id: str, after_id: str, token: str, limit: in
         return []
 
 
+def submit_transit_to_referee(transit: dict, ref_token: str) -> dict:
+    """Submit interplanetary transit to referee /stations/transit."""
+    url = f"{REFEREE_BASE_URL.rstrip('/')}/stations/transit"
+    payload = json.dumps(transit).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {ref_token}",
+            "Content-Type": "application/json",
+            "User-Agent": "AgoraTradeTerminal/2.0"
+        },
+        method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8")
+        try:
+            return {"status": "error", "http_code": e.code, "error": json.loads(raw)}
+        except Exception:
+            return {"status": "error", "http_code": e.code, "raw_error": raw}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def parse_discord_transit(content: str, author_id: str, author_name: str) -> Optional[dict]:
+    """Parse natural language transit command from Discord chat."""
+    if TRADE_PATTERN.search(content) and not re.search(r"\b(?:MOVE|TRANSIT)\b", content, re.I):
+        return None
+    m = TRANSIT_PATTERN.search(content)
+    if not m:
+        return None
+    dest_raw, qty_raw, comm_raw = m.groups()
+    dest = dest_raw.lower().strip()
+    if dest not in STATION_PROFILES and dest not in ("earth", "luna", "mars", "ceres"):
+        return None
+
+    qty = int(qty_raw) if qty_raw else 0
+    comm = comm_raw.upper().strip() if comm_raw else "FRAG"
+    if comm == "BANANA":
+        comm = "FRAG"
+
+    agent = None
+    agent_override = re.search(r"\b(?:as|agent:?)\s+(amos|marvin|zero|aerial)\b", content, re.I)
+    if agent_override:
+        agent = agent_override.group(1).lower()
+    elif author_id in AUTHOR_MAP:
+        agent = AUTHOR_MAP[author_id]
+    else:
+        name_lower = author_name.lower()
+        if "amos" in name_lower or "carmody" in name_lower or "mike" in name_lower:
+            agent = "amos"
+        elif "marvin" in name_lower or "alex" in name_lower:
+            agent = "marvin"
+        elif "zero" in name_lower or "brock" in name_lower or "ryan" in name_lower:
+            agent = "zero"
+        elif "aerial" in name_lower:
+            agent = "aerial"
+
+    if not agent:
+        agent = "zero"
+
+    return {
+        "agent_id": agent,
+        "destination": dest,
+        "commodity": comm,
+        "cargo_qty": qty
+    }
+
+
 def submit_trade_to_referee(trade: dict, ref_token: str) -> dict:
     """Submit trade to referee /referee/quick_order."""
     url = f"{REFEREE_BASE_URL.rstrip('/')}/referee/quick_order"
@@ -424,6 +514,12 @@ def build_announcement(round_num: int = 1, rounds_total: int = 8, codename: str 
     if codename:
         title += f" // OP {codename.upper()}"
 
+    base = REFEREE_BASE_URL.rstrip('/')
+    trade_body = '{"agent_id":"amos","side":"buy","qty":50,"price":32,"commodity":"FOOD","station":"' + st_key + '"}'
+    curl_trade = f'`curl -s -X POST {base}/referee/quick_order -H "Authorization: Bearer agora-combine-2026" -H "Content-Type: application/json" -d \'{trade_body}\'`'
+    transit_body = '{"agent_id":"amos","destination":"mars","commodity":"FOOD","cargo_qty":100}'
+    curl_transit = f'`curl -s -X POST {base}/stations/transit -H "Authorization: Bearer agora-combine-2026" -H "Content-Type: application/json" -d \'{transit_body}\'`'
+
     msg = (
         f"🔔 **STATION AGORA // {title}** ({target_tag})\n"
         f"**Sector:** {st_info['emoji']} **{st_info['name']}** | **Floor:** {floor.upper()} | **Seq:** #{seq}\n\n"
@@ -435,14 +531,23 @@ def build_announcement(round_num: int = 1, rounds_total: int = 8, codename: str 
         f"📊 **FLEET INVENTORIES & STANDINGS:**\n"
         f"{standings_str}\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🤖 **ROBOT COMBAT DIRECTIVE:**\n"
+        f"{target_tag}: Floor open for Round #{round_num}. Evaluate fleet balances and active depot quotes above. Submit an actionable order directly in this channel now (e.g. `BUY 50 FOOD @ 10` or `SELL 100 FRAG @ 21`). Do not stay silent.\n\n"
         f"🎯 **HOW TO TRADE THIS ROUND (ZERO PREP):**\n"
         f"💬 **1. Discord Chat:** Reply directly in this channel:\n"
         f"   `BUY 50 FOOD @ 32` or `SELL 100 ORE @ 9`\n"
         f"   *Format: `BUY/SELL <qty> <commodity> @ <price> [AT <station>]`*\n\n"
         f"⚡ **2. One-Line Curl:**\n"
-        f"   `curl -s -X POST https://agora.mikecarmody.net/referee/quick_order -H \"Authorization: Bearer agora-combine-2026\" -H \"Content-Type: application/json\" -d '{{\"agent_id\":\"amos\",\"side\":\"buy\",\"qty\":50,\"price\":32,\"commodity\":\"FOOD\",\"station\":\"{st_key}\"}}'`\n"
+        f"   {curl_trade}\n\n"
+        f"🚀 **INTERPLANETARY TRANSIT (RELOCATE FLEET & CARGO):**\n"
+        f"💬 **1. Discord Chat:** Reply directly in this channel:\n"
+        f"   `MOVE TO MARS WITH 100 FOOD` or `TRANSIT CERES`\n"
+        f"   *Format: `MOVE [TO] <destination> [WITH <qty> <commodity>]`*\n\n"
+        f"⚡ **2. One-Line Curl:**\n"
+        f"   {curl_transit}\n"
+        f"   *Transit burns FUEL and takes 1–3 rounds based on planetary alignment.*\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"*Orders execute immediately against depot pools or rival bids/asks.*"
+        f"*Orders and transits execute immediately against referee state and depot pools.*"
     )
     return msg, st_key
 
@@ -505,6 +610,46 @@ def poll_and_execute_trades(channel: str, bot_token: str, ref_token: str, active
         content = msg.get("content", "").strip()
         trade = parse_discord_trade(content, author.get("id", ""), author.get("username", ""), default_station=active_station)
         if not trade:
+            transit = parse_discord_transit(content, author.get("id", ""), author.get("username", ""))
+            if transit:
+                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Detected transit from {author.get('username')}: {transit}")
+                sys.stdout.flush()
+                res = submit_transit_to_referee(transit, ref_token)
+                ag_id = transit["agent_id"]
+                fl_name = FLEET_NAMES.get(ag_id, ag_id.upper())
+                dest_disp = transit["destination"].title()
+
+                if res.get("status") == "error" or res.get("kind") == "reject":
+                    err_detail = res.get("error", {}).get("payload", {}).get("detail") or res.get("payload", {}).get("detail") or res.get("error") or str(res)
+                    add_discord_reaction(channel, msg_id, "❌", bot_token)
+                    reject_msg = (
+                        f"⚠️ **[Agora Trade Terminal] Transit Rejected**\n"
+                        f"> **Syndicate:** {fl_name}\n"
+                        f"> **Target Station:** {dest_disp}\n"
+                        f"> **Reason:** `{err_detail}`"
+                    )
+                    post_discord(channel, reject_msg, bot_token)
+                else:
+                    payload = res.get("payload", {})
+                    origin_disp = payload.get("origin", active_station).title()
+                    cargo_qty = payload.get("cargo_qty", 0)
+                    comm_disp = payload.get("commodity", "")
+                    cargo_str = f"**{cargo_qty} {comm_disp}**" if cargo_qty > 0 else "empty cargo bay"
+                    fuel_burned = payload.get("fuel_burned", 0)
+                    arrival_rnd = payload.get("arrival_round", "?")
+                    duration = payload.get("rounds_duration", 1)
+
+                    add_discord_reaction(channel, msg_id, "🚀", bot_token)
+                    add_discord_reaction(channel, msg_id, "✅", bot_token)
+                    receipt_msg = (
+                        f"🚀 **[Agora Trade Terminal] Interplanetary Transit Dispatched**\n"
+                        f"> **Syndicate:** {fl_name}\n"
+                        f"> **Flight Corridor:** {origin_disp} ➔ **{dest_disp}** ({cargo_str})\n"
+                        f"> **Propellant:** Burned **{fuel_burned} FUEL**\n"
+                        f"> **ETA:** Arriving at {dest_disp} on **Round #{arrival_rnd}** ({duration} round(s))\n"
+                        f"> **Status:** Fleet undocked and in transfer orbit."
+                    )
+                    post_discord(channel, receipt_msg, bot_token)
             continue
 
         # If price was omitted, default to reasonable limit from current depots
