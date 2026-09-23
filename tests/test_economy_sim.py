@@ -150,6 +150,18 @@ class TestEconomySim(unittest.TestCase):
         for f in r["fleets"].values():
             self.assertEqual(f["pnl_total"], f["pnl_active"] + f["pnl_passive"])
 
+    def test_haulers_rest_asks_for_the_station_order_flow(self):
+        # #180: the Hauler bot rests its cargo at the ask for the NPC buyers.
+        # With main-side flow switched back on (it is off live) it farms it.
+        r = run("haulers4", "flat", seed=1, rounds=40, constants={"order_flow.FLOW_MAIN_SCALE": 1.0}, **KW)
+        self.assertIsNone(r["first_invariant_failure"])
+        fills = r["order_flow"]["by_fleet"]
+        self.assertEqual(len(fills), 4)
+        self.assertGreater(sum(f["units"] for f in fills.values()), 1000)
+        # Live: only side-station flow, a few fills at most.
+        live = run("haulers4", "flat", seed=1, rounds=40, **KW)["order_flow"]["by_fleet"]
+        self.assertLess(sum(f["units"] for f in live.values()), 500)
+
     def test_planet_genesis_preserves_value(self):
         r = run("idle4", "planet", seed=1, rounds=1)
         for f in r["fleets"].values():

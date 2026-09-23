@@ -523,12 +523,26 @@ class PeerMarket:
 class Hauler:
     """Greedy one-hop arbitrage: sell cargo on arrival, then buy the single
     best (commodity, destination) margin net of fuel and toll, and fly. A
-    hauler with a peer pickup waiting elsewhere flies there next (#126)."""
+    hauler with a peer pickup waiting elsewhere flies there next (#126).
+    Where the station's NPC buyers come (GET /referee/order-flow), it first
+    rests its cargo at the ask for them (#180, REST_ASKS)."""
 
     UPGRADE_CASH_MULT = UPGRADE_CASH_MULT
+    # rest_asks (#180): rest cargo on offer to the station's NPC buyers
+    # (agora/order_flow.py) at the depot ask for up to REST_ROUNDS rounds
+    # before selling the rest to the depot bid. Only where the expected NPC
+    # demand a round is at least REST_MIN_SHARE of the cargo, and it stops
+    # after a round with no fill. REST_MODE "wait" is a control for the
+    # #180 sweep (--hauler-rest wait): same timing, no ask placed.
+    REST_ASKS = True
+    REST_ROUNDS = 2
+    REST_MIN_SHARE = 0.1
+    REST_MODE = "ask"
 
-    def __init__(self, agent: str, tolerate_halts: bool = False):
+    def __init__(self, agent: str, tolerate_halts: bool = False, rest_asks: Optional[bool] = None):
         self.agent = agent
+        self.rest_asks = self.REST_ASKS if rest_asks is None else rest_asks
+        self.rest: Dict[str, dict] = {}  # comm -> {"st", "rounds", "held"} while resting an ask
         self.stranded = False
         # strict: never place an order outside the circuit-breaker band.
         # tolerant: buy at the depot ask even if that trips a halt, then wait
@@ -564,12 +578,21 @@ class Hauler:
 
         # 1. Sell cargo here only if this is the best market for it; otherwise
         #    it is cargo to haul (e.g. a per-planet genesis export).
+        resting = False
         for comm in ("FRAG", "FOOD", "ORE"):
             qty = available(ref, self.agent, comm)
             bid = quotes[st][comm]["best_bid"]
             if qty > 0 and bid and bid >= self._hauling_value(quotes, st, comm) and band_ok(ref, st, comm, bid):
+                if self._rest_ask(ref, quotes, st, comm, qty, stats):
+                    resting = True
+                    continue
                 order(ref, self.agent, "ask", min(qty, quotes[st][comm]["bid_depth"] or qty), bid, comm, st, "sell")
+        self.rest = {c: r for c, r in self.rest.items() if r.get("live")}
+        for r in self.rest.values():
+            r["live"] = False
         self._buy_upgrades(ref, stats)
+        if resting:
+            return  # stay docked: the NPC buyers fill at the next tick
         inv = inventory(ref, self.agent)
         for comm in ("FRAG", "FOOD", "ORE"):
             if inv[comm] > 0:
@@ -602,10 +625,13 @@ class Hauler:
                 if not band_ok(ref, st, comm, ask) and not self.tolerate_halts:
                     stats["band_blocked"] += 1
                     continue
-                qty = min(quotes[st][comm]["ask_depth"] or 0, cap, max(0, (inv["CR"] - 200) // ask))
+                # Keep the CR for the trip's fuel: spending it on cargo left a
+                # hauler stranded with no fuel and no cash (#180).
+                fuel_cost = route["fuel"] * (quotes[st]["FUEL"]["best_ask"] or 20)
+                fuel_buy = max(0, route["fuel"] - inv["FUEL"]) * (quotes[st]["FUEL"]["best_ask"] or 20)
+                qty = min(quotes[st][comm]["ask_depth"] or 0, cap, max(0, (inv["CR"] - 200 - fuel_buy) // ask))
                 if qty <= 0:
                     continue
-                fuel_cost = route["fuel"] * (quotes[st]["FUEL"]["best_ask"] or 20)
                 profit = (bid - ask) * qty - fuel_cost - route.get("toll", 0)
                 per_round = profit / max(1, route["rounds"])
                 if profit > 0 and (best is None or per_round > best[0]):
@@ -626,6 +652,37 @@ class Hauler:
             self.plan = (dest, comm)
             return
         self._fly(ref, st, dest, comm, inventory(ref, self.agent), stats)
+
+    def _rest_ask(self, ref: AgoraReferee, quotes, st: str, comm: str, qty: int, stats) -> bool:
+        """rest_asks (#180): offer the cargo at the best ask to the station's
+        NPC buyers, who pay up to the depot ask and fill fleet asks first
+        (GET /referee/order-flow). True if it rests an ask this round; False
+        once REST_ROUNDS have passed or a round brought no fill, and the
+        rest is to be sold at the bid."""
+        flow = getattr(ref, "order_flow", None)
+        if not self.rest_asks or flow is None or not flow.enabled:
+            return False
+        if any(p["station_id"] != st for p in pickups(ref, self.agent)):
+            return False  # a peer pickup waits elsewhere: go and collect it (#126)
+        r = self.rest.get(comm)
+        if r and r["st"] == st:
+            if r["rounds"] >= self.REST_ROUNDS or (self.REST_MODE == "ask" and qty >= r["held"]):
+                return False
+            r["rounds"] += 1
+        else:
+            if flow.expected(st, comm)["buy"] < self.REST_MIN_SHARE * qty:
+                return False
+            r = self.rest[comm] = {"st": st, "rounds": 1}
+        r["held"], r["live"] = qty, True
+        if self.REST_MODE == "wait":
+            return True
+        ask = quotes[st][comm]["best_ask"]
+        if not ask or not band_ok(ref, st, comm, ask):
+            return False
+        if order(ref, self.agent, "ask", qty, ask, comm, st, "rest").get("kind") == "reject":
+            return False
+        stats["rest_asks"] = stats.get("rest_asks", 0) + 1
+        return True
 
     # Purchase decisions, as methods so tools/dominance.py can swap one
     # fleet's policy without copying the hauling loop.
@@ -1723,6 +1780,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--rounds", type=int, default=300)
     ap.add_argument("--seeds", type=int, default=2)
+    ap.add_argument("--seed-start", type=int, default=1, help="first seed (e.g. 21 for the 21-40 holdout)")
     ap.add_argument("--scenario", choices=sorted(SCENARIOS), action="append")
     ap.add_argument("--genesis", choices=["flat", "planet"], action="append")
     ap.add_argument("--mode", choices=["strict", "tolerant"], action="append",
@@ -1762,6 +1820,9 @@ def main() -> int:
     ap.add_argument("--table", action="store_true", help="print only the markdown headline table")
     ap.add_argument("--styles", action="store_true",
                     help="print only the per-style table: median, p10, p90 of P&L incl. rival shares at NAV (#162)")
+    ap.add_argument("--hauler-rest", choices=["ask", "wait", "off"], default="ask",
+                    help="bot behaviour (#180): haulers and privateers rest cargo at the ask for NPC buyers (default), "
+                         "wait the same rounds without an ask (control), or sell at the bid at once")
     ap.add_argument("--jobs", type=int, default=1, help="run games in this many parallel processes")
     ap.add_argument("--hang-timeout", type=int, default=600, help="dump stacks and exit if a run hangs")
     args = ap.parse_args()
@@ -1808,13 +1869,15 @@ def main() -> int:
     for scen in args.scenario or ["mixed", "haulers4", "idle4"]:
         for gen in args.genesis or ["flat", "planet"]:
             for mode in (args.mode or ["strict", "tolerant"]) if scen != "idle4" else ["strict"]:
-                for seed in range(1, args.seeds + 1):
+                for seed in range(args.seed_start, args.seed_start + args.seeds):
                     jobs.append(dict(scenario=scen, genesis=gen, seed=seed, rounds=args.rounds, mode=mode,
                                      overrides=overrides, constants=constants,
                                      equity_mm=((args.equity_mm[0], int(args.equity_mm[1]))
                                                 if args.equity_mm else None),
                                      vol=args.vol, theta=args.theta, spread_scale=args.spread_scale,
                                      hang_timeout=args.hang_timeout))
+    Hauler.REST_ASKS = args.hauler_rest != "off"
+    Hauler.REST_MODE = "wait" if args.hauler_rest == "wait" else "ask"
     results = run_many(jobs, args.jobs)
     faulthandler.cancel_dump_traceback_later()
 
