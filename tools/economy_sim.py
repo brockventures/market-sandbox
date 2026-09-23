@@ -10,6 +10,7 @@ Strategies:
   hauler   buys where a good is cheap, flies it, sells where it is dear
   maker    quotes both sides at its home station, joining the depot touch
   idler    does nothing
+  (--fog LAG NOISE: stale, jittered remote quotes; --owned-contracts: tradable contracts)
   novice   a zero-context LLM player reading /referee/briefing: sees the
            whole board, but picks routes loosely (softmax, not argmax),
            sends malformed or misplaced orders, often prices inside the
@@ -29,10 +30,11 @@ Usage:
 """
 
 import argparse
+import copy
 import faulthandler
 import json
-import math
 import random
+import math
 import statistics
 import sys
 import time
@@ -116,11 +118,16 @@ class ContractBoard:
     QTY = (300, 800)
     DEADLINE = (6, 10)
     PREMIUM = (1.3, 1.6)
+    HOLD = 3  # rounds a buyer keeps a contract before it will resell
 
-    def __init__(self, ref: AgoraReferee, seed: int):
-        import random
+    def __init__(self, ref: AgoraReferee, seed: int, owned: bool = False):
         self.ref = ref
         self.rng = random.Random(seed * 7919)
+        # owned: each contract is awarded to one corp, only the owner can
+        # deliver into it, and owners can sell contracts to other corps.
+        self.owned = owned
+        self.transfers = 0
+        self.transfer_cr = 0
         self.open: List[dict] = []
         self.delivered = 0
         self.paid = 0
@@ -140,18 +147,22 @@ class ContractBoard:
             self.open.append({"id": f"c{r}-{st}-{comm}", "station": st, "comm": comm,
                               "remaining": self.rng.randint(*self.QTY),
                               "deadline": r + self.rng.randint(*self.DEADLINE),
-                              "price": int(round(BASE_PRICES[st][comm] * self.rng.uniform(*self.PREMIUM)))})
+                              "price": int(round(BASE_PRICES[st][comm] * self.rng.uniform(*self.PREMIUM))),
+                              "owner": self.rng.choice(FLEETS) if self.owned else None})
             self.posted += 1
 
-    def best_for(self, st: str, comm: str, arrival: int) -> Optional[dict]:
+    def _mine(self, c: dict, agent: Optional[str]) -> bool:
+        return c["owner"] is None or c["owner"] == agent
+
+    def best_for(self, st: str, comm: str, arrival: int, agent: Optional[str] = None) -> Optional[dict]:
         live = [c for c in self.open if c["station"] == st and c["comm"] == comm
-                and c["remaining"] > 0 and c["deadline"] >= arrival]
+                and c["remaining"] > 0 and c["deadline"] >= arrival and self._mine(c, agent)]
         return max(live, key=lambda c: c["price"]) if live else None
 
     def deliver(self, agent: str, st: str) -> int:
         ref, got = self.ref, 0
         for c in sorted(self.open, key=lambda c: -c["price"]):
-            if c["station"] != st or c["remaining"] <= 0:
+            if c["station"] != st or c["remaining"] <= 0 or not self._mine(c, agent):
                 continue
             qty = min(c["remaining"], ref.get_balance(agent, c["comm"]))
             if qty <= 0:
@@ -169,6 +180,110 @@ class ContractBoard:
             self.paid += qty * c["price"]
             got += qty
         return got
+
+
+    # -------------------------------------------------- contract trading
+
+    def value_to(self, agent: str, c: dict, view) -> int:
+        """What contract c is worth to `agent`, from where it is and what it can
+        see: buy the good at the cheapest station it knows of, fly it in, get
+        paid. Zero if it cannot make the deadline. Uses the agent's own
+        (possibly fogged) quotes, so two corps can honestly disagree."""
+        st = location(self.ref, agent)
+        if st is None:
+            return 0
+        r = self.ref.current_round
+        best = 0
+        qty = min(c["remaining"], 500)
+        held = self.ref.get_balance(agent, c["comm"])
+        for src in STATIONS:
+            if src == c["station"]:
+                continue
+            ask = view[src][c["comm"]]["best_ask"]
+            if not ask:
+                continue
+            leg1 = get_route(st, src, r) if st != src else {"rounds": 0, "fuel": 0, "toll": 0}
+            leg2 = get_route(src, c["station"], r)
+            if not leg1 or not leg2 or r + leg1["rounds"] + leg2["rounds"] > c["deadline"]:
+                continue
+            fuel_px = view[st]["FUEL"]["best_ask"] or 20
+            cost = (leg1["fuel"] + leg2["fuel"]) * fuel_px + leg1.get("toll", 0) + leg2.get("toll", 0)
+            v = (c["price"] - ask) * qty - cost
+            best = max(best, v)
+        if st == c["station"] and held > 0:
+            best = max(best, (c["price"] - (view[st][c["comm"]]["best_bid"] or 0)) * min(qty, held))
+        return int(best)
+
+    def trade(self, views: Dict[str, dict], min_gain: int = 200) -> None:
+        """Owners sell a contract to whichever corp values it most, at the
+        midpoint of the two valuations, when the gap is worth the bother.
+        CR moves buyer -> owner through balanced ledger entries."""
+        ref = self.ref
+        for c in self.open:
+            if not c["owner"] or c["remaining"] <= 0:
+                continue
+            # A corp in transit can't negotiate (its value_to would read 0 and
+            # it would dump a contract it is flying to fill), and a corp keeps
+            # a contract it just bought for HOLD rounds rather than flipping it.
+            if location(ref, c["owner"]) is None or ref.current_round - c.get("bought", -99) < self.HOLD:
+                continue
+            own_v = self.value_to(c["owner"], c, views[c["owner"]])
+            bids = [(self.value_to(a, c, views[a]), a) for a in FLEETS
+                    if a != c["owner"] and location(ref, a) is not None]
+            if not bids:
+                continue
+            v, buyer = max(bids)
+            if v - own_v < min_gain:
+                continue
+            price = (v + max(0, own_v)) // 2
+            if ref.get_balance(buyer, "CR") < price:
+                continue
+            with ref.lock, ref.conn:
+                txn = f"ctrade-{c['id']}-{ref.current_round}"
+                for acct, d in ((buyer, -price), (c["owner"], price)):
+                    ref.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = 'CR'", (d, acct))
+                    ref.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, 'CR', ?)",
+                                     (txn, ref.current_seq, acct, d))
+            c["owner"] = buyer
+            c["bought"] = ref.current_round
+            self.transfers += 1
+            self.transfer_cr += price
+
+
+# ------------------------------------------------------------ fog of war
+
+class Fog:
+    """Each fleet sees exact depot quotes only where it is docked. Every other
+    station shows quotes LAG rounds old, each price jittered by up to NOISE,
+    drawn per fleet, so two fleets misread the same station differently."""
+
+    def __init__(self, lag: int, noise: float, seed: int):
+        self.lag, self.noise = lag, noise
+        self.history: List[dict] = []
+        self.rng = random.Random(seed * 104729)
+
+    def record(self, quotes) -> None:
+        self.history.append(copy.deepcopy(quotes))
+        self.history = self.history[-(self.lag + 1):]
+
+    def view(self, ref: AgoraReferee, agent: str, quotes):
+        here = location(ref, agent)
+        old = self.history[0]
+        out = {}
+        for st in STATIONS:
+            if st == here:
+                out[st] = quotes[st]
+                continue
+            out[st] = {}
+            for comm, q in old[st].items():
+                j = dict(q)
+                for side in ("best_bid", "best_ask"):
+                    if j.get(side):
+                        j[side] = max(1, int(round(j[side] * (1 + self.rng.uniform(-self.noise, self.noise)))))
+                if j.get("best_bid") and j.get("best_ask") and j["best_bid"] >= j["best_ask"]:
+                    j["best_ask"] = j["best_bid"] + 1
+                out[st][comm] = j
+        return out
 
 
 def charge_docking_fees(ref: AgoraReferee, fee: int) -> int:
@@ -262,7 +377,7 @@ class Hauler:
                 bid = quotes[dest][comm]["best_bid"] or 0
                 cap = 500
                 if board is not None:
-                    c = board.best_for(dest, comm, ref.current_round + route["rounds"])
+                    c = board.best_for(dest, comm, ref.current_round + route["rounds"], self.agent)
                     if c and c["price"] > bid:
                         bid, cap = c["price"], min(500, c["remaining"])
                 if not ask or not bid:
@@ -540,7 +655,8 @@ def depot_floor(ref: AgoraReferee) -> int:
 
 def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict", check_every: int = 25,
         depot_model: str = "static", band_pct: Optional[float] = None, reactive_bands: bool = True,
-        contracts: bool = False, dock_fee: int = 0) -> dict:
+        contracts: bool = False, dock_fee: int = 0, owned_contracts: bool = False,
+        fog: Optional[tuple] = None) -> dict:
     # Reactive depots are the referee's own implementation (agora/referee.py,
     # AGORA_DEPOT_MODEL), so these numbers describe what would ship.
     ref = AgoraReferee(depots=True, asymmetric=True, depot_model=depot_model,
@@ -557,7 +673,8 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
     fleets = {a: build(a, kind) for a, kind in SCENARIOS[scenario].items()}
     start = {a: score(ref, a) for a in FLEETS}
     stats = {"transits": 0, "halts_caused": 0, "band_blocked": 0, "stranded_events": 0, "contract_deliveries": 0}
-    cboard = ContractBoard(ref, seed) if contracts else None
+    cboard = ContractBoard(ref, seed, owned=owned_contracts) if (contracts or owned_contracts) else None
+    fogger = Fog(fog[0], fog[1], seed) if fog else None
     ref._sim_contracts = cboard
     first_negative_depot = None
     first_invariant_failure = None
@@ -569,8 +686,13 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
         spread.append((quotes["earth"]["ORE"]["best_bid"] or 0) - (quotes["ceres"]["ORE"]["best_ask"] or 0))
         if cboard is not None:
             cboard.step()
-        for strat in fleets.values():
-            strat.act(ref, quotes, stats)
+        if fogger is not None:
+            fogger.record(quotes)
+        views = {a: (fogger.view(ref, a, quotes) if fogger else quotes) for a in FLEETS}
+        if cboard is not None and cboard.owned:
+            cboard.trade(views)
+        for a, strat in fleets.items():
+            strat.act(ref, views[a], stats)
         ref.step_round()
         if dock_fee:
             stats["dock_fees"] = stats.get("dock_fees", 0) + charge_docking_fees(ref, dock_fee)
@@ -592,7 +714,10 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
         "reactive_bands": reactive_bands,
         "dock_fee": dock_fee, "dock_fees_collected": stats.get("dock_fees", 0),
         "contracts": None if cboard is None else {"posted": cboard.posted, "units_delivered": cboard.delivered,
-                                                  "paid": cboard.paid, "expired": cboard.expired},
+                                                  "paid": cboard.paid, "expired": cboard.expired,
+                                                  "owned": cboard.owned, "transfers": cboard.transfers,
+                                                  "transfer_cr": cboard.transfer_cr},
+        "fog": list(fog) if fog else None,
         "depot_cr_end": {st: ref.get_balance(f"depot_{st}", "CR") for st in STATIONS},
         "seconds": round(elapsed, 2),
         "fleets": {a: {"strategy": SCENARIOS[scenario][a], "start": round(start[a]), "end": round(end[a]),
@@ -624,6 +749,10 @@ def main() -> int:
     ap.add_argument("--drip", type=int, nargs=2, metavar=("MAIN", "SIDE"), default=None,
                     help="reactive depots: per-round restock/consumption at the main and other stations (default 100 20)")
     ap.add_argument("--contracts", action="store_true", help="enable the #74 station contract prototype")
+    ap.add_argument("--owned-contracts", action="store_true",
+                    help="contracts are awarded to one corp, only it can deliver, and corps can sell them to each other")
+    ap.add_argument("--fog", type=float, nargs=2, metavar=("LAG", "NOISE"), default=None,
+                    help="remote stations show quotes LAG rounds old, jittered by +/-NOISE (e.g. 3 0.15)")
     ap.add_argument("--dock-fee", type=int, default=0, help="#73 prototype: CR charged per round to each docked fleet")
     ap.add_argument("--free-quotes", action="store_true",
                     help="reactive depots: do not hold quotes inside the circuit-breaker band")
@@ -642,7 +771,8 @@ def main() -> int:
                     results.append(run(scen, gen, seed, args.rounds, mode,
                                        depot_model=args.depot_model, band_pct=args.band_pct,
                                        reactive_bands=not args.free_quotes, contracts=args.contracts,
-                                       dock_fee=args.dock_fee))
+                                       dock_fee=args.dock_fee, owned_contracts=args.owned_contracts,
+                                       fog=(int(args.fog[0]), args.fog[1]) if args.fog else None))
     faulthandler.cancel_dump_traceback_later()
 
     if args.json:

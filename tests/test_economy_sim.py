@@ -40,6 +40,13 @@ class TestEconomySim(unittest.TestCase):
         self.assertGreater(r["transits"], 0)
         self.assertTrue(any(f["pnl"] > 0 for f in r["fleets"].values()))
 
+    def test_owned_contracts_change_hands_and_balance(self):
+        r = run("haulers4", "flat", seed=1, rounds=60, mode="tolerant", check_every=20,
+                depot_model="reactive", band_pct=0.25, owned_contracts=True, fog=(3, 0.15))
+        self.assertIsNone(r["first_invariant_failure"])
+        self.assertTrue(r["contracts"]["owned"])
+        self.assertGreater(r["contracts"]["transfers"], 0)
+
     def test_dock_fee_charges_idlers(self):
         r = run("idle4", "flat", seed=1, rounds=20, dock_fee=10)
         for f in r["fleets"].values():
