@@ -40,6 +40,12 @@ class TestEconomySim(unittest.TestCase):
         self.assertGreater(r["transits"], 0)
         self.assertTrue(any(f["pnl"] > 0 for f in r["fleets"].values()))
 
+    def test_fuel_sources_remove_depot_fuel_elsewhere(self):
+        r = run("novice_vs_haulers", "flat", seed=2, rounds=40, mode="tolerant", check_every=20,
+                depot_model="reactive", band_pct=0.25, fuel_src=["earth", "mars"])
+        self.assertIsNone(r["first_invariant_failure"])
+        self.assertEqual(r["fuel_sources"], ["earth", "mars"])
+
     def test_dock_fee_charges_idlers(self):
         r = run("idle4", "flat", seed=1, rounds=20, dock_fee=10)
         for f in r["fleets"].values():

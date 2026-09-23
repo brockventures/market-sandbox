@@ -100,6 +100,59 @@ def inventory(ref: AgoraReferee, agent: str) -> Dict[str, int]:
     return {c: ref.get_balance(agent, c) for c in ["CR"] + TRADED}
 
 
+# ------------------------------------------------------------ fuel sources (prototype)
+
+FUEL_RESERVE = 40
+TANK_SURPLUS = 150  # extra FUEL a hauler loads at a source station to resell  # FUEL a fleet keeps aboard when selling FUEL cargo: enough to leave any station
+
+
+def fuel_sources(ref: AgoraReferee):
+    return getattr(ref, "_sim_fuel_sources", None)
+
+
+def strip_depot_fuel_asks(ref: AgoraReferee) -> None:
+    """Prototype: depots trade FUEL only at the source stations. Everywhere
+    else the depot neither buys nor sells it, so the only FUEL market there
+    is between fleets. (A first cut left the non-source depots BUYING FUEL:
+    haulers then sold hauled FUEL to the Ceres depot at 23 rather than to a
+    stranded fleet bidding 20, and fleets piled up stranded.) Runs after
+    every depot refresh (step_round re-posts both sides)."""
+    sources = fuel_sources(ref)
+    if not sources:
+        return
+    with ref.lock, ref.conn:
+        for st in STATIONS:
+            if st in sources:
+                continue
+            depot = f"depot_{st}"
+            book = ref.books.get(st, {}).get("FUEL")
+            if book is not None:
+                book.asks = [o for o in book.asks if o.agent_id != depot]
+                book.bids = [o for o in book.bids if o.agent_id != depot]
+            ref.conn.execute("DELETE FROM orders WHERE agent_id = ? AND station_id = ? AND instrument = 'FUEL' "
+                             "AND status = 'open'", (depot, st))
+
+
+def buy_fuel_or_bid(ref: AgoraReferee, agent: str, st: str, need: int, quotes, premium: int, stats) -> None:
+    """Buy FUEL from the depot if it sells here; otherwise rest a bid above
+    the depot's FUEL bid, so a fleet selling FUEL here meets this bid first."""
+    fa = quotes[st]["FUEL"]["best_ask"]
+    if fa:
+        if ref.get_balance(agent, "CR") >= need * fa and band_ok(ref, st, "FUEL", fa):
+            order(ref, agent, "bid", need, fa, "FUEL", st, "fuel")
+        return
+    # A stranded fleet raises its bid 2 CR for every round it has waited.
+    waits = ref.__dict__.setdefault("_sim_fuel_wait", {})
+    waits[agent] = waits.get(agent, 0) + 1
+    floor = min(quotes[s]["FUEL"]["best_ask"] or 99 for s in fuel_sources(ref))
+    px = floor + premium + 2 * waits[agent]
+    while px > floor and not band_ok(ref, st, "FUEL", px):
+        px -= 1
+    if ref.get_balance(agent, "CR") >= need * px:
+        order(ref, agent, "bid", need, px, "FUEL", st, "fuelbid")
+        stats["fuel_bids"] = stats.get("fuel_bids", 0) + 1
+
+
 # ------------------------------------------------------------ contracts (#74 prototype)
 
 class ContractBoard:
@@ -237,9 +290,17 @@ class Hauler:
 
         # 1. Sell cargo here only if this is the best market for it; otherwise
         #    it is cargo to haul (e.g. a per-planet genesis export).
-        for comm in ("FRAG", "FOOD", "ORE"):
-            qty = inv[comm]
+        sell_goods = ("FRAG", "FOOD", "ORE") + (("FUEL",) if fuel_sources(ref) else ())
+        for comm in sell_goods:
+            qty = inv[comm] - (FUEL_RESERVE if comm == "FUEL" else 0)
             bid = quotes[st][comm]["best_bid"]
+            if comm == "FUEL" and st in fuel_sources(ref):
+                continue  # never dump FUEL back at a source
+            if comm == "FUEL":
+                # Tank surplus goes to whichever fleet is bidding here.
+                if qty > 0 and bid and band_ok(ref, st, comm, bid):
+                    order(ref, self.agent, "ask", min(qty, quotes[st][comm]["bid_depth"] or qty), bid, comm, st, "fuelsell")
+                continue
             if qty > 0 and bid and bid >= self._hauling_value(quotes, st, comm) and band_ok(ref, st, comm, bid):
                 order(ref, self.agent, "ask", min(qty, quotes[st][comm]["bid_depth"] or qty), bid, comm, st, "sell")
         inv = inventory(ref, self.agent)
@@ -257,10 +318,13 @@ class Hauler:
             route = get_route(st, dest, ref.current_round)
             if not route:
                 continue
-            for comm in ("FRAG", "FOOD", "ORE"):
+            goods = ("FRAG", "FOOD", "ORE") + (("FUEL",) if fuel_sources(ref) and dest not in fuel_sources(ref) else ())
+            for comm in goods:
                 ask = quotes[st][comm]["best_ask"]
                 bid = quotes[dest][comm]["best_bid"] or 0
                 cap = 500
+                if comm == "FUEL":
+                    cap = min(cap, quotes[dest]["FUEL"]["bid_depth"] or 0)
                 if board is not None:
                     c = board.best_for(dest, comm, ref.current_round + route["rounds"])
                     if c and c["price"] > bid:
@@ -293,6 +357,17 @@ class Hauler:
     def _fly(self, ref: AgoraReferee, st: str, dest: str, comm: str, inv, stats) -> None:
         route = get_route(st, dest, ref.current_round)
         need = route["fuel"] - inv["FUEL"]
+        if fuel_sources(ref) and st in fuel_sources(ref):
+            # FUEL is cheap here and scarce elsewhere: fill the tank past this
+            # trip's burn, and sell the surplus to fleets stranded downstream.
+            need = route["fuel"] + TANK_SURPLUS - inv["FUEL"]
+        if need > 0 and fuel_sources(ref) and st not in fuel_sources(ref):
+            buy_fuel_or_bid(ref, self.agent, st, need, ref.get_depot_summary()["stations"], 4, stats)
+            if ref.get_balance(self.agent, "FUEL") < route["fuel"]:
+                stats["fuel_waits"] = stats.get("fuel_waits", 0) + 1
+                self.plan = None
+                return
+            need = 0
         if need > 0:
             fa = ref.get_depot_summary()["stations"][st]["FUEL"]["best_ask"]
             if fa and inv["CR"] >= need * fa:
@@ -312,11 +387,14 @@ class Hauler:
                 return
         self.stranded = False
         held = ref.get_balance(self.agent, comm)
+        if comm == "FUEL":
+            held -= route["fuel"] + FUEL_RESERVE
         if held > 0:
             cancel_all(ref, self.agent)
             t = ref.initiate_transit(agent_id=self.agent, destination=dest, commodity=comm, cargo_qty=held)
             if t.get("status") == "in_transit":
                 stats["transits"] += 1
+                getattr(ref, "_sim_fuel_wait", {}).pop(self.agent, None)
 
 
 class Maker:
@@ -462,14 +540,16 @@ class Novice:
         route = get_route(st, dest, ref.current_round)
         need = route["fuel"] - inv["FUEL"]
         if need > 0 and self.rng.random() >= self.p_no_fuel:
-            fa = quotes[st]["FUEL"]["best_ask"]
-            if fa and inv["CR"] >= need * fa and band_ok(ref, st, "FUEL", fa):
-                order(ref, self.agent, "bid", need, fa, "FUEL", st, "fuel")
+            buy_fuel_or_bid(ref, self.agent, st, need, quotes, self.rng.randint(1, 6), stats)
+            if fuel_sources(ref) and st not in fuel_sources(ref) and ref.get_balance(self.agent, "FUEL") < route["fuel"]:
+                stats["fuel_waits"] = stats.get("fuel_waits", 0) + 1
+                return  # leave the FUEL bid resting and wait for a seller
         held = ref.get_balance(self.agent, comm)
         cancel_all(ref, self.agent)
         t = ref.initiate_transit(agent_id=self.agent, destination=dest, commodity=comm, cargo_qty=held)
         if t.get("status") == "in_transit":
             stats["transits"] += 1
+            getattr(ref, "_sim_fuel_wait", {}).pop(self.agent, None)
         else:
             stats["rejected_moves"] = stats.get("rejected_moves", 0) + 1
 
@@ -540,7 +620,7 @@ def depot_floor(ref: AgoraReferee) -> int:
 
 def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict", check_every: int = 25,
         depot_model: str = "static", band_pct: Optional[float] = None, reactive_bands: bool = True,
-        contracts: bool = False, dock_fee: int = 0) -> dict:
+        contracts: bool = False, dock_fee: int = 0, fuel_src: Optional[List[str]] = None) -> dict:
     # Reactive depots are the referee's own implementation (agora/referee.py,
     # AGORA_DEPOT_MODEL), so these numbers describe what would ship.
     ref = AgoraReferee(depots=True, asymmetric=True, depot_model=depot_model,
@@ -559,6 +639,8 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
     stats = {"transits": 0, "halts_caused": 0, "band_blocked": 0, "stranded_events": 0, "contract_deliveries": 0}
     cboard = ContractBoard(ref, seed) if contracts else None
     ref._sim_contracts = cboard
+    ref._sim_fuel_sources = set(fuel_src) if fuel_src else None
+    strip_depot_fuel_asks(ref)
     first_negative_depot = None
     first_invariant_failure = None
     spread = []  # Earth ORE bid - Ceres ORE ask over time
@@ -566,12 +648,23 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
     t0 = time.time()
     for _ in range(rounds):
         quotes = ref.get_depot_summary()["stations"]
+        if ref._sim_fuel_sources:
+            # Players see the whole book, not just the depot: a fleet's resting
+            # FUEL bid is the price a FUEL hauler can actually sell at.
+            for st in STATIONS:
+                book = ref.books.get(st, {}).get("FUEL")
+                if book is not None and book.best_bid() is not None:
+                    q = quotes[st]["FUEL"]
+                    q["best_bid"] = max(q["best_bid"] or 0, book.best_bid())
+                    if st not in ref._sim_fuel_sources:
+                        q["bid_depth"] = sum(o.remaining_qty for o in book.bids)
         spread.append((quotes["earth"]["ORE"]["best_bid"] or 0) - (quotes["ceres"]["ORE"]["best_ask"] or 0))
         if cboard is not None:
             cboard.step()
         for strat in fleets.values():
             strat.act(ref, quotes, stats)
         ref.step_round()
+        strip_depot_fuel_asks(ref)
         if dock_fee:
             stats["dock_fees"] = stats.get("dock_fees", 0) + charge_docking_fees(ref, dock_fee)
         if first_negative_depot is None and depot_floor(ref) < 0:
@@ -603,6 +696,8 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
         "band_blocked_checks": stats["band_blocked"],
         "stranded_events": stats["stranded_events"],
         "bad_orders": stats.get("bad_orders", 0),
+        "fuel_sources": sorted(fuel_src) if fuel_src else None,
+        "fuel_bids": stats.get("fuel_bids", 0), "fuel_waits": stats.get("fuel_waits", 0),
         "rejected_moves": stats.get("rejected_moves", 0),
         "ore_spread_by_quarter": [round(statistics.mean(spread[i:i + q]), 1) for i in range(0, len(spread), q)][:4],
         "first_negative_depot_round": first_negative_depot,
@@ -624,6 +719,8 @@ def main() -> int:
     ap.add_argument("--drip", type=int, nargs=2, metavar=("MAIN", "SIDE"), default=None,
                     help="reactive depots: per-round restock/consumption at the main and other stations (default 100 20)")
     ap.add_argument("--contracts", action="store_true", help="enable the #74 station contract prototype")
+    ap.add_argument("--fuel-sources", default=None,
+                    help="prototype: comma list of stations whose depots SELL FUEL (e.g. earth,mars); others only buy it")
     ap.add_argument("--dock-fee", type=int, default=0, help="#73 prototype: CR charged per round to each docked fleet")
     ap.add_argument("--free-quotes", action="store_true",
                     help="reactive depots: do not hold quotes inside the circuit-breaker band")
@@ -642,7 +739,8 @@ def main() -> int:
                     results.append(run(scen, gen, seed, args.rounds, mode,
                                        depot_model=args.depot_model, band_pct=args.band_pct,
                                        reactive_bands=not args.free_quotes, contracts=args.contracts,
-                                       dock_fee=args.dock_fee))
+                                       dock_fee=args.dock_fee,
+                                       fuel_src=args.fuel_sources.split(",") if args.fuel_sources else None))
     faulthandler.cancel_dump_traceback_later()
 
     if args.json:
