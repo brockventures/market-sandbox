@@ -477,16 +477,23 @@ def build_burst_kickoff(burst_id: str, rounds: int, interval_sec: float, start_r
     """Compile formatted kickoff alert for discrete burst session."""
     end_round = start_round + rounds
     target_tag = mention if mention else DEFAULT_TARGET_TAG
+    base = REFEREE_BASE_URL.rstrip('/')
     return (
         f"🚀 **STATION AGORA // SOL SYSTEM COMBINE INITIATED** ({target_tag})\n"
         f"```text\n"
         f"BURST ID:       {burst_id}\n"
         f"COMBINE WINDOW: Rounds #{start_round + 1} -> #{end_round} ({rounds} rounds)\n"
         f"ROUND CADENCE:  {interval_sec:.0f}s per strategy window\n"
-        f"STATUS:         FLOOR OPEN // IN-CHANNEL DISCORD TRADING ENGAGED\n"
+        f"STATUS:         FLOOR OPEN // AUTONOMOUS MATCHMAKING ENGAGED\n\n"
+        f"🏆 OBJECTIVE:   Highest Mark-to-Market Net Worth (CR) at Round #{end_round} wins!\n"
+        f"⚠️ SCORING:     Net Worth = Liquid CR + Cargo (FRAG @ Ceres mark, FOOD/ORE @ Sol avg).\n"
+        f"               *FUEL is consumable propellant (0 CR score value).*\n"
         f"```\n"
-        f"💬 **How to Trade:** Reply `BUY/SELL <qty> <commodity> @ <price>` (e.g. `BUY 50 FOOD @ 32`)\n"
-        f"⚡ **Quick Curl:** `POST https://agora.mikecarmody.net/referee/quick_order` with token `agora-combine-2026`\n"
+        f"🎯 **HOW TO TRADE THIS BURST:**\n"
+        f"💬 **Discord Chat:** Reply in channel:\n"
+        f"• Trade: `BUY 50 FOOD @ 32` or `SELL 100 ORE @ 9`\n"
+        f"• Transit: `MOVE TO MARS WITH 100 FOOD` or `TRANSIT CERES`\n"
+        f"⚡ **Quick API:** `POST {base}/referee/quick_order` with token `agora-combine-2026`\n\n"
         f"*Round 1 strategy window and depot quotes follow immediately below!*"
     )
 
@@ -531,8 +538,19 @@ def build_announcement(round_num: int = 1, rounds_total: int = 8, codename: str 
         food = e.get("food", 0)
         ore = e.get("ore", 0)
         nw = e.get("net_worth", 0)
+
+        holdings = []
+        if frag > 0:
+            holdings.append(f"{frag} FRAG")
+        if food > 0:
+            holdings.append(f"{food} FOOD")
+        if ore > 0:
+            holdings.append(f"{ore} ORE")
+        if fuel > 0:
+            holdings.append(f"{fuel} FUEL")
+        cargo_str = f" | {', '.join(holdings)}" if holdings else ""
         standings_lines.append(
-            f"• **#{idx} {fl}:** {cr:,} CR | {frag} FRAG | {fuel} FUEL | {food} FOOD | {ore} ORE (NW: {nw:,} CR)"
+            f"• **#{idx} {fl}:** **{nw:,} CR** NW ({cr:,} liquid{cargo_str})"
         )
     standings_str = "\n".join(standings_lines) if standings_lines else "No active balances"
 
@@ -543,29 +561,21 @@ def build_announcement(round_num: int = 1, rounds_total: int = 8, codename: str 
         title += f" // OP {codename.upper()}"
 
     base = REFEREE_BASE_URL.rstrip('/')
-    trade_body = '{"agent_id":"amos","side":"buy","qty":50,"price":32,"commodity":"FOOD","station":"' + st_key + '"}'
-    curl_trade = f'`curl -s -X POST {base}/referee/quick_order -H "Authorization: Bearer agora-combine-2026" -H "Content-Type: application/json" -d \'{trade_body}\'`'
-    transit_body = '{"agent_id":"amos","destination":"mars","commodity":"FOOD","cargo_qty":100}'
-    curl_transit = f'`curl -s -X POST {base}/stations/transit -H "Authorization: Bearer agora-combine-2026" -H "Content-Type: application/json" -d \'{transit_body}\'`'
 
     msg = (
         f"🔔 **STATION AGORA // {title}** ({target_tag})\n"
-        f"**Sector:** {st_info['emoji']} **{st_info['name']}** | **Floor:** {floor.upper()} | **Seq:** #{seq}\n\n"
-        f"📡 **GALNET SECTOR INTEL:**\n"
-        f"*{st_info['intel']}*\n"
-        f"💡 **Opportunity:** {st_info['opp']}\n\n"
-        f"📈 **{st_key.upper()} DEPOT INSIDE QUOTES:**\n"
+        f"**Sector:** {st_info['emoji']} **{st_info['name']}** | **Floor:** {floor.upper()} | **Seq:** #{seq}\n"
+        f"🎯 **Objective:** Max Net Worth at Round #{rounds_total} | *Cargo scores (FRAG/FOOD/ORE), FUEL=0 CR*\n\n"
+        f"📡 **GALNET:** *{st_info['intel']}* — 💡 *{st_info['opp']}*\n\n"
+        f"📈 **{st_key.upper()} DEPOT QUOTES:**\n"
         f"{quotes_str}\n\n"
-        f"📊 **FLEET INVENTORIES & STANDINGS:**\n"
+        f"📊 **STANDINGS (MARK-TO-MARKET NET WORTH):**\n"
         f"{standings_str}\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🤖 **ROBOT COMBAT DIRECTIVE:**\n"
-        f"Floor open for Round #{round_num}. Reply in channel with orders:\n"
-        f"• **Trade:** `BUY 50 FOOD @ 32` or `SELL 100 ORE @ 9`\n"
-        f"• **Transit:** `MOVE TO MARS WITH 100 FOOD` or `TRANSIT CERES`\n"
-        f"• **API:** {curl_trade}\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"*Orders and transits execute immediately against referee state and depot pools.*"
+        f"🤖 **DIRECTIVE (Round #{round_num}):**\n"
+        f"• **Chat:** `BUY/SELL <qty> <comm> @ <px>` | `MOVE TO <st> WITH <qty> <comm>`\n"
+        f"• **API:** `POST {base}/referee/quick_order` | `POST {base}/stations/transit`\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
     return msg, st_key
 
@@ -580,14 +590,17 @@ def build_final_bell(codename: str = "", mention: str = "") -> str:
         for idx, entry in enumerate(lb_entries, 1):
             agent_id = entry.get("agent_id", "unknown")
             nw = entry.get("net_worth", 0)
+            cr = entry.get("liquid", 0)
             fleet = FLEET_NAMES.get(agent_id.lower(), agent_id.upper())
             medal = "🏆 " if idx == 1 else ""
-            standings_parts.append(f"{medal}#{idx} {fleet}: {nw:,} CR Net Worth")
+            standings_parts.append(f"{medal}#{idx} {fleet}: {nw:,} CR Net Worth ({cr:,} liquid)")
         standings_line = "\n".join(standings_parts) if standings_parts else "No active balances"
         winner_name = FLEET_NAMES.get(winner.get("agent_id", "").lower(), "Unknown Syndicate")
+        winner_nw = winner.get("net_worth", 0)
     except Exception as e:
         standings_line = f"Telemetry fetch error: {e}"
         winner_name = "N/A"
+        winner_nw = 0
 
     title = f"Operation {codename.upper()} Concluded" if codename else "Sol System Combine Concluded"
     target_tag = mention if mention else DEFAULT_TARGET_TAG
@@ -595,9 +608,10 @@ def build_final_bell(codename: str = "", mention: str = "") -> str:
         f"🏁 **STATION AGORA // {title.upper()}** ({target_tag})\n"
         f"```text\n"
         f"STATUS: COMBINE WINDOW COMPLETE // FINAL STANDINGS:\n\n"
-        f"{standings_line}\n"
+        f"{standings_line}\n\n"
+        f"CRITERIA: Final Mark-to-Market Net Worth (Liquid + Cargo; FUEL=0 CR)\n"
         f"```\n"
-        f"🏆 **WINNER:** **{winner_name}** takes the Sol System Salvage Championship!\n"
+        f"🏆 **WINNER:** **{winner_name}** takes the Sol System Salvage Championship with **{winner_nw:,} CR** Net Worth!\n"
         f"*Exchange orderbooks settling. All trading halted until next burst.*"
     )
 
