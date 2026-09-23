@@ -100,6 +100,15 @@ class TestPeerDesk(unittest.TestCase):
         # CR moved seller-ward and FRAG buyer-ward at the agreed price; totals only shift by price vs mark.
         self.assertEqual(sum(after.values()), sum(before.values()))
 
+    def test_same_round_offers_ordered_deterministically(self):
+        ref = self.ref
+        eids = []
+        for i in range(5):
+            r = ref.peer.offer('amos', 'earth', 'FUEL', 10 + i, 10 + i)
+            eids.append(r['payload']['escrow_id'])
+        listed = [o['escrow_id'] for o in ref.peer.list('earth')]
+        self.assertEqual(listed, eids)
+
 
 class TestPeerEndpoints(unittest.TestCase):
     @classmethod

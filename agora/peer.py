@@ -192,7 +192,7 @@ class PeerDesk:
         if station_id:
             q += " AND station_id = ?"
             args.append(station_id.lower())
-        return [dict(r) for r in self.ref.conn.execute(q + " ORDER BY created_round, escrow_id", args)]
+        return [dict(r) for r in self.ref.conn.execute(q + " ORDER BY created_round, rowid", args)]
 
     def holdings_adjustment(self) -> Dict[str, Dict[str, int]]:
         """What escrow owes each fleet, for net worth: offered goods still
