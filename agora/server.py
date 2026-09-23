@@ -193,6 +193,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 corporate=payload.get('corporate'),
                 upgrades=payload.get('upgrades'),
                 piracy=payload.get('piracy'),
+                events=payload.get('events'),
             )
             self._send_json(200, {'v': 1, 'kind': 'new_game_ok', 'payload': result})
             return
@@ -1419,6 +1420,18 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
         elif path == '/referee/corporate':
             self._send_json(200, {'status': 'ok', 'corporate_enabled': ref.corporate_enabled,
                                   'round': ref.current_round, **ref.corporate.summary()})
+        elif path == '/referee/corporate/events':
+            # #153: only what the caller may see. No token = public events and
+            # exposed ones; a fleet token adds its own secrets and private
+            # events against it (actor hidden until exposed); admin sees all.
+            viewer = self._reader()
+            try:
+                since = int(query_params.get('since_round', ['0'])[0])
+                limit = max(1, min(200, int(query_params.get('limit', ['50'])[0])))
+            except ValueError:
+                since, limit = 0, 50
+            self._send_json(200, {'status': 'ok', 'events_enabled': ref.events_enabled, 'round': ref.current_round,
+                                  'viewer': viewer, 'events': ref.events.visible_to(viewer, since, limit)})
         elif path == '/referee/upgrades':
             who = query_params.get('agent_id', [None])[0]
             self._send_json(200, {'status': 'ok', 'upgrades_enabled': ref.upgrades_enabled,
@@ -1482,6 +1495,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                     'peer_offers': 'GET /referee/peer/offers?station_id=&status=offered|accepted',
                     'contracts': 'GET /referee/contracts?status=open|fulfilled|lapsed&station_id=',
                     'corporate': 'GET /referee/corporate (debt, corp status, takeovers, winner)',
+                    'corporate_events': 'GET /referee/corporate/events?since_round=&limit= (the corp events your token may see)',
                     'upgrades': 'GET /referee/upgrades?agent_id= ; POST /referee/upgrades/buy {kind}',
                     'contract_actions': 'POST /referee/contracts/{id}/claim | list {price} | buy | deliver {qty}',
                     'piracy': 'GET /referee/piracy (hot station, odds, recent raids, privateer contracts)',
@@ -1721,6 +1735,7 @@ def build_referee_from_env(db_path: str = 'agora.db') -> AgoraReferee:
       AGORA_UPGRADES=1         ship upgrades (shielding, hold, armor, engines) that cut hazard/piracy odds
       AGORA_HAZARDS=0.2,0.1    per-trip chance of a 1-3 round delay, and of losing 30-70% of the cargo; 0 = off
       AGORA_PIRACY=0.15,0.04   raid chance on belt (tolled) and inner routes, before hot-station and cargo-value scaling; 0 = off
+      AGORA_EVENTS=1           secrecy and exposure: private/secret corp events, leak rolls, GalNet scandals
     """
     def _on(name: str) -> bool:
         return os.environ.get(name, '1').strip().lower() not in ('0', 'false', 'off', 'no')
@@ -1739,7 +1754,8 @@ def build_referee_from_env(db_path: str = 'agora.db') -> AgoraReferee:
                         hazards=os.environ.get('AGORA_HAZARDS', '0.2,0.1'),
                         corporate=_on('AGORA_CORPORATE'),
                         upgrades=_on('AGORA_UPGRADES'),
-                        piracy=os.environ.get('AGORA_PIRACY', '0.15,0.04'))
+                        piracy=os.environ.get('AGORA_PIRACY', '0.15,0.04'),
+                        events=_on('AGORA_EVENTS'))
 
 
 def _float_env(name: str, default: float) -> float:

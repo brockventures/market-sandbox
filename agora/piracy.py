@@ -48,6 +48,13 @@ Privateers
 - Each sponsored raid is traced with PRIV_TRACE chance: the sponsor pays a
   fine of PRIV_FINE x the fee to SYSTEM (capped at the CR it holds), and the
   briefing names it. An untraced sponsor is never shown publicly.
+- Secrecy (#153, agora/events.py, when the referee's events flag is on): a
+  contract is a secret event (only the sponsor sees it, and it can leak), and
+  each raid it pays for is a private event for the victim ("sponsor
+  unknown"). The trace roll above is the exposure: it keeps the fine and
+  also exposes the contract and its raids and posts a GalNet scandal. Until
+  then nobody but the sponsor and the victim learns a raid was sponsored,
+  and only the sponsor sees the contract.
 - One active contract per sponsor, and one per target; no self-targeting.
 
 Hooks into sibling PRs, guarded so this works on main without them:
@@ -240,6 +247,14 @@ class PiracyDesk:
         return {'odds': round(min(1.0, p), 4), 'base': base, 'hot': hot, 'value': value,
                 'value_mult': round(vm, 3), 'privateers': priv, 'escort': bool(escort), 'armor': armor}
 
+    @property
+    def _secrecy(self) -> bool:
+        """#153 visibility rules apply (the referee's events flag)."""
+        return bool(getattr(self.ref, 'events_enabled', False)) and hasattr(self.ref, 'events')
+
+    def _exposed(self, contract_id: Optional[str]) -> bool:
+        return self._secrecy and self.ref.events.link_exposed(contract_id)
+
     def _out(self, agent: str) -> Optional[str]:
         """Why a bankrupt or taken-over corp cannot act (PR #148), or None."""
         return self.ref.fleet_out(agent) if hasattr(self.ref, 'fleet_out') else None
@@ -273,12 +288,19 @@ class PiracyDesk:
         if contract:
             self.ref.conn.execute("UPDATE piracy_privateers SET raids = raids + 1 WHERE contract_id = ?",
                                   (contract['contract_id'],))
+            if self._secrecy:
+                self.ref.events.record_locked(
+                    'privateer_raid', 'private', actor=sponsor, victim=agent, link=contract['contract_id'],
+                    detail=f"raided on the {origin.capitalize()}-{dest.capitalize()} run by privateers "
+                           f"under contract (sponsor unknown until exposed)")
             if trace_roll < PRIV_TRACE:
                 traced = 1
                 fine = min(contract['fee'] * PRIV_FINE, max(0, self.ref.get_balance(sponsor, 'CR')))
                 self._move(f"piracy-fine-{transit_id}", ((sponsor, 'CR', -fine), ('SYSTEM', 'CR', fine)))
                 self.ref.conn.execute("UPDATE piracy_privateers SET traced = 1, fines = fines + ? WHERE contract_id = ?",
                                       (fine, contract['contract_id']))
+                if self._secrecy:
+                    self.ref.events.expose_link_locked(contract['contract_id'], 'trace', round_num)
         self.ref.conn.execute("""INSERT INTO piracy_raids
             (transit_id, agent_id, round, origin, destination, commodity, cargo_qty, cargo_value, odds, escorted,
              ransom, surrender_qty, status, contract_id, sponsor, traced, fine)
@@ -286,7 +308,7 @@ class PiracyDesk:
             (transit_id, agent, round_num, origin, dest, commodity, qty, c['value'], c['odds'], int(bool(escort)),
              ransom, surrender, contract['contract_id'] if contract else None, sponsor, traced, fine))
         out['raided'] = True
-        out['demand'] = self.public_raid(self._row(transit_id))
+        out['demand'] = self.public_raid(self._row(transit_id), viewer=agent)
         return out
 
     # ------------------------------------------------------------ resolution
@@ -384,7 +406,7 @@ class PiracyDesk:
                     return _reject('insufficient_credits',
                                    f"The ransom is {row['ransom']} CR; available {have}. Surrender or fight instead.")
             self._resolve_locked(row, choice)
-        return {'v': 1, 'kind': 'piracy_respond_ok', 'payload': self.public_raid(self._row(transit_id))}
+        return {'v': 1, 'kind': 'piracy_respond_ok', 'payload': self.public_raid(self._row(transit_id), viewer=agent)}
 
     # ------------------------------------------------------------ privateers
 
@@ -416,6 +438,9 @@ class PiracyDesk:
             self._move(f"piracy-hire-{cid}", ((sponsor, 'CR', -PRIV_COST), ('SYSTEM', 'CR', PRIV_COST)))
             ref.conn.execute("INSERT INTO piracy_privateers (contract_id, sponsor, target, start_round, expires_round, fee) "
                              "VALUES (?, ?, ?, ?, ?, ?)", (cid, sponsor, target, r, r + PRIV_ROUNDS, PRIV_COST))
+            if self._secrecy:
+                ref.events.record_locked('privateer_contract', 'secret', actor=sponsor, victim=target, link=cid,
+                                         detail=f"privateers hired against {target} for {PRIV_ROUNDS} rounds")
             row = ref.conn.execute("SELECT * FROM piracy_privateers WHERE contract_id = ?", (cid,)).fetchone()
         return {'v': 1, 'kind': 'privateer_hire_ok', 'payload': dict(row)}
 
@@ -463,13 +488,21 @@ class PiracyDesk:
 
     # ------------------------------------------------------------ reads
 
-    def public_raid(self, row) -> Optional[Dict[str, Any]]:
-        """A raid as anyone may see it: the sponsor only once traced."""
+    def public_raid(self, row, viewer: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """A raid as `viewer` may see it: the sponsor only once traced (or,
+        with secrecy on, exposed). With secrecy on, whether it was sponsored
+        at all is known only to the victim, the sponsor and admin until the
+        contract is exposed; others see `sponsored: None`."""
         if not row:
             return None
         d = dict(row)
-        d['sponsored'] = bool(d.get('contract_id'))
-        if not d.get('traced'):
+        sponsored = bool(d.get('contract_id'))
+        exposed = self._exposed(d.get('contract_id'))
+        d['sponsored'] = sponsored
+        if self._secrecy and sponsored and not exposed and not d.get('traced') \
+                and viewer not in (d['agent_id'], d.get('sponsor'), 'admin'):
+            d['sponsored'] = None
+        if not d.get('traced') and not exposed:
             d['sponsor'] = None
             d['contract_id'] = None
             d['fine'] = 0
@@ -481,20 +514,28 @@ class PiracyDesk:
     def public_contract(self, row, viewer: Optional[str] = None) -> Dict[str, Any]:
         d = dict(row)
         d['rounds_left'] = max(0, d['expires_round'] - self.ref.current_round)
-        if not d['traced'] and viewer != d['sponsor'] and viewer != 'admin':
+        d['exposed'] = bool(d['traced']) or self._exposed(d['contract_id'])
+        if not d['exposed'] and viewer != d['sponsor'] and viewer != 'admin':
             for k in ('sponsor', 'contract_id', 'loot_cr', 'loot_qty', 'fines'):
                 d[k] = None
         return d
 
-    def recent_raids(self, since_round: int, limit: int = 20) -> List[Dict[str, Any]]:
-        return [self.public_raid(r) for r in self.ref.conn.execute(
+    def recent_raids(self, since_round: int, limit: int = 20, viewer: Optional[str] = None) -> List[Dict[str, Any]]:
+        return [self.public_raid(r, viewer) for r in self.ref.conn.execute(
             "SELECT * FROM piracy_raids WHERE round >= ? ORDER BY round DESC, transit_id LIMIT ?",
             (since_round, limit))]
 
     def active_contracts(self, viewer: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Contracts in force. With secrecy on (#153) a contract is a secret:
+        listed only for its sponsor and admin until it is exposed."""
         r = self.ref.current_round
-        return [self.public_contract(row, viewer) for row in self.ref.conn.execute(
-            "SELECT * FROM piracy_privateers WHERE expires_round > ? ORDER BY start_round, target", (r,))]
+        rows = self.ref.conn.execute(
+            "SELECT * FROM piracy_privateers WHERE expires_round > ? ORDER BY start_round, target", (r,)).fetchall()
+        out = [self.public_contract(row, viewer) for row in rows]
+        if self._secrecy:
+            out = [c for c, row in zip(out, rows)
+                   if c['exposed'] or viewer == 'admin' or (viewer and row['sponsor'] == viewer)]
+        return out
 
     def traced(self, since_round: int) -> List[Dict[str, Any]]:
         return [dict(r) for r in self.ref.conn.execute(
@@ -517,7 +558,7 @@ class PiracyDesk:
                       'fence_station': FENCE_STATION,
                       'privateer_cost': PRIV_COST, 'privateer_rounds': PRIV_ROUNDS, 'privateer_add': PRIV_ADD,
                       'privateer_share': PRIV_SHARE, 'privateer_trace': PRIV_TRACE, 'privateer_fine_mult': PRIV_FINE},
-            'recent_raids': self.recent_raids(max(0, r - 20)),
+            'recent_raids': self.recent_raids(max(0, r - 20), viewer=viewer),
             'privateer_contracts': self.active_contracts(viewer),
         })
         return out

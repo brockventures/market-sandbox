@@ -20,6 +20,7 @@ class TestDefaultsOn(unittest.TestCase):
         self.assertEqual(ref.idle_fee, 10)
         self.assertEqual(ref.rival_shares, 100)
         self.assertEqual(ref.get_balance('zero', 'EQ_AMOS'), 100)
+        self.assertTrue(ref.events_enabled)
 
     def test_env_can_turn_off(self):
         with mock.patch.dict(os.environ, {'AGORA_PEER_TRADES': '0', 'AGORA_DEPOT_MODEL': 'static', 'AGORA_FOG': '0'}):

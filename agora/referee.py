@@ -20,6 +20,7 @@ from agora.peer import PeerDesk, env_peer_trades
 from agora.contracts import ContractDesk, env_contracts
 from agora.corporate import CorporateDesk, env_corporate
 from agora.upgrades import UpgradeDesk, env_upgrades
+from agora.events import EventDesk, env_events
 from agora.fog import FogEngine, env_fog, parse_fog
 
 STOCK_EXCHANGE_STATION = 'ceres'  # the one book every fleet stock trades on
@@ -93,12 +94,15 @@ class AgoraReferee:
         corporate: Optional[bool] = None,
         upgrades: Optional[bool] = None,
         piracy: Any = None,
+        events: Optional[bool] = None,
     ):
         self.db_path = db_path
         # Debt, distress sales, bankruptcy and takeovers (agora/corporate.py).
         self.corporate_enabled = env_corporate() if corporate is None else bool(corporate)
         # Ship upgrades that cut hazard / piracy odds (agora/upgrades.py).
         self.upgrades_enabled = env_upgrades() if upgrades is None else bool(upgrades)
+        # Secrecy and exposure: private/secret corp events, leaks, scandals (agora/events.py).
+        self.events_enabled = env_events() if events is None else bool(events)
         # Owned, tradable station contracts with a claim deposit (agora/contracts.py).
         self.contracts_enabled = env_contracts() if contracts is None else bool(contracts)
         self._hazard_odds = env_hazards() if hazards is None else parse_hazards(hazards)
@@ -148,6 +152,8 @@ class AgoraReferee:
         self._init_db()
         self.peer = PeerDesk(self)
         self.contract_desk = ContractDesk(self)
+        # Owns corp_events, so it comes before CorporateDesk, which logs to it.
+        self.events = EventDesk(self)
         self.corporate = CorporateDesk(self)
         self.upgrades = UpgradeDesk(self)
         self.hazards = HazardEngine(self.conn, self._hazard_odds)
@@ -517,6 +523,7 @@ class AgoraReferee:
         corporate: Optional[bool] = None,
         upgrades: Optional[bool] = None,
         piracy: Any = None,
+        events: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Full clean-slate reset, callable live via POST /referee/admin/reset:
@@ -550,6 +557,8 @@ class AgoraReferee:
             self.upgrades_enabled = bool(upgrades)
         if piracy is not None:
             self.piracy.odds = parse_piracy(piracy)
+        if events is not None:
+            self.events_enabled = bool(events)
         self._active_this_round = set()
         self.asymmetric_enabled = asymmetric
         if asymmetric or spawn_map:
@@ -570,6 +579,7 @@ class AgoraReferee:
         self.contract_desk.reset(0)
         self.hazards.reset(0)
         self.piracy.reset(0)
+        self.events.reset(0)
 
         return {'seq': 0, 'floor': self.floor, 'fleets': [r['agent_id'] for r in
                 self.conn.execute("SELECT agent_id FROM fleet_roster").fetchall()]}
@@ -594,6 +604,7 @@ class AgoraReferee:
         corporate: Optional[bool] = None,
         upgrades: Optional[bool] = None,
         piracy: Any = None,
+        events: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Wipes the board exactly like reset_to_genesis(), but rolls a genuinely
@@ -628,6 +639,8 @@ class AgoraReferee:
             self.upgrades_enabled = bool(upgrades)
         if piracy is not None:
             self.piracy.odds = parse_piracy(piracy)
+        if events is not None:
+            self.events_enabled = bool(events)
         self._active_this_round = set()
         self.asymmetric_enabled = asymmetric
         if asymmetric or spawn_map:
@@ -668,6 +681,7 @@ class AgoraReferee:
         self.contract_desk.reset(roll_seed)
         self.hazards.reset(roll_seed)
         self.piracy.reset(roll_seed)
+        self.events.reset(roll_seed)
 
         return {
             'seq': 0,
@@ -1298,6 +1312,8 @@ class AgoraReferee:
                 peer_report = self.peer.step_locked(new_round) if self.peer_trades else None
                 contract_report = self.contract_desk.step_locked(new_round) if self.contracts_enabled else None
                 corporate_report = self.corporate.step_locked(new_round) if self.corporate_enabled else None
+                # Leak rolls for secrets and 20% stake disclosures (agora/events.py).
+                events_report = self.events.step_locked(new_round) if self.events_enabled else None
 
             # Distribute bilateral borrow fees & audit maintenance margin
             borrow_fee_reports = self.equity.step_borrow_fees(new_round)
@@ -1319,6 +1335,7 @@ class AgoraReferee:
                 'contracts': contract_report,
                 'corporate': corporate_report,
                 'piracy': piracy_report,
+                'events': events_report,
                 'idle_fees': idle_fees,
             }
 

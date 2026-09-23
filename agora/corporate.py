@@ -49,13 +49,6 @@ SCHEMA = [
         absorbed_by     TEXT,
         out_round       INTEGER
     )""",
-    """CREATE TABLE IF NOT EXISTS corp_events (
-        id        INTEGER PRIMARY KEY AUTOINCREMENT,
-        round     INTEGER NOT NULL,
-        kind      TEXT NOT NULL,
-        agent_id  TEXT NOT NULL,
-        detail    TEXT NOT NULL
-    )""",
 ]
 
 
@@ -91,9 +84,9 @@ class CorporateDesk:
         cols = ", ".join(f"{k} = ?" for k in kw)
         self.ref.conn.execute(f"UPDATE corp_status SET {cols} WHERE agent_id = ?", (*kw.values(), agent))
 
-    def _event(self, kind: str, agent: str, detail: str) -> None:
-        self.ref.conn.execute("INSERT INTO corp_events (round, kind, agent_id, detail) VALUES (?, ?, ?, ?)",
-                              (self.ref.current_round, kind, agent, detail))
+    def _event(self, kind: str, agent: str, detail: str, victim: Optional[str] = None) -> None:
+        """A public entry in the shared corp_events log (agora/events.py)."""
+        self.ref.events.record_locked(kind, 'public', actor=agent, victim=victim, detail=detail, agent_id=agent)
 
     def _sym(self, agent: str) -> Optional[str]:
         from agora.equity import FLEET_EQUITIES
@@ -150,8 +143,10 @@ class CorporateDesk:
         return {
             "corps": rows,
             "winner": act[0] if len(act) == 1 and len(rows) > 1 else None,
-            "events": [dict(e) for e in self.ref.conn.execute(
-                "SELECT round, kind, agent_id, detail FROM corp_events ORDER BY id DESC LIMIT 20")],
+            # Public and exposed events only: private and secret ones are
+            # served per viewer by GET /referee/corporate/events (#153).
+            "events": [{k: e[k] for k in ("round", "kind", "agent_id", "actor", "victim", "detail", "exposed")}
+                       for e in self.ref.events.known(limit=20)],
         }
 
     # ------------------------------------------------------------ debt
@@ -262,7 +257,8 @@ class CorporateDesk:
                     self._set(raider, debt=r["debt"] + debt)
                 self._set(target, status="absorbed", absorbed_by=raider, out_round=ref.current_round, debt=0)
                 self._event("takeover", raider, f"took over {target} holding {ref.get_balance(raider, sym)} "
-                                                f"{sym}; absorbed its assets" + (f" and {debt} CR of debt" if debt else ""))
+                                                f"{sym}; absorbed its assets" + (f" and {debt} CR of debt" if debt else ""),
+                            victim=target)
         act = self.active()
         if len(act) == 1 and len(self._fleets()) > 1:
             if not self.ref.conn.execute("SELECT 1 FROM corp_events WHERE kind = 'winner'").fetchone():
