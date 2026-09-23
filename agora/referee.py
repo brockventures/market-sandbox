@@ -1896,6 +1896,13 @@ class AgoraReferee:
         round_num = getattr(self, 'current_round', 0)
         for st in STATIONS:
             depot_id = f"depot_{st}"
+            # Depot quotes must be fundable. Bids used to be re-posted at a
+            # fixed 500/1000 every round whatever the depot held, so sustained
+            # hauling drove depot CR negative and verify_ledger_invariants()
+            # failed ("Insolvency breach: depot_earth CR balance = -109025",
+            # tools/economy_sim.py haulers4/tolerant, round ~180-217). Cap
+            # total bid notional at the depot's CR and each ask at its stock.
+            cr_budget = max(0, self.get_balance(depot_id, 'CR'))
             for comm in COMMODITIES:
                 # 1. Clear existing open depot orders for this station and commodity
                 if st in self.books and comm in self.books[st]:
@@ -1976,8 +1983,17 @@ class AgoraReferee:
                 ]
 
                 seq = self.current_seq
+                stock = max(0, self.get_balance(depot_id, comm))
                 for side, price, qty, lvl in levels:
                     if side == 'bid' and price < 1:
+                        continue
+                    if side == 'bid':
+                        qty = min(qty, cr_budget // price)
+                        cr_budget -= qty * price
+                    else:
+                        qty = min(qty, stock)
+                        stock -= qty
+                    if qty <= 0:
                         continue
                     oid = f"{depot_id}-{comm.lower()}-{side}-r{round_num}-l{lvl}"
                     order = Order(
