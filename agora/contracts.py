@@ -216,6 +216,10 @@ class ContractDesk:
                 self._move(f"contract-lapse-{row['contract_id']}", (
                     ('SYSTEM', 'CR', -row['bond']), (self._station_account(row['station_id']), 'CR', row['bond']),
                     (row['owner'], 'CR', -paid), ('SYSTEM', 'CR', paid)))
+            if penalty and getattr(ref, 'events_enabled', False):
+                ref.events.record_locked('contract_lapse', 'public', actor=row['owner'], amount=penalty,
+                                         detail=f"{row['owner']} missed contract {row['contract_id']} "
+                                                f"({row['qty_remaining']} {row['instrument']} short, {penalty} CR penalty)")
             if shortfall and getattr(ref, 'corporate_enabled', False):
                 ref.corporate.add_debt(row['owner'], shortfall, f"unpaid penalty on contract {row['contract_id']}")
             ref.conn.execute("UPDATE station_contracts SET status = 'lapsed', bond = 0, list_price = NULL, "
