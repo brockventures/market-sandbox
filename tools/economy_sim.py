@@ -646,9 +646,8 @@ class Privateer(Hauler):
             return
         if available(ref, self.agent, "CR") < piracy_mod.PRIV_COST * 3:
             return
-        r = ref.current_round
-        if ref.conn.execute("SELECT 1 FROM piracy_privateers WHERE sponsor = ? AND expires_round > ?",
-                            (self.agent, r)).fetchone():
+        # GET /referee/piracy as this fleet sees it: its own contracts show their sponsor.
+        if any(c["sponsor"] == self.agent for c in ref.piracy.active_contracts(viewer=self.agent)):
             return
         nw = {e["agent_id"]: e["net_worth"] for e in ref.get_leaderboard()}
         for target in sorted((b for b in FLEETS if b != self.agent and not ref.fleet_out(b)),
@@ -1344,9 +1343,10 @@ def table(results: List[dict]) -> str:
     def mean(rs, f):
         return round(statistics.mean(f(r) for r in rs))
 
-    lines = ["| scenario | genesis | mode | seeds | " + " | ".join(f"{a} P&L" for a in FLEETS)
-             + " | transits | contract units | raids | escorts | upgrades | peer trades (uncollected) | out | invariants |",
-             "|" + "---|" * (9 + len(FLEETS))]
+    header = (["scenario", "genesis", "mode", "seeds"] + [f"{a} P&L" for a in FLEETS]
+              + ["transits", "halts", "contract units", "raids", "escorts", "upgrades",
+                 "peer trades (uncollected)", "out", "invariants"])
+    lines = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
     for (scen, gen, mode), rs in groups.items():
         pnl = []
         for a in FLEETS:
@@ -1357,7 +1357,7 @@ def table(results: List[dict]) -> str:
                 if rs[0]["peer"] else "off")
         inv = "ok" if all(r["first_invariant_failure"] is None for r in rs) else "FAIL"
         lines.append(f"| {scen} | {gen} | {mode} | {len(rs)} | " + " | ".join(pnl)
-                     + f" | {mean(rs, lambda r: r['transits'])}"
+                     + f" | {mean(rs, lambda r: r['transits'])} | {mean(rs, lambda r: r['halts_total'])}"
                      + f" | {mean(rs, lambda r: (r['contracts'] or {}).get('units_delivered', 0))}"
                      + f" | {mean(rs, lambda r: (r['piracy'] or {}).get('raids', 0))}"
                      + f" | {mean(rs, lambda r: (r['piracy'] or {}).get('escorts', 0))}"

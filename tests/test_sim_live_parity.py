@@ -112,6 +112,21 @@ class TestSimulatorPlaysTheLiveGame(unittest.TestCase):
         self.assertGreater(ref.idle_fee, 0)
         self.assertGreater(ref.rival_shares, 0)
 
+    def test_the_referee_run_plays_is_the_live_one(self):
+        # Whatever run() does between building the referee and the first
+        # round must not change a setting either: snapshot it the first time
+        # the fleets look at the board, before anything has acted.
+        seen = []
+        real = sim.fleet_views
+
+        def look(ref):
+            if not seen:
+                seen.append(settings(ref))
+            return real(ref)
+        with mock.patch.object(sim, 'fleet_views', side_effect=look), mock.patch.dict(os.environ, HOSTILE_ENV):
+            sim.run('privateer_vs_haulers', 'flat', seed=SEED, rounds=1)
+        self.assertEqual(seen[0], settings(live_referee()))
+
     def test_sim_ignores_the_callers_environment(self):
         with mock.patch.dict(os.environ, HOSTILE_ENV):
             got = settings(sim.start_game(SEED))
