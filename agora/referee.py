@@ -1151,10 +1151,10 @@ class AgoraReferee:
                 cargo_qty if cargo_qty > 0 else 0,
                 delay_factor=self.upgrades.factor(agent_id, 'shielding'),
                 loss_factor=self.upgrades.factor(agent_id, 'hold'),
-                loss_size_factor=0.7 if self.upgrades.factor(agent_id, 'hold') < 1 else 1.0)
-            # Engines upgrade: trips of 3+ rounds take one round less.
-            base_rounds = route['rounds'] - (1 if route['rounds'] >= 3 and self.upgrades_enabled
-                                              and self.upgrades.tier(agent_id, 'engines') else 0)
+                loss_size_factor=self.upgrades.loss_size_factor(agent_id))
+            # Engines upgrade: tier 1 cuts a round off trips of 3+ rounds,
+            # tier 2 another off trips of 5+ (agora/upgrades.py ENGINE_CUTS).
+            base_rounds = route['rounds'] - self.upgrades.engine_cut(agent_id, route['rounds'])
             arr_round = dep_round + base_rounds + hz_delay
 
             with self.conn:

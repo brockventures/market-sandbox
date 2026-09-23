@@ -24,9 +24,14 @@ No rule is copied here.
 Arm definitions:
 - Upgrade tier 1 (shielding, hold, armor, engines): upgrades.buy(kind) from
   round R. No other upgrades in any arm.
-- Upgrade tier 2: tier 1 is bought from round 1 in every arm, and tier 2 from
-  R. So its "never" arm is the tier-1-only fleet: the table measures the
-  marginal tier. The report also gives tier 2 against the bare fleet.
+- Upgrade tier 2 or 3: the tiers below it are bought from round 1 in every
+  arm (as soon as each goes on sale), and the tier itself from R. So its
+  "never" arm is the fleet one tier down: the table measures the marginal
+  tier. The report also gives it against the bare fleet.
+- Tiers go on sale on the live shipyard schedule (agora/upgrades.py). A tier
+  that unlocks after round 1 is bought at its unlock in the r1 arm, and one
+  that unlocks after LATE_ROUND is bought at its unlock in both r1 and r100,
+  so those two arms then match: read "r1" as "at unlock".
 - Escorts: from R, every loaded trip where an escort lowers the raid chance
   and the fleet can pay fee + toll (an unaffordable escort would get the move
   rejected).
@@ -84,7 +89,7 @@ LATE_ROUND = 100
 STOCK_STAKE = 0.3   # the sim's StockTrader.STAKE
 FLAG_WIN = 0.70
 
-# item -> (kind, detail). Tier-2 items carry their tier-1 prerequisite.
+# item -> (kind, detail). Tier 2 and 3 items carry the tier below as a prerequisite.
 ITEMS: Dict[str, dict] = {}
 for _k in ("shielding", "hold", "armor", "engines"):
     for _t, _p in enumerate(UPGRADES[_k]["prices"], start=1):
@@ -355,7 +360,7 @@ def markdown(summary: Dict[str, Any]) -> str:
                    f"{pct(r['win_vs_r100'])} | {pb} | {'**FLAG**' if r['flag'] else ''} |")
     cells = summary["cells"]
     out += ["", "r1 wins vs never, by cell:", "",
-            "| item | " + " | ".join(cells) + " | tier 2 vs bare fleet |",
+            "| item | " + " | ".join(cells) + " | upper tier vs bare fleet |",
             "|---|" + "---|" * (len(cells) + 1)]
     for item, r in summary["rows"].items():
         vb = f"{cr(r['d_median_vs_bare'])}, {pct(r['win_vs_bare'])}" if r["control"] != "never" else ""

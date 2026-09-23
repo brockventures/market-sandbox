@@ -17,8 +17,8 @@ import dominance  # noqa: E402
 ROUNDS = 30
 
 
-def game(item=None, start=None, scenario="haulers4", seed=1):
-    r = dominance.play((scenario, "flat", seed, ROUNDS, item, start))
+def game(item=None, start=None, scenario="haulers4", seed=1, rounds=ROUNDS):
+    r = dominance.play((scenario, "flat", seed, rounds, item, start))
     assert "error" not in r, r.get("error")
     return r
 
@@ -32,7 +32,7 @@ class TestDominanceHarness(unittest.TestCase):
         self.assertEqual(game()["traj"], self.never["traj"])
 
     def test_arms_identical_until_the_buy(self):
-        # Not "hold t1": hold is locked until round 100 (#162), so it would never buy here.
+        # Not "hold t1": hold is locked until round 50 (#181), so it would not buy by round 20.
         for item in ("shielding t1", "escorts", "privateers", "stock buy"):
             late = game(item, 20)
             self.assertEqual(late["traj"][:18], self.never["traj"][:18], item)
@@ -44,16 +44,25 @@ class TestDominanceHarness(unittest.TestCase):
         self.assertIsNone(r["invariant_failure"])
 
     def test_a_locked_upgrade_is_not_bought_before_it_unlocks(self):
-        # #162: hold tier 1 is not on sale until round 100; the live desk refuses it.
+        # #181: hold tier 1 is not on sale until round 50; the live desk refuses it.
         r = game("hold t1", 1)
         self.assertIsNone(r["bought_round"])
         self.assertEqual(r["holdings"], {})
         self.assertIsNone(r["invariant_failure"])
 
     def test_tier_two_keeps_its_prerequisite_and_buys_nothing_else(self):
-        r = game("armor t2", 1)
+        # Armor tier 2 goes on sale at round 100 (#181), so the r1 arm buys it then.
+        r = game("armor t2", 1, rounds=105)
         self.assertEqual(r["holdings"], {"armor": 2})
+        self.assertIsNotNone(r["bought_round"])
         self.assertEqual(game("armor t2", ROUNDS + 1)["holdings"], {"armor": 1})
+
+    def test_three_tiers_chain_their_prerequisites(self):
+        for kind in ("shielding", "hold", "armor"):
+            self.assertEqual(dominance.ITEMS[f"{kind} t3"]["prereq"], [(kind, 2)])
+            self.assertEqual(dominance.ITEMS[f"{kind} t2"]["prereq"], [(kind, 1)])
+        self.assertEqual(dominance.ITEMS["engines t2"]["prereq"], [("engines", 1)])
+        self.assertNotIn("engines t3", dominance.ITEMS)
 
     def test_never_arm_buys_nothing(self):
         self.assertIn(self.never["holdings"], ({}, None))

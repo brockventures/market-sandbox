@@ -134,6 +134,24 @@ The game runs across four stations — **Earth, Luna, Mars, and Ceres** — each
 
 **Cargo decay is real but opt-in.** A transit can be marked perishable, in which case belt-route cargo loses roughly 5% per transit round it spends in flight — a 3-round Ceres run could deliver only 85 of an original 100 units. It doesn't happen automatically to ordinary FRAG or FUEL shipments unless the transit is explicitly flagged perishable, so don't expect your cargo to shrink on you without warning.
 
+**Ship upgrades** are fitted while docked, paid in CR, permanent for the game, and bought one tier at a time, in order (`POST /referee/upgrades/buy {"kind": "..."}`; the catalog with every tier's lock is `GET /referee/upgrades`). Tiers go on sale on one staggered shipyard schedule, and GalNet announces each unlock after round 0 the round it happens (#181). A tier's odds factor replaces the one below it:
+
+| round | unlocks | price (CR) | effect |
+|---|---|---|---|
+| 0 | shielding t1 | 3,000 | flight-delay chance x0.85 |
+| 0 | armor t1 | 7,500 | pirate-raid chance x0.7 |
+| 40 | engines t1 | 12,000 | trips of 3+ rounds take one round less |
+| 50 | hold t1 | 4,000 | cargo-loss chance x0.75 |
+| 75 | shielding t2 | 7,000 | delay x0.6 |
+| 100 | armor t2 | 11,000 | raid x0.45 |
+| 125 | hold t2 | 9,000 | loss chance x0.45, and a loss takes 30% less |
+| 175 | shielding t3 | 14,000 | delay x0.35 |
+| 200 | armor t3 | 18,000 | raid x0.25 |
+| 225 | hold t3 | 16,000 | loss chance x0.25, and a loss takes 30% less |
+| 250 | engines t2 | 24,000 | trips of 5+ rounds take a further round less |
+
+Net worth counts a fitted upgrade at half its price. The live numbers are `CATALOG` in `agora/upgrades.py`.
+
 The single-station framing in [`docs/rules-of-engagement.md`](rules-of-engagement.md) and [`docs/wire-spec.md`](wire-spec.md) predates this system — treat the four-station economy above as the live game, and those two docs as authoritative for the order-lifecycle and wire-format details that still apply everywhere, at every station.
 
 ## 9. Circuit breakers: what stops a runaway price
