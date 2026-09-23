@@ -362,16 +362,18 @@ def build_burst_kickoff(burst_id: str, rounds: int, interval_sec: float, start_r
     return (
         f"🚀 **STATION AGORA // SOL SYSTEM COMBINE INITIATED** ({target_tag})\n"
         f"```text\n"
-        f"BURST ID: {burst_id}\n"
+        f"BURST ID:       {burst_id}\n"
         f"COMBINE WINDOW: Rounds #{start_round + 1} -> #{end_round} ({rounds} rounds)\n"
         f"ROUND CADENCE:  {interval_sec:.0f}s per strategy window\n"
         f"STATUS:         FLOOR OPEN // IN-CHANNEL DISCORD TRADING ENGAGED\n"
         f"```\n"
-        f"*All syndicates are cleared for trade. Bids, asks, and chat commands will clear immediately. Round 1 begins now!*"
+        f"💬 **How to Trade:** Reply `BUY/SELL <qty> <commodity> @ <price>` (e.g. `BUY 50 FOOD @ 32`)\n"
+        f"⚡ **Quick Curl:** `POST https://agora.mikecarmody.net/referee/quick_order` with token `agora-combine-2026`\n"
+        f"*Round 1 strategy window and depot quotes follow immediately below!*"
     )
 
 
-def build_announcement(round_num: int = 1, rounds_total: int = 8, codename: str = "", mention: str = "") -> Tuple[str, str]:
+def build_announcement(round_num: int = 1, rounds_total: int = 8, codename: str = "", mention: str = "", round_index: Optional[int] = None) -> Tuple[str, str]:
     """Compile rich thematic Strategy Window announcement. Returns (msg_text, active_station)."""
     health = fetch_json("/referee/health")
     leaderboard = fetch_json("/referee/leaderboard")
@@ -417,7 +419,8 @@ def build_announcement(round_num: int = 1, rounds_total: int = 8, codename: str 
     standings_str = "\n".join(standings_lines) if standings_lines else "No active balances"
 
     target_tag = mention if mention else DEFAULT_TARGET_TAG
-    title = f"COMBINE ROUND {round_num}/{rounds_total}"
+    idx_disp = f"{round_index}/{rounds_total}" if round_index is not None else f"{round_num}/{rounds_total}"
+    title = f"COMBINE ROUND {idx_disp} (Round #{round_num})"
     if codename:
         title += f" // OP {codename.upper()}"
 
@@ -577,11 +580,25 @@ def run_burst_loop(rounds: int, interval_sec: float, channel: str, token: str, c
     if last_seen_msg_id:
         processed_ids.add(last_seen_msg_id)
 
+    # Immediately post Round 1 strategy window at T=0 so the floor is actionable instantly
+    rounds_announced = 1
     last_announced_round = start_round
-    rounds_announced = 0
     burst_completed = False
-    active_station = "ceres"
     ref_token = get_referee_token()
+
+    msg, active_station = build_announcement(
+        round_num=start_round + 1,
+        rounds_total=rounds,
+        codename=codename,
+        mention=mention,
+        round_index=1
+    )
+    ann_resp = post_discord(channel, msg, token)
+    if ann_resp and ann_resp.get("id"):
+        last_seen_msg_id = ann_resp["id"]
+        processed_ids.add(last_seen_msg_id)
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Broadcasted Round {start_round + 1} (1/{rounds}) at {active_station} (T=0 kickoff)")
+    sys.stdout.flush()
 
     while not burst_completed:
         # 1. Listen for and execute Discord chat trades during strategy window
@@ -603,13 +620,21 @@ def run_burst_loop(rounds: int, interval_sec: float, channel: str, token: str, c
         if cur_rnd > last_announced_round:
             last_announced_round = cur_rnd
             rounds_announced += 1
-            msg, active_station = build_announcement(round_num=cur_rnd, rounds_total=rounds, codename=codename, mention=mention)
-            ann_resp = post_discord(channel, msg, token)
-            if ann_resp and ann_resp.get("id"):
-                last_seen_msg_id = ann_resp["id"]
-                processed_ids.add(last_seen_msg_id)
-            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Broadcasted Round {cur_rnd} ({rounds_announced}/{rounds}) at {active_station}")
-            sys.stdout.flush()
+            if rounds_announced <= rounds:
+                next_round_num = start_round + rounds_announced
+                msg, active_station = build_announcement(
+                    round_num=next_round_num,
+                    rounds_total=rounds,
+                    codename=codename,
+                    mention=mention,
+                    round_index=rounds_announced
+                )
+                ann_resp = post_discord(channel, msg, token)
+                if ann_resp and ann_resp.get("id"):
+                    last_seen_msg_id = ann_resp["id"]
+                    processed_ids.add(last_seen_msg_id)
+                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Broadcasted Round {next_round_num} ({rounds_announced}/{rounds}) at {active_station}")
+                sys.stdout.flush()
 
         if not is_active and (rounds_remaining == 0 or rounds_announced >= rounds):
             burst_completed = True
