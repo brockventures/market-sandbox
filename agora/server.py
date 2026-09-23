@@ -64,6 +64,23 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(response_bytes)
 
+    def _reader(self) -> Optional[str]:
+        """Who is reading, for fog: a fleet id for a valid per-fleet token,
+        'admin' for the admin token, None (the public view) for the shared
+        combine token, a bad token, or no token at all."""
+        if not self.headers.get('Authorization', '').strip():
+            return None
+        agent, err = self._authenticate_request()
+        if err or agent == 'combine':
+            return None
+        return agent
+
+    def _fogged(self, detail: str) -> None:
+        self._send_json(403, {'v': 1, 'kind': 'reject', 'payload': {
+            'reason': 'fogged',
+            'detail': detail + ' Exact prices are visible only at the station you are docked at, '
+                               'with your own fleet token. Everything else: GET /referee/briefing.'}})
+
     def _authenticate_request(self) -> tuple[Optional[str], Optional[dict]]:
         """
         Validates Authorization: Bearer <token> header against configured auth_tokens.
@@ -166,6 +183,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 depot_model=payload.get('depot_model'),
                 band_pct=payload.get('band_pct'),
                 peer_trades=payload.get('peer_trades'),
+                fog=payload.get('fog'),
             )
             self._send_json(200, {'v': 1, 'kind': 'new_game_ok', 'payload': result})
             return
@@ -1138,6 +1156,43 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 self.wfile.write(content)
                 return
 
+        if ref.fog and path in ('/referee/depots', '/stations/prices', '/referee/book', '/circuit_breaker/bands',
+                                '/referee/ticks', '/ws/terminal'):
+            viewer = self._reader()
+            fog = ref.fog
+            if path == '/referee/depots':
+                self._send_json(200, {'status': 'ok', 'depots': fog.depot_view(ref, viewer)})
+                return
+            if path == '/stations/prices':
+                prices = fog.spot_view(ref, viewer)
+                st = (query_params.get('station_id', [None])[0] or '').lower() or None
+                comm = (query_params.get('commodity', [None])[0] or '').upper() or None
+                data = {'round': ref.current_round, 'prices': prices}
+                if st:
+                    data = {'station_id': st, 'prices': prices.get(st, {}), 'round': ref.current_round}
+                    if comm:
+                        data = {'station_id': st, 'commodity': comm, 'spot_price': prices.get(st, {}).get(comm),
+                                'round': ref.current_round}
+                self._send_json(200, {'status': 'ok', 'fog': True, 'data': data})
+                return
+            if path in ('/referee/book', '/circuit_breaker/bands'):
+                st = (query_params.get('station_id', [None])[0] or '').lower()
+                if not st or not fog.exact_station(ref, viewer, st):
+                    self._fogged(f"The order book and bands at '{st or 'every station'}' are fogged for you.")
+                    return
+            if path == '/referee/ticks':
+                try:
+                    since_seq = int(query_params.get('since_seq', ['0'])[0])
+                except ValueError:
+                    since_seq = 0
+                self._send_json(200, {'status': 'ok', 'current_seq': ref.current_seq, 'fog': True,
+                                      'ticks': fog.filter_ticks(ref, viewer, ref.get_ticks(since_seq=since_seq))})
+                return
+            if path == '/ws/terminal' and viewer != 'admin':
+                # The terminal stream carries every book and trade print exactly.
+                self._fogged('The live terminal stream is off while fog is on.')
+                return
+
         if path == '/ws/terminal':
             if self.headers.get('Upgrade', '').lower() == 'websocket':
                 handle_terminal_websocket(self, ref, self.galnet_engine)
@@ -1227,12 +1282,13 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             })
         elif path in ('/referee/briefing', '/briefing', '/llms.txt'):
             from agora.briefing import build_briefing, build_state
+            viewer = self._reader()
             if query_params.get('format', [''])[0].lower() == 'json':
-                self._send_json(200, {'status': 'ok', **build_state(ref)})
+                self._send_json(200, {'status': 'ok', **build_state(ref, viewer)})
                 return
             host = self.headers.get('Host', '')
             proto = self.headers.get('X-Forwarded-Proto', 'http')
-            body = build_briefing(ref, f"{proto}://{host}" if host else "").encode('utf-8')
+            body = build_briefing(ref, f"{proto}://{host}" if host else "", viewer).encode('utf-8')
             self.send_response(200)
             self.send_header('Content-Type', 'text/markdown; charset=utf-8')
             self.send_header('Cache-Control', 'no-store')

@@ -50,7 +50,11 @@ def _route_table(round_num: int) -> List[str]:
     return lines
 
 
-def build_state(ref) -> Dict[str, Any]:
+def _depots(ref, viewer):
+    return ref.fog.depot_view(ref, viewer) if getattr(ref, 'fog', None) else ref.get_depot_summary()
+
+
+def build_state(ref, viewer: Optional[str] = None) -> Dict[str, Any]:
     """Same live data as the markdown briefing, structured (?format=json)."""
     rnd = ref.current_round
     locs = {l['agent_id']: l for l in ref.get_all_vessel_locations()}
@@ -67,12 +71,13 @@ def build_state(ref) -> Dict[str, Any]:
     for row in ref.get_leaderboard():
         fleets.append({k: row.get(k) for k in ('agent_id', 'net_worth', 'liquid', 'fuel', 'frags', 'food', 'ore')}
                       | {'location': locs.get(row['agent_id']) or ref.get_vessel_location(row['agent_id'])})
-    return {'round': rnd, 'depots': ref.get_depot_summary(), 'routes': routes, 'fleets': fleets}
+    return {'round': rnd, 'viewer': viewer, 'depots': _depots(ref, viewer), 'routes': routes, 'fleets': fleets}
 
 
-def build_briefing(ref, base_url: str = "") -> str:
+def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str:
     rnd = ref.current_round
-    depots = ref.get_depot_summary()
+    depots = _depots(ref, viewer)
+    fog = getattr(ref, 'fog', None)
     board = ref.get_leaderboard()
     locs = {l['agent_id']: l for l in ref.get_all_vessel_locations()}
 
@@ -120,6 +125,19 @@ def build_briefing(ref, base_url: str = "") -> str:
     out.append("")
     out.append("## Station prices now (depot bid / ask)")
     out.append("Bid = what the station pays you. Ask = what it charges you.")
+    if fog and viewer != 'admin':
+        here = (depots.get('fog') or {}).get('exact_station')
+        if viewer and here:
+            out.append(f"**Fog.** You are {viewer}. Prices at {here.capitalize()}, where you are docked, are exact. "
+                       f"Every other station shows prices about {fog.lag} rounds old, each off by up to "
+                       f"{int(fog.noise * 100)}%.")
+        elif viewer:
+            out.append(f"**Fog.** You are {viewer}, in transit, so every price here is about {fog.lag} rounds old "
+                       f"and off by up to {int(fog.noise * 100)}%. You see exact prices again once you dock.")
+        else:
+            out.append(f"**Fog.** This is the public view: every price is about {fog.lag} rounds old and off by up "
+                       f"to {int(fog.noise * 100)}%. Fetch this page with your fleet token "
+                       "(`Authorization: Bearer <your token>`) to see exact prices where you are docked.")
     out.extend(_price_table(depots))
     out.append("")
     out.append("## Routes")
