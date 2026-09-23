@@ -189,10 +189,13 @@ class ContractBoard:
         see: buy the good at the cheapest station it knows of, fly it in, get
         paid. Zero if it cannot make the deadline. Uses the agent's own
         (possibly fogged) quotes, so two corps can honestly disagree."""
-        st = location(self.ref, agent)
-        if st is None:
-            return 0
+        # A corp in transit plans from where and when it will arrive.
+        loc = self.ref.get_vessel_location(agent)
         r = self.ref.current_round
+        if loc.get("status") == "in_transit" and loc.get("transit"):
+            st, r = loc["transit"]["destination"], max(r, loc["transit"]["arrival_round"])
+        else:
+            st = loc["station_id"]
         best = 0
         qty = min(c["remaining"], 500)
         held = self.ref.get_balance(agent, c["comm"])
@@ -222,14 +225,13 @@ class ContractBoard:
         for c in self.open:
             if not c["owner"] or c["remaining"] <= 0:
                 continue
-            # A corp in transit can't negotiate (its value_to would read 0 and
-            # it would dump a contract it is flying to fill), and a corp keeps
-            # a contract it just bought for HOLD rounds rather than flipping it.
-            if location(ref, c["owner"]) is None or ref.current_round - c.get("bought", -99) < self.HOLD:
+            # Contracts trade at a distance: neither corp needs to be docked, or
+            # at the contract's station (Ryan, #agent-chat 2026-09-22 22:2x).
+            # A corp keeps a contract it just bought for HOLD rounds.
+            if ref.current_round - c.get("bought", -99) < self.HOLD:
                 continue
             own_v = self.value_to(c["owner"], c, views[c["owner"]])
-            bids = [(self.value_to(a, c, views[a]), a) for a in FLEETS
-                    if a != c["owner"] and location(ref, a) is not None]
+            bids = [(self.value_to(a, c, views[a]), a) for a in FLEETS if a != c["owner"]]
             if not bids:
                 continue
             v, buyer = max(bids)
