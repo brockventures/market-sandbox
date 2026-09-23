@@ -127,6 +127,29 @@ class TestEconomySim(unittest.TestCase):
         self.assertGreater(r["day_trades"], 0)
         self.assertEqual(sp.BASE_PRICES["ceres"]["ORE"], before)
 
+    def test_styles_rotate_through_the_homes(self):
+        # #162: one fleet per style, each style at a different home each seed.
+        from tools.economy_sim import scenario_kinds, FLEETS
+        seen = {k: set() for k in scenario_kinds("styles", 0).values()}
+        for seed in range(4):
+            kinds = scenario_kinds("styles", seed)
+            self.assertEqual(sorted(kinds.values()), ["hauler", "maker", "privateer", "stock_trader"])
+            for a in FLEETS:
+                seen[kinds[a]].add(a)
+        self.assertTrue(all(v == set(FLEETS) for v in seen.values()))
+
+    def test_maker_earns_from_station_order_flow(self):
+        # #162: the maker moves to a two-sided station and the station's own
+        # buyers and sellers fill its quotes. Seed 2 puts it at Earth, so it
+        # flies to Luna first.
+        r = run("styles", "flat", seed=2, rounds=60, check_every=20)
+        self.assertIsNone(r["first_invariant_failure"])
+        maker = next(a for a, f in r["fleets"].items() if f["strategy"] == "maker")
+        self.assertGreater(r["order_flow"]["by_fleet"][maker]["units"], 0)
+        self.assertGreater(r["fleets"][maker]["pnl"], 0)
+        for f in r["fleets"].values():
+            self.assertEqual(f["pnl_total"], f["pnl_active"] + f["pnl_passive"])
+
     def test_planet_genesis_preserves_value(self):
         r = run("idle4", "planet", seed=1, rounds=1)
         for f in r["fleets"].values():

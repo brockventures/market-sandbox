@@ -273,6 +273,19 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
             for h in recent[:8]:
                 out.append(f"- round {h['round']}: {h['agent_id']}: {h['note']}")
         out.append("")
+    flow = getattr(ref, 'order_flow', None)
+    if flow is not None and flow.enabled and getattr(ref, 'depots_enabled', False):
+        from agora import order_flow as OF
+        from agora.referee import REACTIVE_SIDE_DRIP
+        out.append("## Station order flow")
+        out.append("Every round each station's own buyers and sellers come to its market. They pay up to the depot's "
+                   "ask and sell down to the depot's bid, and they fill resting fleet orders first, best price first: "
+                   "rest an ask at or below the depot ask, or a bid at or above the depot bid, and the station's "
+                   "traders trade with you before the depot (a fleet order beats the depot at the same price). "
+                   "Buyers come mostly where a good is dearest, sellers where it is cheapest; about "
+                   f"{OF.FLOW_SCALE * REACTIVE_SIDE_DRIP:g} units a side a round everywhere else. Sizes and last round's fills: "
+                   "`GET /referee/order-flow`.")
+        out.append("")
     pir = getattr(ref, 'piracy', None)
     if pir is not None and pir.enabled:
         from agora import piracy as P

@@ -70,6 +70,7 @@ from typing import Any, Dict, List, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agora import contracts as contracts_mod  # noqa: E402
+from agora import exchange as exchange_mod  # noqa: E402
 from agora import piracy as piracy_mod  # noqa: E402
 from agora.referee import AgoraReferee  # noqa: E402
 from agora.server import build_referee_from_env  # noqa: E402
@@ -102,7 +103,26 @@ SCENARIOS = {
     "stocks_vs_novices": {"zero": "novice", "amos": "hauler", "marvin": "stock_trader", "aerial": "novice"},
     # Day trading from price history (Ryan, #agent-chat 2026-09-22 22:30).
     "daytrade_vs_haulers": {"zero": "hauler", "amos": "hauler", "marvin": "daytrader", "aerial": "daytrader"},
+    # #162: one fleet per play style. Rotated: seed s moves every style s
+    # stations along, so over 4k seeds each style starts at each home k times
+    # (the home station matters: a hauler starting at Ceres out-earns one
+    # starting at Earth by 100k+).
+    "styles": {"zero": "hauler", "amos": "stock_trader", "marvin": "maker", "aerial": "privateer"},
+    # The same, with a novice in the stock trader's seat (#162, novice survival).
+    "styles_novice": {"zero": "hauler", "amos": "novice", "marvin": "maker", "aerial": "privateer"},
 }
+# Scenarios whose styles rotate through the home stations with the seed.
+ROTATING = {"styles", "styles_novice"}
+
+
+def scenario_kinds(scenario: str, seed: int) -> Dict[str, str]:
+    """Which fleet plays which strategy in this seed's game."""
+    kinds = SCENARIOS[scenario]
+    if scenario not in ROTATING:
+        return dict(kinds)
+    styles = [kinds[a] for a in FLEETS]
+    k = seed % len(FLEETS)
+    return {a: styles[(i + k) % len(FLEETS)] for i, a in enumerate(FLEETS)}
 
 # Strategies that fly goods, so the only ones that claim, buy or deliver
 # contracts and trade on the peer desk: an idler or a market maker never
@@ -667,31 +687,81 @@ class Privateer(Hauler):
 
 
 class Maker:
-    """Joins the depot's best bid and ask at its home station for every good,
-    reposting each round. Resting first gives it time priority."""
+    """A market maker (#162). Sets up at a station where the NPC order flow
+    (agora/order_flow.py, GET /referee/order-flow) is two-sided for every
+    good: Luna or Mars, where no good is at its cheapest or dearest, so
+    buyers and sellers arrive at about the same rate. It flies there first
+    if it starts elsewhere. Each round it cancels and requotes every good:
+    one CR inside the depot's bid and ask where the spread allows, joining
+    them otherwise (a fleet order fills before the depot at the same
+    price). Clip size is the station's expected flow a side, so it can take
+    all of it. Inventory is bounded: no bid above CAP_ROUNDS rounds of flow
+    held, the ask leans one CR lower above half of that, and nothing is
+    bought with the last CR_RESERVE. Never claims contracts or hauls.
 
-    def __init__(self, agent: str, clip: int = 50, inside: bool = False):
+    Before #162 the maker only joined the depot's quotes at home with a
+    fixed clip; "inside_maker" (the "market" scenario) still quotes at home
+    with a fixed clip (relocate=False)."""
+
+    CAP_ROUNDS, CR_RESERVE = 6, 500
+
+    def __init__(self, agent: str, clip: int = 50, inside: bool = True, relocate: bool = True):
         self.agent = agent
         self.clip = clip
-        # inside: improve the depot's quotes by 1 CR where the spread allows,
-        # so fleets trading here meet this fleet before the depot.
         self.inside = inside
+        self.relocate = relocate
+        self.venue: Optional[str] = None
+
+    @staticmethod
+    def venues() -> List[str]:
+        """Stations that are neither the cheapest nor the dearest for any good."""
+        ends = set()
+        for c in TRADED:
+            ends.add(min(STATIONS, key=lambda st: BASE_PRICES[st][c]))
+            ends.add(max(STATIONS, key=lambda st: BASE_PRICES[st][c]))
+        return [st for st in STATIONS if st not in ends] or list(STATIONS)
 
     def act(self, ref: AgoraReferee, quotes, stats) -> None:
         st = location(ref, self.agent)
         if st is None:
             return
+        if self.relocate and self.venue is None:
+            self.venue = min(self.venues(), key=lambda v: (0 if v == st else get_route(st, v, 0)["rounds"], v))
+        if self.relocate and st != self.venue:
+            cancel_all(ref, self.agent)
+            route = get_route(st, self.venue, ref.current_round)
+            if route and ref.get_balance(self.agent, "FUEL") >= route["fuel"]:
+                move(ref, self.agent, self.venue, "FRAG", 0, stats)
+                return
+            self.venue = st  # cannot get there: make markets here
         cancel_all(ref, self.agent)
-        inv = inventory(ref, self.agent)
+        flow = ref.order_flow if getattr(ref, "order_flow", None) is not None and ref.order_flow.enabled else None
+        cash = available(ref, self.agent, "CR") - self.CR_RESERVE
         for comm in TRADED:
             q = quotes[st][comm]
             bid, ask = q["best_bid"], q["best_ask"]
-            if self.inside and bid and ask and ask - bid >= 3:
+            if not bid or not ask:
+                continue
+            if self.inside and ask - bid >= 3:
                 bid, ask = bid + 1, ask - 1
-            if bid and inv["CR"] > bid * self.clip * 4 and band_ok(ref, st, comm, bid):
-                order(ref, self.agent, "bid", self.clip, bid, comm, st, "mb")
-            if ask and inv[comm] >= self.clip and band_ok(ref, st, comm, ask):
-                order(ref, self.agent, "ask", self.clip, ask, comm, st, "ma")
+            if flow is not None and self.relocate:
+                exp = flow.expected(st, comm)
+                clip_b, clip_a = max(1, int(exp["sell"] * 1.5)), max(1, int(exp["buy"] * 1.5))
+                cap = int(max(exp["sell"], exp["buy"]) * self.CAP_ROUNDS)
+            else:
+                clip_b = clip_a = self.clip
+                cap = 10 ** 9
+            keep = FUEL_KEEP if comm == "FUEL" else 0
+            held = available(ref, self.agent, comm) - keep
+            if held > cap // 2 and ask - 1 > bid:
+                ask -= 1
+            want = min(clip_b, max(0, cap - held))
+            if cash > 0 and want > 0 and band_ok(ref, st, comm, bid):
+                n = min(want, cash // bid)
+                if n > 0 and order(ref, self.agent, "bid", n, bid, comm, st, "mb").get("kind") != "reject":
+                    cash -= n * bid
+            if held > 0 and band_ok(ref, st, comm, ask):
+                order(ref, self.agent, "ask", min(clip_a, held), ask, comm, st, "ma")
 
 
 class Idler:
@@ -883,51 +953,93 @@ class EquityLiquidity:
 
 
 class StockTrader:
-    """Trades rival stocks only, never goods or contracts (#119).
+    """Trades rival stocks on the exchange, never goods or contracts (#119, #162).
 
-    NAV is noisy: a hauler's cargo in flight is escrowed and drops out of
-    its net worth until it docks, so NAV dips and recovers with every trip.
-    Fair value is therefore NAV's LONG-round average carried forward along
-    its LONG-round growth, not the latest NAV. Buys when the best ask is
-    EDGE below fair, sells when the best bid is EDGE above it, spending at
-    most STAKE of its cash on one order. Only takes liquidity: any rest is
-    cancelled at once, so every stock fill happens inside act() and its
-    cash effect is measured exactly."""
+    Fair value is the exchange's own anchor (agora/exchange.py, documented
+    there): the mean of the issuer's NAV over the last ANCHOR_ROUNDS rounds,
+    carried forward along that window's trend. NAV is public (leaderboard
+    net worth / shares), so a player can rebuild it; the exchange's price
+    reverts toward it at REVERSION a round. The trader trades that gap:
 
-    LONG, EDGE, STAKE = 30, 0.08, 0.3
+      mid below fair by ENTRY or more   buy, up to the exchange's depth a round
+      mid above fair by ENTRY or more   sell, down to zero shares
+      long above its genesis shares     sell back to them once mid >= fair (1 + EXIT)
+      short of them                     buy back once mid <= fair (1 - EXIT)
+
+    ENTRY clears the round trip through the exchange's spread (2 x 3%).
+    Each name may hold up to MAX_POS shares, and one buy spends at most
+    STAKE of the trader's cash. It sells its genesis FRAG and FUEL at its
+    home depot in the first rounds, since it never flies: that is its
+    capital. Only takes liquidity; any rest is cancelled at once, so every
+    stock fill happens inside act() and stock_cash measures exactly the CR
+    its stock trades made (goods sales are kept out of it).
+
+    Before #162 it used its own 30-round fair value, bought only at 8% below
+    it, never sold its goods, and lost about 9k over 300 rounds at every
+    setting tried (#162 sweep): too naive to stand for the style."""
+
+    ENTRY, EXIT, STAKE, MAX_POS = 0.08, 0.0, 0.5, 200
 
     def __init__(self, agent: str):
         self.agent = agent
         self.hist: Dict[str, List[float]] = {s: [] for s in EQ_SYM.values()}
         self.stock_cash = 0
+        self.base: Dict[str, int] = {}
 
     def fair(self, sym: str) -> Optional[float]:
-        h = self.hist[sym]
-        if len(h) <= self.LONG:
+        """The exchange's anchor, from the NAVs this trader has seen."""
+        h = self.hist[sym][-exchange_mod.ANCHOR_ROUNDS:]
+        if len(h) < 4:
             return None
-        w = h[-self.LONG:]
-        avg = sum(w) / len(w)
-        slope = (sum(w[len(w) // 2:]) - sum(w[:len(w) // 2])) / (len(w) // 2) / (len(w) // 2)
-        return max(1.0, avg + slope * self.LONG / 2)
+        anchor = sum(h) / len(h)
+        k = len(h) // 2
+        slope = (sum(h[-k:]) / k - sum(h[:k]) / k) / (len(h) - k)
+        return max(1.0, anchor + slope * (len(h) - 1) / 2)
+
+    def _liquidate(self, ref: AgoraReferee, quotes) -> None:
+        st = location(ref, self.agent)
+        if st is None:
+            return
+        cancel_all(ref, self.agent)
+        for comm in TRADED:
+            have = available(ref, self.agent, comm)
+            bid = quotes[st][comm]["best_bid"]
+            if have > 0 and bid and band_ok(ref, st, comm, bid):
+                order(ref, self.agent, "ask", min(have, quotes[st][comm]["bid_depth"] or have), bid, comm, st, "liq")
 
     def act(self, ref: AgoraReferee, quotes, stats) -> None:
+        self._liquidate(ref, quotes)
         marks = stock_navs(ref)
         before = ref.get_balance(self.agent, "CR")
         for issuer, sym in EQ_SYM.items():
             self.hist[sym].append(marks[sym]["nav"])
-            fair = self.fair(sym)
-            if issuer == self.agent or fair is None:
+            if issuer == self.agent:
                 continue
+            fair = self.fair(sym)
+            if fair is None:
+                continue
+            base = self.base.setdefault(sym, ref.get_balance(self.agent, sym))
             book = ref.books["ceres"][sym]
             ask, bid = book.best_ask(), book.best_bid()
-            if ask is not None and ask < fair * (1 - self.EDGE):
-                qty = int(available(ref, self.agent, "CR") * self.STAKE) // ask
+            pos = available(ref, self.agent, sym)
+            # Each side on its own: the exchange stops quoting an ask once it
+            # has sold all its shares, and a bid once it is out of CR.
+            half = exchange_mod.DEFAULT_SPREAD
+            buy_to = sell_to = None
+            if ask is not None and ask <= fair * (1 - self.ENTRY + half):
+                buy_to = self.MAX_POS
+            elif ask is not None and pos < base and ask <= fair * (1 - self.EXIT + half):
+                buy_to = base
+            if bid is not None and bid >= fair * (1 + self.ENTRY - half):
+                sell_to = 0
+            elif bid is not None and pos > base and bid >= fair * (1 + self.EXIT - half):
+                sell_to = base
+            if buy_to is not None and buy_to > pos:
+                qty = min(buy_to - pos, int(available(ref, self.agent, "CR") * self.STAKE) // ask)
                 if qty > 0:
                     order(ref, self.agent, "bid", qty, ask, sym, "ceres", "stk")
-            elif bid is not None and bid > fair * (1 + self.EDGE):
-                qty = available(ref, self.agent, sym)
-                if qty > 0:
-                    order(ref, self.agent, "ask", qty, bid, sym, "ceres", "stk")
+            elif sell_to is not None and sell_to < pos:
+                order(ref, self.agent, "ask", pos - sell_to, bid, sym, "ceres", "stk")
             cancel_stock_orders(ref, self.agent)
         self.stock_cash += ref.get_balance(self.agent, "CR") - before
 
@@ -991,8 +1103,10 @@ def build_fleet(agent: str, kind: str, seed: int, mode: str):
     if kind == "novice":
         return Novice(agent, seed=seed)
     if kind == "inside_maker":
-        return Maker(agent, clip=100, inside=True)
-    return {"maker": Maker, "idler": Idler, "stock_trader": StockTrader, "daytrader": DayTrader}[kind](agent)
+        return Maker(agent, clip=100, inside=True, relocate=False)
+    if kind == "maker":
+        return Maker(agent)
+    return {"idler": Idler, "stock_trader": StockTrader, "daytrader": DayTrader}[kind](agent)
 
 
 # ------------------------------------------------------------ genesis
@@ -1235,9 +1349,16 @@ def _run(scenario, genesis, seed, rounds, mode, check_every, overrides, equity_m
         ref.spatial.vol = vol
     if theta is not None:
         ref.spatial.theta = theta
-    kinds = SCENARIOS[scenario]
+    kinds = scenario_kinds(scenario, seed)
     fleets = {a: (fleet_overrides or {}).get(a, build_fleet)(a, kind, seed, mode) for a, kind in kinds.items()}
     start = {a: score(ref, a) for a in FLEETS}
+    # Rival shares every fleet holds: part of what the leaderboard pays, and
+    # all of a stock trader's book. Valued at NAV, not the board mark: the mark falls back
+    # to the last trade whenever the exchange quotes one side only (it runs
+    # out of shares once a trader buys its float), and then goes stale.
+    m_start = stock_navs(ref)
+    stocks_mark_start = {a: stock_value(ref, a, m_start, "nav") for a in FLEETS}
+    genesis_shares = {a: {sym: ref.get_balance(a, sym) for i, sym in EQ_SYM.items() if i != a} for a in FLEETS}
     eq_liq = EquityLiquidity(*equity_mm) if equity_mm else None
     traders = [a for a, k in kinds.items() if k == "stock_trader"]
     track_stocks = bool(eq_liq or traders)
@@ -1292,6 +1413,12 @@ def _run(scenario, genesis, seed, rounds, mode, check_every, overrides, equity_m
 
     board = {e["agent_id"]: e["net_worth"] for e in ref.get_leaderboard()}
     end = {a: score(ref, a) for a in FLEETS}
+    m_end = stock_navs(ref)
+    stocks_mark_end = {a: stock_value(ref, a, m_end, "nav") for a in FLEETS}
+    # What the genesis rival shares alone gained, held untouched: the part of
+    # pnl_total every fleet gets from its rivals' growth, whatever its style.
+    passive = {a: sum(q * (m_end[sym]["nav"] - m_start[sym]["nav"]) for sym, q in genesis_shares[a].items())
+               for a in FLEETS}
     halts = ref.conn.execute("SELECT COUNT(*) FROM circuit_breaker_halts").fetchone()[0]
     q = max(1, len(spread) // 4)
     idle = {r[0]: -r[1] for r in ref.conn.execute(
@@ -1332,8 +1459,15 @@ def _run(scenario, genesis, seed, rounds, mode, check_every, overrides, equity_m
         "depot_cr_end": {st: ref.get_balance(f"depot_{st}", "CR") for st in STATIONS},
         "seconds": round(elapsed, 2),
         "fleets": {a: {"strategy": kinds[a], "start": round(start[a]), "end": round(end[a]),
-                       "pnl": round(end[a] - start[a]), "leaderboard_nw": board.get(a),
+                       "pnl": round(end[a] - start[a]),
+                       # pnl plus the change in rival shares held, at NAV
+                       "pnl_total": round(end[a] - start[a] + stocks_mark_end[a] - stocks_mark_start[a]),
+                       "pnl_passive": round(passive[a]),
+                       "pnl_active": round(end[a] - start[a] + stocks_mark_end[a] - stocks_mark_start[a] - passive[a]),
+                       "leaderboard_nw": board.get(a),
                        "out": ref.fleet_out(a) is not None} for a in FLEETS},
+        "order_flow": ({"totals": dict(ref.order_flow.totals), "by_fleet": dict(ref.order_flow.by_fleet)}
+                       if getattr(ref, "order_flow", None) is not None and ref.order_flow.enabled else None),
         "fills": classify_fills(ref),
         "transits": stats["transits"],
         "contract_deliveries": stats["contract_deliveries"],
@@ -1396,6 +1530,53 @@ def table(results: List[dict]) -> str:
     return "\n".join(lines)
 
 
+def _pct(xs: List[float], p: float) -> float:
+    """Linear-interpolated percentile, p in [0, 100]."""
+    xs = sorted(xs)
+    if not xs:
+        return float("nan")
+    k = (len(xs) - 1) * p / 100
+    lo, hi = math.floor(k), math.ceil(k)
+    return xs[lo] + (xs[hi] - xs[lo]) * (k - lo)
+
+
+def style_rows(results: List[dict], key: str = "pnl_total") -> Dict[str, dict]:
+    """Per strategy, over every fleet that played it in these results:
+    median, p10, p90 and mean of `key`, and how many ended out of the game."""
+    by: Dict[str, List[dict]] = {}
+    for r in results:
+        for f in r["fleets"].values():
+            by.setdefault(f["strategy"], []).append(f)
+    return {k: {"n": len(fs), "median": _pct([f[key] for f in fs], 50), "p10": _pct([f[key] for f in fs], 10),
+                "p90": _pct([f[key] for f in fs], 90), "mean": statistics.mean(f[key] for f in fs),
+                "out": sum(f["out"] for f in fs)} for k, fs in by.items()}
+
+
+def style_table(results: List[dict], key: str = "pnl_total") -> str:
+    """Markdown per-style table (#162): median, p10, p90 final P&L."""
+    rows = style_rows(results, key)
+    lines = [f"| style | fleets | median | p10 | p90 | mean | out |", "|---|---|---|---|---|---|---|"]
+    for k in sorted(rows, key=lambda k: -rows[k]["median"]):
+        v = rows[k]
+        lines.append(f"| {k} | {v['n']} | {v['median']:+,.0f} | {v['p10']:+,.0f} | {v['p90']:+,.0f} "
+                     f"| {v['mean']:+,.0f} | {v['out']} |")
+    return "\n".join(lines)
+
+
+def _run_job(kw: dict) -> dict:
+    faulthandler.dump_traceback_later(kw.pop("hang_timeout", 600), exit=True)
+    return run(**kw)
+
+
+def run_many(jobs: List[dict], workers: int = 1) -> List[dict]:
+    """run(**job) for each job, in parallel processes when workers > 1."""
+    if workers <= 1:
+        return [_run_job(dict(j)) for j in jobs]
+    import multiprocessing
+    with multiprocessing.get_context("fork").Pool(workers) as pool:
+        return pool.map(_run_job, [dict(j) for j in jobs], chunksize=1)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--rounds", type=int, default=300)
@@ -1437,6 +1618,9 @@ def main() -> int:
                          "DEPTH shares a side a round (e.g. 0.05 20)")
     ap.add_argument("--json", action="store_true", help="print raw results as JSON")
     ap.add_argument("--table", action="store_true", help="print only the markdown headline table")
+    ap.add_argument("--styles", action="store_true",
+                    help="print only the per-style table: median, p10, p90 of P&L incl. rival shares at NAV (#162)")
+    ap.add_argument("--jobs", type=int, default=1, help="run games in this many parallel processes")
     ap.add_argument("--hang-timeout", type=int, default=600, help="dump stacks and exit if a run hangs")
     args = ap.parse_args()
 
@@ -1478,18 +1662,18 @@ def main() -> int:
     if args.bond is not None:
         constants["contracts.BOND_PCT"] = args.bond
 
-    faulthandler.dump_traceback_later(args.hang_timeout, exit=True)
-    results = []
+    jobs = []
     for scen in args.scenario or ["mixed", "haulers4", "idle4"]:
         for gen in args.genesis or ["flat", "planet"]:
             for mode in (args.mode or ["strict", "tolerant"]) if scen != "idle4" else ["strict"]:
                 for seed in range(1, args.seeds + 1):
-                    faulthandler.dump_traceback_later(args.hang_timeout, exit=True)
-                    results.append(run(scen, gen, seed, args.rounds, mode, overrides=overrides,
-                                       constants=constants,
-                                       equity_mm=((args.equity_mm[0], int(args.equity_mm[1]))
-                                                  if args.equity_mm else None),
-                                       vol=args.vol, theta=args.theta, spread_scale=args.spread_scale))
+                    jobs.append(dict(scenario=scen, genesis=gen, seed=seed, rounds=args.rounds, mode=mode,
+                                     overrides=overrides, constants=constants,
+                                     equity_mm=((args.equity_mm[0], int(args.equity_mm[1]))
+                                                if args.equity_mm else None),
+                                     vol=args.vol, theta=args.theta, spread_scale=args.spread_scale,
+                                     hang_timeout=args.hang_timeout))
+    results = run_many(jobs, args.jobs)
     faulthandler.cancel_dump_traceback_later()
 
     if args.json:
@@ -1497,6 +1681,9 @@ def main() -> int:
         return 0
     if args.table:
         print(table(results))
+        return 0
+    if args.styles:
+        print(style_table(results))
         return 0
     for r in results:
         print(f"\n== {r['scenario']} / {r['genesis']} genesis / {r['mode']} / seed {r['seed']} / {r['rounds']} rounds "
@@ -1516,6 +1703,7 @@ def main() -> int:
         print(f"  piracy: {r['piracy']}")
         print(f"  peer: {r['peer']}")
         print(f"  events: {r['events']}")
+        print(f"  order flow: {r['order_flow']}")
         print(f"  depot CR at end: {r['depot_cr_end']}")
         print(f"  first negative depot balance: round {r['first_negative_depot_round']}  "
               f"invariant failure: {r['first_invariant_failure']}")
@@ -1525,6 +1713,7 @@ def main() -> int:
                     print(f"  {a} stocks: pnl {f['stock_pnl']:+} (cash {f['stock_cash']:+}, "
                           f"holdings {f['value_start']} -> {f['value_end']} at NAV)")
     print("\n" + table(results))
+    print("\n" + style_table(results))
     return 0
 
 

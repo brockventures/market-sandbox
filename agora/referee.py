@@ -23,6 +23,7 @@ from agora.upgrades import UpgradeDesk, env_upgrades
 from agora.events import EventDesk, env_events
 from agora.covert import CovertDesk
 from agora.fog import FogEngine, env_fog, parse_fog
+from agora.order_flow import OrderFlowDesk, env_order_flow
 
 STOCK_EXCHANGE_STATION = 'ceres'  # the one book every fleet stock trades on
 from agora.spatial import (
@@ -97,6 +98,7 @@ class AgoraReferee:
         upgrades: Optional[bool] = None,
         piracy: Any = None,
         events: Optional[bool] = None,
+        order_flow: Optional[bool] = None,
     ):
         self.db_path = db_path
         # Debt, distress sales, bankruptcy and takeovers (agora/corporate.py).
@@ -161,6 +163,8 @@ class AgoraReferee:
         self.upgrades = UpgradeDesk(self)
         self.hazards = HazardEngine(self.conn, self._hazard_odds)
         self.piracy = PiracyDesk(self, self._piracy_odds)
+        # NPC buyers and sellers at each station that fill fleet quotes before the depot (agora/order_flow.py).
+        self.order_flow = OrderFlowDesk(self, env_order_flow() if order_flow is None else order_flow)
         self.equity = SyndicateEquityEngine(self.conn, self)
         self.salvage = DerelictSalvageEngine(self.conn, self)
         self.circuit_breaker = CircuitBreakerEngine(self.conn, self, band_pct=self.band_pct)
@@ -527,6 +531,7 @@ class AgoraReferee:
         upgrades: Optional[bool] = None,
         piracy: Any = None,
         events: Optional[bool] = None,
+        order_flow: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Full clean-slate reset, callable live via POST /referee/admin/reset:
@@ -562,6 +567,8 @@ class AgoraReferee:
             self.piracy.odds = parse_piracy(piracy)
         if events is not None:
             self.events_enabled = bool(events)
+        if order_flow is not None:
+            self.order_flow.enabled = bool(order_flow)
         self._active_this_round = set()
         self.asymmetric_enabled = asymmetric
         if asymmetric or spawn_map:
@@ -583,6 +590,7 @@ class AgoraReferee:
         self.hazards.reset(0)
         self.piracy.reset(0)
         self.events.reset(0)
+        self.order_flow.reset(0)
 
         return {'seq': 0, 'floor': self.floor, 'fleets': [r['agent_id'] for r in
                 self.conn.execute("SELECT agent_id FROM fleet_roster").fetchall()]}
@@ -608,6 +616,7 @@ class AgoraReferee:
         upgrades: Optional[bool] = None,
         piracy: Any = None,
         events: Optional[bool] = None,
+        order_flow: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Wipes the board exactly like reset_to_genesis(), but rolls a genuinely
@@ -644,6 +653,8 @@ class AgoraReferee:
             self.piracy.odds = parse_piracy(piracy)
         if events is not None:
             self.events_enabled = bool(events)
+        if order_flow is not None:
+            self.order_flow.enabled = bool(order_flow)
         self._active_this_round = set()
         self.asymmetric_enabled = asymmetric
         if asymmetric or spawn_map:
@@ -685,6 +696,7 @@ class AgoraReferee:
         self.hazards.reset(roll_seed)
         self.piracy.reset(roll_seed)
         self.events.reset(roll_seed)
+        self.order_flow.reset(roll_seed)
 
         return {
             'seq': 0,
@@ -1249,6 +1261,10 @@ class AgoraReferee:
             # Idle fee for the round that is ending, before anything moves.
             with self.conn:
                 idle_fees = self._charge_idle_fees_locked(self.current_round)
+                # Station order flow (agora/order_flow.py): NPC buyers and
+                # sellers fill the fleet orders left resting this round,
+                # against the depot quotes the fleets saw, before prices move.
+                order_flow_report = self.order_flow.step_locked(self.current_round)
             self.current_round = new_round
 
             # Advance prices
@@ -1359,6 +1375,7 @@ class AgoraReferee:
                 'piracy': piracy_report,
                 'events': events_report,
                 'idle_fees': idle_fees,
+                'order_flow': order_flow_report,
             }
 
     def get_equity_summary(self) -> Dict[str, Any]:
