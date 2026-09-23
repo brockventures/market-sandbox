@@ -17,6 +17,7 @@ from pathlib import Path
 from agora.order_book import OrderBook, Order, Trade
 from agora.galnet import GalNetEngine
 from agora.peer import PeerDesk, env_peer_trades
+from agora.contracts import ContractDesk, env_contracts
 from agora.fog import FogEngine, env_fog, parse_fog
 
 STOCK_EXCHANGE_STATION = 'ceres'  # the one book every fleet stock trades on
@@ -83,8 +84,11 @@ class AgoraReferee:
         rival_shares: Optional[int] = None,
         exchange_shares: Optional[int] = None,
         exchange_vol: Optional[float] = None,
+        contracts: Optional[bool] = None,
     ):
         self.db_path = db_path
+        # Owned, tradable station contracts with a claim deposit (agora/contracts.py).
+        self.contracts_enabled = env_contracts() if contracts is None else bool(contracts)
         # The stock exchange's market maker (agora/exchange.py): shares of
         # each fleet it takes from treasury at genesis. 0 = no exchange quotes.
         self.exchange_shares = clamp_shares(exchange_shares) if exchange_shares is not None else 0
@@ -128,6 +132,7 @@ class AgoraReferee:
         self.book = self.books['ceres'][self.default_instrument if self.default_instrument in self.books['ceres'] else 'FRAG']
         self._init_db()
         self.peer = PeerDesk(self)
+        self.contract_desk = ContractDesk(self)
         self.equity = SyndicateEquityEngine(self.conn, self)
         self.salvage = DerelictSalvageEngine(self.conn, self)
         self.circuit_breaker = CircuitBreakerEngine(self.conn, self, band_pct=self.band_pct)
@@ -448,7 +453,7 @@ class AgoraReferee:
                 'accounts', 'ledger_entries', 'book_events', 'station_prices',
                 'transits', 'vessel_locations', 'equity_loans', 'distress_beacons',
                 'rescue_rfqs', 'rescue_quotes', 'salvage_claims',
-                'circuit_breaker_halts', 'orders', 'station_escrow',
+                'circuit_breaker_halts', 'orders', 'station_escrow', 'station_contracts',
             ):
                 self.conn.execute(f"DELETE FROM {table}")
             self.conn.execute(
@@ -487,6 +492,7 @@ class AgoraReferee:
         rival_shares: Optional[int] = None,
         exchange_shares: Optional[int] = None,
         exchange_vol: Optional[float] = None,
+        contracts: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Full clean-slate reset, callable live via POST /referee/admin/reset:
@@ -510,6 +516,8 @@ class AgoraReferee:
             self.exchange_shares = clamp_shares(exchange_shares)
         if exchange_vol is not None:
             self.exchange.vol = max(0.0, float(exchange_vol))
+        if contracts is not None:
+            self.contracts_enabled = bool(contracts)
         self._active_this_round = set()
         self.asymmetric_enabled = asymmetric
         if asymmetric or spawn_map:
@@ -527,6 +535,7 @@ class AgoraReferee:
             self.seed_depots()
         self._configure_fog(fog, seed=0)
         self._start_exchange(seed=0)
+        self.contract_desk.reset(0)
 
         return {'seq': 0, 'floor': self.floor, 'fleets': [r['agent_id'] for r in
                 self.conn.execute("SELECT agent_id FROM fleet_roster").fetchall()]}
@@ -546,6 +555,7 @@ class AgoraReferee:
         rival_shares: Optional[int] = None,
         exchange_shares: Optional[int] = None,
         exchange_vol: Optional[float] = None,
+        contracts: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Wipes the board exactly like reset_to_genesis(), but rolls a genuinely
@@ -570,6 +580,8 @@ class AgoraReferee:
             self.exchange_shares = clamp_shares(exchange_shares)
         if exchange_vol is not None:
             self.exchange.vol = max(0.0, float(exchange_vol))
+        if contracts is not None:
+            self.contracts_enabled = bool(contracts)
         self._active_this_round = set()
         self.asymmetric_enabled = asymmetric
         if asymmetric or spawn_map:
@@ -607,6 +619,7 @@ class AgoraReferee:
             self.seed_depots()
         self._configure_fog(fog, seed=roll_seed)
         self._start_exchange(seed=roll_seed)
+        self.contract_desk.reset(roll_seed)
 
         return {
             'seq': 0,
@@ -1179,6 +1192,7 @@ class AgoraReferee:
 
                 # Peer escrow: buyers who are now docked collect; overdue pickups refund.
                 peer_report = self.peer.step_locked(new_round) if self.peer_trades else None
+                contract_report = self.contract_desk.step_locked(new_round) if self.contracts_enabled else None
 
             # Distribute bilateral borrow fees & audit maintenance margin
             borrow_fee_reports = self.equity.step_borrow_fees(new_round)
@@ -1197,6 +1211,7 @@ class AgoraReferee:
                 'borrow_fee_reports': borrow_fee_reports,
                 'circuit_breaker_reopens': reopen_reports,
                 'peer_escrow': peer_report,
+                'contracts': contract_report,
                 'idle_fees': idle_fees,
             }
 
@@ -2045,6 +2060,11 @@ class AgoraReferee:
         board = []
         # Goods and CR held in peer escrow still count toward whoever owns them.
         escrow = self.peer.holdings_adjustment() if getattr(self, 'peer', None) else {}
+        # Contract deposits are still the owner's money.
+        bonds = self.contract_desk.holdings_adjustment() if getattr(self, 'contract_desk', None) else {}
+        for agent, cr in bonds.items():
+            escrow.setdefault(agent, {})
+            escrow[agent]['CR'] = escrow[agent].get('CR', 0) + cr
         for r in rows:
             adj = escrow.get(r['agent_id'], {})
             food = (r['food'] or 0) + adj.get('FOOD', 0)
