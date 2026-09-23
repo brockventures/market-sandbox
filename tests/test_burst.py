@@ -109,6 +109,19 @@ class TestBurstEngine(unittest.TestCase):
         self.assertGreaterEqual(len(burst_kinds), 4, "expect at least start + 2 ticks + conclude")
 
 
+    def test_reset_burst_force_cleans_wedged_state(self):
+        referee = AgoraReferee()
+        ticker = TickerEngine(referee, interval_sec=999, inactivity_rounds=100)
+        ticker.start_burst(rounds=10, interval_sec=10.0)
+        self.assertTrue(ticker.status()["burst_active"])
+        self.assertTrue(ticker.status()["paused"])
+
+        st = ticker.reset_burst()
+        self.assertFalse(st["burst_active"])
+        self.assertIsNone(st["burst_id"])
+        self.assertEqual(st["rounds_remaining"], 0)
+        self.assertFalse(st["paused"])
+
 class TestBurstAdminEndpoints(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -188,6 +201,12 @@ class TestBurstAdminEndpoints(unittest.TestCase):
         self.assertFalse(data2['payload']['paused'])
 
 
+    def test_admin_burst_reset_endpoint(self):
+        status, data = self._post('/referee/admin/burst/reset', {}, token='tok-amos')
+        self.assertEqual(status, 200)
+        self.assertEqual(data.get('kind'), 'burst_reset')
+        self.assertFalse(data['payload']['status']['burst_active'])
+
 class TestBurstEndpointWithoutTicker(unittest.TestCase):
     def test_burst_rejected_when_ticker_not_configured(self):
         referee = AgoraReferee()
@@ -213,6 +232,9 @@ class TestBurstEndpointWithoutTicker(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+
+
+
 
 
 if __name__ == "__main__":

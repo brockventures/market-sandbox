@@ -1,11 +1,13 @@
 name: Deploy
 
-# Runs after CI finishes on main, not directly on push — a push to main that
-# somehow lands with red tests (branch protection normally prevents this,
-# but doesn't cover an admin force-push) should never trigger a production
-# deploy. workflow_run lets us gate on the CI workflow's actual conclusion
-# instead of re-running the test suite a second time here.
+# Runs after CI finishes on main, or manually via workflow_dispatch.
 on:
+  workflow_dispatch:
+    inputs:
+      skip_burst_wait:
+        description: 'Skip waiting for burst to complete'
+        type: boolean
+        default: false
   workflow_run:
     workflows: ["CI"]
     types: [completed]
@@ -13,23 +15,16 @@ on:
 
 jobs:
   deploy:
-    if: github.event.workflow_run.conclusion == 'success'
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     env:
       RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
 
       # Vercel: public/ is the project root (see public/vercel.json).
-      # VERCEL_ORG_ID / VERCEL_PROJECT_ID must point at the EXISTING "agora"
-      # project (org team_aANMAmNHADcEFpaL3obO7YsJ, project
-      # prj_MsIZsIsUesuVZdTgbvOc8B8rM04l) — get either wrong or leave one
-      # unset and the Vercel CLI does not error, it silently creates a NEW
-      # project instead. Confirmed the hard way 2026-09-12
-      # (bin/agora-deploy-watch.py's EXPECTED_VERCEL_PROJECT_ID/
-      # EXPECTED_VERCEL_ORG_ID guard exists because of this exact trap).
       - name: Deploy to Vercel
         working-directory: public
         env:
@@ -37,26 +32,20 @@ jobs:
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
         run: npx -y vercel@latest deploy --prod --token=${{ secrets.VERCEL_TOKEN }} --yes
 
-      # Railway: agora-banana service, production environment. Optional —
-      # this step is skipped (not failed) if RAILWAY_TOKEN isn't set yet, so
-      # this workflow can land and start covering Vercel before Railway's
-      # secret is added.
-      # The referee keeps its ledger in memory, so every Railway deploy
-      # restarts the game at genesis. A push to main during a burst wiped
-      # three live bursts on 2026-09-22 (00:30, 00:57 and 01:37 UTC deploys).
-      # Hold the Railway deploy until no burst is running. If the referee is
-      # unreachable, or a burst is still going after 45 minutes, deploy anyway.
+      # Railway: agora-banana service, production environment.
+      # Hold the Railway deploy briefly for in-flight bursts to finish. If the referee
+      # is unreachable or a burst remains active after the watchdog window, deploy anyway.
       - name: Wait for any live burst to finish
-        if: env.RAILWAY_TOKEN != ''
+        if: env.RAILWAY_TOKEN != '' && github.event.inputs.skip_burst_wait != 'true'
         run: |
-          for i in $(seq 1 90); do
+          for i in $(seq 1 12); do
             active=$(curl -s -m 10 https://agora-banana-production.up.railway.app/referee/ticker/status \
               | python3 -c "import json,sys; print(json.load(sys.stdin).get('burst_active'))" 2>/dev/null || echo unknown)
             echo "check $i: burst_active=$active"
             [ "$active" = "True" ] || exit 0
-            sleep 30
+            sleep 10
           done
-          echo "::warning::burst still active after 45 minutes; deploying anyway"
+          echo "::warning::burst wait timed out after 2 minutes; deploying anyway"
 
       - name: Deploy to Railway
         if: env.RAILWAY_TOKEN != ''

@@ -174,13 +174,46 @@ class TickerEngine:
         self._burst_thread.start()
         return {"burst_id": burst_id, "rounds": rounds, "interval_sec": interval_sec, "start_seq": seq}
 
-    def cancel_burst(self) -> bool:
+    def cancel_burst(self, force: bool = False) -> bool:
         """Cancel an in-flight burst early. Returns False if none was active."""
         with self._burst_lock:
             if not self._burst_active:
                 return False
-        self._burst_stop_event.set()
+            self._burst_stop_event.set()
+            if force:
+                self._burst_active = False
+                self._burst_id = None
+                self._burst_rounds_remaining = 0
+        if force:
+            with self._lock:
+                if self._paused and self._pause_reason and self._pause_reason.startswith("burst:"):
+                    self._paused = False
+                    self._pause_reason = None
         return True
+
+    def reset_burst(self) -> Dict[str, Any]:
+        """Force-reset burst state unconditionally, unjamming stalled/deadlocked runs."""
+        with self._burst_lock:
+            was_active = self._burst_active
+            burst_id = self._burst_id
+            self._burst_active = False
+            self._burst_id = None
+            self._burst_rounds_remaining = 0
+            self._burst_stop_event.set()
+
+        with self._lock:
+            if self._paused and self._pause_reason and self._pause_reason.startswith("burst:"):
+                self._paused = False
+                self._pause_reason = None
+                self._burst_resume_ticker_after = False
+
+        if was_active and burst_id:
+            try:
+                self.referee.record_burst_event("reset", {"burst_id": burst_id, "forced": True})
+            except Exception:
+                pass
+
+        return self.status()
 
     def _run_burst_loop(self, burst_id: str, rounds: int, interval_sec: float) -> None:
         for i in range(rounds):

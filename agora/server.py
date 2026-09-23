@@ -285,10 +285,37 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                     'payload': {'reason': 'ticker_not_configured', 'detail': 'No TickerEngine is wired into this server instance.'}
                 })
                 return
-            cancelled = self.ticker.cancel_burst()
+            content_length = int(self.headers.get('Content-Length', 0))
+            payload = {}
+            if content_length:
+                try:
+                    body = self.rfile.read(content_length)
+                    payload = json.loads(body.decode('utf-8')) if body else {}
+                except Exception:
+                    pass
+            force = payload.get('force', False)
+            cancelled = self.ticker.cancel_burst(force=force)
             self._send_json(200, {
                 'v': 1, 'kind': 'burst_cancelled',
                 'payload': {'cancelled': cancelled, 'status': self.ticker.status()}
+            })
+            return
+
+        if path == '/referee/admin/burst/reset':
+            auth_agent, auth_err = self._authenticate_request()
+            if auth_err:
+                self._send_json(401, auth_err)
+                return
+            if self.ticker is None:
+                self._send_json(409, {
+                    'v': 1, 'kind': 'reject',
+                    'payload': {'reason': 'ticker_not_configured', 'detail': 'No TickerEngine is wired into this server instance.'}
+                })
+                return
+            st = self.ticker.reset_burst()
+            self._send_json(200, {
+                'v': 1, 'kind': 'burst_reset',
+                'payload': {'reset': True, 'status': st, 'triggered_by': auth_agent}
             })
             return
 
