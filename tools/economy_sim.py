@@ -252,6 +252,111 @@ class ContractBoard:
             self.transfer_cr += price
 
 
+# ------------------------------------------------------------ peer trades at a distance
+
+class PeerDesk:
+    """Fleet-to-fleet goods trades agreed from anywhere (Ryan, #agent-chat
+    2026-09-22 22:18). A fleet docked at station S offers goods it holds
+    there; any fleet, wherever it is, may take the offer. The buyer pays
+    now, the goods are held at S in the buyer's name (escrowed to SYSTEM),
+    and the buyer collects them the next time it is docked at S.
+
+    Seller's floor: what the goods are worth to it otherwise, i.e. the
+    depot bid at S, or the best bid elsewhere less the per-unit cost of
+    flying them there. Offer price: the midpoint of that floor and the
+    depot ask at S, so a buyer saves against the depot.
+    Buyer: any fleet, wherever it is, takes it if flying to S to collect
+    and hauling the goods on to its best market still pays at the offer
+    price, per its own (possibly fogged) view."""
+
+    MIN_LOT = 20
+
+    def __init__(self, ref: AgoraReferee):
+        self.ref = ref
+        self.pickups: Dict[tuple, int] = {}  # (station, buyer, comm) -> qty
+        self.trades = 0
+        self.units = 0
+        self.cr = 0
+        self.remote = 0  # buyer was not docked at S when it agreed
+
+    def _move(self, txn: str, legs) -> None:
+        ref = self.ref
+        with ref.lock, ref.conn:
+            for acct, inst, d in legs:
+                ref.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, ?, 0)", (acct, inst))
+                ref.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?", (d, acct, inst))
+                ref.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)",
+                                 (txn, ref.current_seq, acct, inst, d))
+
+    def collect(self) -> None:
+        for (st, buyer, comm), qty in list(self.pickups.items()):
+            if location(self.ref, buyer) == st:
+                self._move(f"pickup-{buyer}-{st}-{comm}-{self.ref.current_round}",
+                           ((buyer, comm, qty), ("SYSTEM", comm, -qty)))
+                del self.pickups[(st, buyer, comm)]
+
+    @staticmethod
+    def _unit_trip_cost(view, st: str, dest: str, qty: int, r: int) -> float:
+        route = get_route(st, dest, r)
+        if not route or qty <= 0:
+            return float("inf")
+        return (route["fuel"] * (view[st]["FUEL"]["best_ask"] or 20) + route.get("toll", 0)) / qty
+
+    def _best_haul(self, view, st: str, comm: str, qty: int, r: int) -> float:
+        """Best per-unit value of `comm` held at st: sell here, or fly it."""
+        here = view[st][comm]["best_bid"] or 0
+        away = max(((view[d][comm]["best_bid"] or 0) - self._unit_trip_cost(view, st, d, qty, r)
+                    for d in STATIONS if d != st), default=0)
+        return max(here, away)
+
+    def match(self, views: Dict[str, dict]) -> None:
+        ref, r = self.ref, self.ref.current_round
+        for seller in FLEETS:
+            st = location(ref, seller)
+            if st is None:
+                continue
+            sv = views[seller]
+            for comm in ("FRAG", "FOOD", "ORE", "FUEL"):
+                have = ref.get_balance(seller, comm) - (100 if comm == "FUEL" else 0)
+                ask = sv[st][comm]["best_ask"]
+                if have < self.MIN_LOT or not ask:
+                    continue
+                floor = self._best_haul(sv, st, comm, have, r)
+                if floor >= ask - 1:
+                    continue
+                price = int((floor + ask) // 2)
+                if price <= floor:
+                    price = int(floor) + 1
+                if price >= ask:
+                    continue
+                for buyer in FLEETS:
+                    if buyer == seller or have < self.MIN_LOT:
+                        continue
+                    # From anywhere: a buyer elsewhere prices in the trip to S
+                    # to collect (Zero's review of #101: the first cut only let
+                    # fleets already at or bound for S agree).
+                    loc = ref.get_vessel_location(buyer)
+                    at = loc["transit"]["destination"] if loc.get("status") == "in_transit" else loc["station_id"]
+                    qty = min(have, 500, max(0, (ref.get_balance(buyer, "CR") - 300) // price))
+                    if qty < self.MIN_LOT:
+                        continue
+                    bv = views[buyer]
+                    reach = 0.0 if at == st else self._unit_trip_cost(bv, at, st, qty, r)
+                    others = [d for d in STATIONS if d != st]
+                    gain = max((bv[d][comm]["best_bid"] or 0) - self._unit_trip_cost(bv, st, d, qty, r) for d in others) - reach
+                    if gain <= price:
+                        continue
+                    self._move(f"peer-{seller}-{buyer}-{st}-{comm}-{r}",
+                               ((buyer, "CR", -qty * price), (seller, "CR", qty * price),
+                                (seller, comm, -qty), ("SYSTEM", comm, qty)))
+                    self.pickups[(st, buyer, comm)] = self.pickups.get((st, buyer, comm), 0) + qty
+                    self.trades += 1
+                    self.units += qty
+                    self.cr += qty * price
+                    self.remote += at != st or loc.get("status") != "docked"
+                    have -= qty
+
+
 # ------------------------------------------------------------ fog of war
 
 class Fog:
@@ -658,7 +763,7 @@ def depot_floor(ref: AgoraReferee) -> int:
 def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict", check_every: int = 25,
         depot_model: str = "static", band_pct: Optional[float] = None, reactive_bands: bool = True,
         contracts: bool = False, dock_fee: int = 0, owned_contracts: bool = False,
-        fog: Optional[tuple] = None) -> dict:
+        fog: Optional[tuple] = None, peer: bool = False) -> dict:
     # Reactive depots are the referee's own implementation (agora/referee.py,
     # AGORA_DEPOT_MODEL), so these numbers describe what would ship.
     ref = AgoraReferee(depots=True, asymmetric=True, depot_model=depot_model,
@@ -677,6 +782,7 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
     stats = {"transits": 0, "halts_caused": 0, "band_blocked": 0, "stranded_events": 0, "contract_deliveries": 0}
     cboard = ContractBoard(ref, seed, owned=owned_contracts) if (contracts or owned_contracts) else None
     fogger = Fog(fog[0], fog[1], seed) if fog else None
+    desk = PeerDesk(ref) if peer else None
     ref._sim_contracts = cboard
     first_negative_depot = None
     first_invariant_failure = None
@@ -693,6 +799,9 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
         views = {a: (fogger.view(ref, a, quotes) if fogger else quotes) for a in FLEETS}
         if cboard is not None and cboard.owned:
             cboard.trade(views)
+        if desk is not None:
+            desk.collect()
+            desk.match(views)
         for a, strat in fleets.items():
             strat.act(ref, views[a], stats)
         ref.step_round()
@@ -720,6 +829,9 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
                                                   "owned": cboard.owned, "transfers": cboard.transfers,
                                                   "transfer_cr": cboard.transfer_cr},
         "fog": list(fog) if fog else None,
+        "peer": None if desk is None else {"trades": desk.trades, "units": desk.units, "cr": desk.cr,
+                                           "remote": desk.remote,
+                                           "uncollected": sum(desk.pickups.values())},
         "depot_cr_end": {st: ref.get_balance(f"depot_{st}", "CR") for st in STATIONS},
         "seconds": round(elapsed, 2),
         "fleets": {a: {"strategy": SCENARIOS[scenario][a], "start": round(start[a]), "end": round(end[a]),
@@ -753,6 +865,8 @@ def main() -> int:
     ap.add_argument("--contracts", action="store_true", help="enable the #74 station contract prototype")
     ap.add_argument("--owned-contracts", action="store_true",
                     help="contracts are awarded to one corp, only it can deliver, and corps can sell them to each other")
+    ap.add_argument("--peer", action="store_true",
+                    help="fleet-to-fleet goods trades agreed at a distance, collected at the seller's station")
     ap.add_argument("--fog", type=float, nargs=2, metavar=("LAG", "NOISE"), default=None,
                     help="remote stations show quotes LAG rounds old, jittered by +/-NOISE (e.g. 3 0.15)")
     ap.add_argument("--dock-fee", type=int, default=0, help="#73 prototype: CR charged per round to each docked fleet")
@@ -774,7 +888,8 @@ def main() -> int:
                                        depot_model=args.depot_model, band_pct=args.band_pct,
                                        reactive_bands=not args.free_quotes, contracts=args.contracts,
                                        dock_fee=args.dock_fee, owned_contracts=args.owned_contracts,
-                                       fog=(int(args.fog[0]), args.fog[1]) if args.fog else None))
+                                       fog=(int(args.fog[0]), args.fog[1]) if args.fog else None,
+                                       peer=args.peer))
     faulthandler.cancel_dump_traceback_later()
 
     if args.json:

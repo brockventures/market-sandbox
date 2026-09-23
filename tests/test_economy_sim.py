@@ -47,6 +47,12 @@ class TestEconomySim(unittest.TestCase):
         self.assertTrue(r["contracts"]["owned"])
         self.assertGreater(r["contracts"]["transfers"], 0)
 
+    def test_peer_desk_keeps_ledger_balanced(self):
+        r = run("novice_vs_haulers", "flat", seed=1, rounds=80, mode="tolerant", check_every=20,
+                depot_model="reactive", band_pct=0.25, peer=True, fog=(3, 0.15))
+        self.assertIsNone(r["first_invariant_failure"])
+        self.assertIn("trades", r["peer"])
+
     def test_dock_fee_charges_idlers(self):
         r = run("idle4", "flat", seed=1, rounds=20, dock_fee=10)
         for f in r["fleets"].values():
