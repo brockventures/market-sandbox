@@ -155,7 +155,7 @@ class CovertDesk:
         hold = {c: ref.get_balance(target, c) for c in ('FRAG', 'FOOD', 'ORE', 'FUEL')}
         contracts = []
         if getattr(ref, 'contracts_enabled', False):
-            contracts = [c for c in ref.contract_desk.list_contracts() if c.get('holder') == target]
+            contracts = [c for c in ref.contract_desk.list(status='open') if c.get('holder') == target]
         upgrades = {}
         if getattr(ref, 'upgrades_enabled', False):
             upgrades = ref.upgrades.holdings(target)
@@ -210,26 +210,15 @@ class CovertDesk:
             if (mode in ('transit', 'auto')) and st == 'in_transit':
                 # Delay transit arrival by +1 round and siphon cargo
                 t_row = ref.conn.execute(
-                    "SELECT id, destination, commodity, cargo_qty, remaining_rounds FROM transits WHERE agent_id = ? AND status = 'in_transit' ORDER BY id DESC LIMIT 1",
+                    "SELECT transit_id, destination, commodity, cargo_qty, arrival_round FROM transits WHERE agent_id = ? AND status = 'in_transit' ORDER BY departure_round DESC LIMIT 1",
                     (target,)).fetchone()
                 if t_row:
                     comm = t_row['commodity']
                     c_qty = t_row['cargo_qty'] or 0
                     lost_qty = max(1, int(c_qty * 0.3)) if c_qty > 0 else 0
                     ref.conn.execute(
-                        "UPDATE transits SET remaining_rounds = remaining_rounds + 1, cargo_qty = cargo_qty - ? WHERE id = ?",
-                        (lost_qty, t_row['id']))
-                    if lost_qty > 0:
-                        # Burn destroyed cargo out of target account to SYSTEM (conserving delta = 0)
-                        seq = ref._get_next_seq()
-                        txn_loss = f"sabotage-transit-{target}-r{rnd}"
-                        for acct, d in ((target, -lost_qty), ('SYSTEM', lost_qty)):
-                            ref.conn.execute(
-                                "UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?",
-                                (d, acct, comm))
-                            ref.conn.execute(
-                                "INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)",
-                                (txn_loss, seq, acct, comm, d))
+                        "UPDATE transits SET arrival_round = arrival_round + 1, cargo_qty = cargo_qty - ? WHERE transit_id = ?",
+                        (lost_qty, t_row['transit_id']))
                     damage_detail = f"flight delayed +1 round ({t_row['destination']})" + (f", lost {lost_qty} {comm}" if lost_qty else "")
                     loss_cr = lost_qty * 50
                 else:
@@ -267,7 +256,7 @@ class CovertDesk:
                                 "UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = 'FUEL'",
                                 (d, acct))
                             ref.conn.execute(
-                                "INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, 'FUEL', ?)",
+                                "INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)",
                                 (txn_loss, seq, acct, 'FUEL', d))
                         damage_detail = f"siphoned {siphon} FUEL from fuel tanks"
                         loss_cr = siphon * 20

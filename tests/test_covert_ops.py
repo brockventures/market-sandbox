@@ -108,6 +108,29 @@ class TestCovertOps(unittest.TestCase):
         valid, errors = self.ref.verify_ledger_invariants()
         self.assertTrue(valid, errors)
 
+    def test_sabotage_transit_cargo(self):
+        actor = 'zero'
+        target = 'amos'
+
+        self.ref.initiate_transit(target, 'luna', 'FRAG', 30)
+        loc_before = self.ref.get_vessel_location(target)
+        arr_before = loc_before['transit']['arrival_round']
+        cargo_before = loc_before['transit']['cargo_qty']
+
+        res = self.covert.execute_sabotage(actor, target, mode='transit')
+        self.assertEqual(res['kind'], 'sabotage_ok')
+        self.assertIn('delayed +1 round', res['payload']['damage'])
+
+        loc_after = self.ref.get_vessel_location(target)
+        arr_after = loc_after['transit']['arrival_round']
+        cargo_after = loc_after['transit']['cargo_qty']
+
+        self.assertEqual(arr_after, arr_before + 1)
+        self.assertLess(cargo_after, cargo_before)
+
+        valid, errors = self.ref.verify_ledger_invariants()
+        self.assertTrue(valid, errors)
+
     def test_sabotage_traced_fine_restitution(self):
         actor = 'zero'
         target = 'amos'

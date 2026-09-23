@@ -155,6 +155,32 @@ class TestEconomySim(unittest.TestCase):
         for f in r["fleets"].values():
             self.assertAlmostEqual(f["start"], 33000, delta=20)
 
+    def test_covert_scenarios_rotate_through_the_homes(self):
+        # #174: covert styles rotate through home stations like base styles
+        from tools.economy_sim import scenario_kinds, FLEETS
+        for sc, expected in [
+            ("styles_saboteur", ["hauler", "maker", "privateer", "saboteur"]),
+            ("styles_spy", ["hauler", "maker", "privateer", "spy"]),
+            ("styles_covert", ["hauler", "maker", "saboteur", "spy"]),
+        ]:
+            seen = {k: set() for k in scenario_kinds(sc, 0).values()}
+            for seed in range(4):
+                kinds = scenario_kinds(sc, seed)
+                self.assertEqual(sorted(kinds.values()), expected)
+                for a in FLEETS:
+                    seen[kinds[a]].add(a)
+            self.assertTrue(all(v == set(FLEETS) for v in seen.values()))
+
+    def test_covert_sim_bots_act_and_strike(self):
+        # #174: saboteur executes sabotage, spy plants wiretaps and strikes, invariants hold
+        r_sab = run("styles_saboteur", "flat", seed=1, rounds=60, check_every=20)
+        self.assertIsNone(r_sab["first_invariant_failure"])
+        self.assertGreater(r_sab["covert"]["sabotages"], 0)
+
+        r_spy = run("styles_spy", "flat", seed=1, rounds=60, check_every=20)
+        self.assertIsNone(r_spy["first_invariant_failure"])
+        self.assertGreater(r_spy["covert"]["wiretaps"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
