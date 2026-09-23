@@ -136,6 +136,9 @@ class FogEngine:
             p = t.get('payload')
             st = (p.get('station_id') or p.get('station')) if isinstance(p, dict) else None
             priced = isinstance(p, dict) and any(k in p for k in ('price', 'limit_price', 'fill_price', 'trades'))
+            inst = (p.get('instrument') or '') if isinstance(p, dict) else ''
+            if str(inst).startswith('EQ_'):
+                priced = False  # the stock exchange is public: no fog on stocks
             if priced and (st is None or st != here):
                 continue
             out.append(t)

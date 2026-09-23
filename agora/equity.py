@@ -86,6 +86,7 @@ class SyndicateEquityEngine:
 
         # Calculate NAV per share from each issuer's current net worth
         summaries = {}
+        base_nw = None
         for agent_id, conf in FLEET_EQUITIES.items():
             sym = conf["symbol"]
             total_shares = conf["total_shares"]
@@ -111,6 +112,13 @@ class SyndicateEquityEngine:
 
             net_worth = liquid + (frags * frag_mark) + (fuel * fuel_mark)
             nav_per_share = max(1.0, round(net_worth / total_shares, 2))
+            # Prefer the referee's NAV: the issuer's leaderboard net worth
+            # (CR, FRAG, FOOD, ORE at their marks), before stock holdings.
+            if self.referee is not None and hasattr(self.referee, 'stock_marks'):
+                if base_nw is None:
+                    base_nw = {e['agent_id']: e['net_worth'] - e.get('stocks_value', 0)
+                               for e in self.referee.get_leaderboard()}
+                nav_per_share = self.referee.stock_marks(base_nw)[sym]['nav']
 
             # Active short interest
             cur.execute("""

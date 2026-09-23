@@ -185,6 +185,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 peer_trades=payload.get('peer_trades'),
                 fog=payload.get('fog'),
                 idle_fee=payload.get('idle_fee'),
+                rival_shares=payload.get('rival_shares'),
             )
             self._send_json(200, {'v': 1, 'kind': 'new_game_ok', 'payload': result})
             return
@@ -1178,7 +1179,9 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 return
             if path in ('/referee/book', '/circuit_breaker/bands'):
                 st = (query_params.get('station_id', [None])[0] or '').lower()
-                if not st or not fog.exact_station(ref, viewer, st):
+                inst = (query_params.get('instrument', [None])[0] or '').upper()
+                stock = inst.startswith('EQ_')  # the stock exchange is public: no fog on stocks
+                if not stock and (not st or not fog.exact_station(ref, viewer, st)):
                     self._fogged(f"The order book and bands at '{st or 'every station'}' are fogged for you.")
                     return
             if path == '/referee/ticks':
@@ -1568,6 +1571,7 @@ def build_referee_from_env(db_path: str = 'agora.db') -> AgoraReferee:
       AGORA_PEER_TRADES=1      remote fleet-to-fleet goods trades
       AGORA_FOG=3,0.15         fog of war (lag rounds, noise); 0 turns it off
       AGORA_IDLE_FEE=10        CR per round for a docked fleet that did nothing; 0 = off
+      AGORA_RIVAL_SHARES=100   shares of each rival's stock every fleet starts with
     """
     def _on(name: str) -> bool:
         return os.environ.get(name, '1').strip().lower() not in ('0', 'false', 'off', 'no')
@@ -1578,7 +1582,8 @@ def build_referee_from_env(db_path: str = 'agora.db') -> AgoraReferee:
     return AgoraReferee(db_path=db_path, depots=_on('AGORA_DEPOTS'), asymmetric=_on('AGORA_ASYMMETRIC'),
                         depot_model=os.environ.get('AGORA_DEPOT_MODEL', 'reactive').strip().lower(),
                         band_pct=band_pct, peer_trades=_on('AGORA_PEER_TRADES'),
-                        fog=_fog_from_env(), idle_fee=_int_env('AGORA_IDLE_FEE', 10))
+                        fog=_fog_from_env(), idle_fee=_int_env('AGORA_IDLE_FEE', 10),
+                        rival_shares=_int_env('AGORA_RIVAL_SHARES', 100))
 
 
 def _int_env(name: str, default: int) -> int:

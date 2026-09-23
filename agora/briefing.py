@@ -96,6 +96,9 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
                "station that pays more, and sell it there. The table below shows where.")
     out.append("")
     out.append("## Orders (post in the trading channel)")
+    out.append("There is no limit on actions per round. Send as many orders as you like each round: buy and sell "
+               "goods, trade stocks, make or accept offers, and start a trip. The limits are physical: one trip "
+               "at a time, and goods trade only where you are docked.")
     out.append("- `BUY <qty> <good> @ <price> AT <station>`")
     out.append("- `SELL <qty> <good> @ <price> AT <station>`")
     out.append("- `MOVE TO <station> WITH <qty> <good>`")
@@ -160,6 +163,26 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
         out.append(f"| {row['agent_id']} | {where} | {row['liquid']} | {row['fuel']} | {row['frags']} | "
                    f"{row.get('food') or 0} | {row.get('ore') or 0} | {row['net_worth']} |")
     out.append("")
+    if getattr(ref, 'rival_shares', 0):
+        base = {r['agent_id']: r['net_worth'] - r.get('stocks_value', 0) for r in board}
+        marks = ref.stock_marks(base)
+        out.append("## Fleet stocks")
+        out.append("Every fleet has 1,000 shares. You start with some of each rival's. A share's fair value "
+                   "(NAV) is its fleet's net worth before stocks / 1,000; the board price is set by trading. "
+                   "Rival shares count toward your net worth at the board price. Stocks trade on one exchange, "
+                   "from anywhere, even in transit, and are never fogged.")
+        out.append("- `BUY <qty> EQ_<FLEET> @ <price>` / `SELL <qty> EQ_<FLEET> @ <price>` (no `AT` needed)")
+        out.append("")
+        out.append("| Stock | Fleet | NAV | Board price | Bid / ask |")
+        out.append("|---|---|---|---|---|")
+        for sym, m in marks.items():
+            out.append(f"| {sym} | {m['issuer']} | {_fmt(m['nav'])} | {_fmt(m['mark'])} ({m['basis']}) | "
+                       f"{_fmt(m['best_bid'])} / {_fmt(m['best_ask'])} |")
+        out.append("")
+        out.append("Holdings: " + "; ".join(
+            f"{r['agent_id']}: " + (", ".join(f"{q} {sym}" for sym, q in sorted(r.get('stocks', {}).items())) or "none")
+            for r in board))
+        out.append("")
     if getattr(ref, 'peer_trades', False):
         out.append("## Trades between fleets")
         out.append("A fleet docked at a station can offer goods it holds there. Any fleet, anywhere, can accept. "
