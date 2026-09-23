@@ -106,6 +106,16 @@ class TestVisibility(unittest.TestCase):
         self.assertEqual(kinds, ['takeover'])
 
 
+class TestLockingWrappers(unittest.TestCase):
+    def test_record_and_expose(self):
+        ref = game(piracy=None)
+        eid = ref.events.record('zero', 'amos', 'sabotage', 'secret', detail='a pump failed')
+        self.assertEqual(ref.events.visible_to(None), [])
+        self.assertEqual(ref.events.expose(eid, 'leak')['exposed_by'], 'leak')
+        self.assertIsNone(ref.events.expose(eid, 'leak'))
+        self.assertEqual(ref.events.visible_to(None)[0]['actor'], 'zero')
+
+
 class TestLeaks(unittest.TestCase):
     def test_leak_roll_exposes_and_posts_scandal(self):
         ref = game(piracy=None)
@@ -186,6 +196,9 @@ class TestPrivateerSecrecy(unittest.TestCase):
         self.assertNotIn('privateer_contract', kinds)
         self.assertIsNone(kinds['privateer_raid']['actor'])
         self.assertEqual(ref.events.visible_to(None), [])
+        ticks = json.dumps(ref.get_ticks(0))
+        self.assertNotIn('"sponsored": true', ticks)
+        self.assertIn('"raided": true', ticks)
         from agora.briefing import build_briefing
         self.assertNotIn('zero', build_briefing(ref).split('## Piracy')[1].split('## ')[0].replace('Zero', ''))
 
@@ -203,10 +216,15 @@ class TestPrivateerSecrecy(unittest.TestCase):
         self.assertEqual(ref.piracy.active_contracts()[0]['sponsor'], 'zero')
         self.assertEqual(len(scandals(ref)), 1)
         # A second traced raid: fined again, no second scandal.
-        ref.step_round()
+        for _ in range(4):
+            ref.step_round()
+        with ref.lock, ref.conn:
+            ref.piracy._move('test-topup', (('SYSTEM', 'CR', -20_000), ('zero', 'CR', 20_000)))
         zc = ref.get_balance('zero', 'CR')
-        self.raid(ref, trace=True)
-        self.assertEqual(ref.get_balance('zero', 'CR'), zc - min(P.PRIV_COST * P.PRIV_FINE, zc))
+        ref.piracy.rng = Fixed(0.0, 0.0)
+        self.assertTrue(ref.initiate_transit('amos', 'earth', 'FRAG', 100)['payload']['piracy']['raided'])
+        self.assertEqual(ref.conn.execute("SELECT COUNT(*) FROM piracy_raids WHERE traced = 1").fetchone()[0], 2)
+        self.assertEqual(ref.get_balance('zero', 'CR'), zc - P.PRIV_COST * P.PRIV_FINE)
         self.assertEqual(len(scandals(ref)), 1)
         good, errs = ref.verify_ledger_invariants()
         self.assertTrue(good, errs)

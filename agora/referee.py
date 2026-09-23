@@ -1172,7 +1172,15 @@ class AgoraReferee:
                         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
                 """, (agent_id, dep_round, dep_round))
 
-                # 6. Book event tick
+                # 6. Book event tick. Ticks are public (GET /referee/ticks), so
+                # with secrecy on (#153) the tick carries the public view of a
+                # pirate demand, not the victim's, and no odds (a privateer
+                # contract adds to them).
+                tick_piracy = piracy
+                if piracy and self.events_enabled:
+                    tick_piracy = {k: v for k, v in piracy.items() if k != 'odds'}
+                    if piracy.get('demand'):
+                        tick_piracy['demand'] = self.piracy.public_raid(self.piracy._row(transit_id))
                 self.conn.execute("INSERT INTO book_events (seq, kind, payload) VALUES (?, 'transit', ?)", (
                     next_seq,
                     json.dumps({
@@ -1192,7 +1200,7 @@ class AgoraReferee:
                         'perishable': is_perishable,
                         'decay_rate': decay_rate,
                         'hazard': {'delay': hz_delay, 'lost_qty': hz_lost, 'note': hz_note} if hz_note else None,
-                        'piracy': piracy,
+                        'piracy': tick_piracy,
                     })
                 ))
 

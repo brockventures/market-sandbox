@@ -106,8 +106,19 @@ class EventDesk:
         self._ticks: List[str] = []
 
     # ------------------------------------------------------------ writes
-    # All callers hold ref.lock inside an open transaction (ref.lock is not
-    # reentrant, so nothing here takes it).
+    # record() and expose() take ref.lock and a transaction. Code already
+    # holding the lock (a round step, a transit, a hire) calls the _locked
+    # forms: ref.lock is not reentrant.
+
+    def record(self, actor: Optional[str], victim: Optional[str], kind: str, visibility: str,
+               round: Optional[int] = None, detail: str = '', link: Optional[str] = None) -> int:
+        with self.ref.lock, self.ref.conn:
+            return self.record_locked(kind, visibility, actor=actor, victim=victim, detail=detail,
+                                      round_num=round, link=link)
+
+    def expose(self, event_id: int, by: str) -> Optional[Dict[str, Any]]:
+        with self.ref.lock, self.ref.conn:
+            return self.expose_locked(event_id, by)
 
     def record_locked(self, kind: str, visibility: str = 'public', actor: Optional[str] = None,
                       victim: Optional[str] = None, detail: str = '', round_num: Optional[int] = None,
