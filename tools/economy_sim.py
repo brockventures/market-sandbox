@@ -6,6 +6,39 @@ Runs scripted fleets against an in-process referee (no HTTP, no Discord,
 no production server) for hundreds of rounds and reports whether the
 design produces sustained trading.
 
+Modes:
+  --live (default)  simulates the live game: the referee is built by
+                     agora.server.build_referee_from_env(), the exact
+                     function the production server calls, so every
+                     shipped feature (reactive depots, fog, peer trades,
+                     contracts, corporate debt/bankruptcy/takeovers,
+                     hazards, piracy, the stock exchange) is on unless an
+                     AGORA_* env var turns it off, and a feature the
+                     server adds without matching sim support cannot
+                     silently drift (tests/test_economy_sim.py pins it).
+                     Contracts, corporate, hazards, piracy, fog and peer
+                     trades are the referee's own agora/*.py engines, not
+                     a sim invention: strategies (Hauler/Novice) claim and
+                     deliver contracts through ContractDesk's public
+                     methods, and read prices through the same per-fleet
+                     fogged view the live API serves; the one sim-authored
+                     decision left is which peer trades to propose (the
+                     referee has no matching engine of its own), and even
+                     that moves goods and CR only through PeerDesk's
+                     public offer()/accept(), never a raw ledger write.
+                     Known gaps: no strategy hires a privateer or resells
+                     a contract, so --live's privateer_vs_haulers behaves
+                     like haulers4, and no upgrade tier caps out. Upgrade
+                     odds are still exercised: a docked hauler with cash
+                     to spare buys one, through ref.upgrades.buy().
+  --prototype        the pre-#economy_sim behaviour: features are opt-in
+                     per flag (--contracts, --corporate, --hazards, ...)
+                     and, where the referee has no shipped implementation
+                     yet, a sim-side prototype class stands in for it.
+                     Kept for experimenting with mechanics before they
+                     ship (e.g. --owned-contracts' claim-and-flip mode,
+                     which the live ContractDesk does not have).
+
 Strategies:
   hauler   buys where a good is cheap, flies it, sells where it is dear
   maker    quotes both sides at its home station, joining the depot touch
@@ -23,10 +56,11 @@ FUEL at zero, all FRAG at the Ceres mark, and cargo in transit (escrowed
 to SYSTEM) at zero. Leaderboard net worth is reported alongside.
 
 Usage:
-  python3 tools/economy_sim.py                      # default scenario set
-  python3 tools/economy_sim.py --depot-model reactive --band-pct 0.25 --drip 25 5
+  python3 tools/economy_sim.py                      # --live, default scenario set
   python3 tools/economy_sim.py --rounds 500 --seeds 3
-  python3 tools/economy_sim.py --scenario haulers4 --genesis planet
+  python3 tools/economy_sim.py --scenario haulers4 --scenario novice_vs_haulers
+  python3 tools/economy_sim.py --prototype --depot-model reactive --band-pct 0.25 --drip 25 5
+  python3 tools/economy_sim.py --prototype --scenario haulers4 --genesis planet
 """
 
 import argparse
@@ -44,6 +78,7 @@ from typing import Dict, List, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import agora.referee as referee_mod  # noqa: E402
+import agora.server as server_mod  # noqa: E402
 from agora.referee import AgoraReferee  # noqa: E402
 from agora.spatial import STATIONS, BASE_PRICES, get_route  # noqa: E402
 
@@ -188,6 +223,14 @@ class ContractBoard:
         live = [c for c in self.open if c["station"] == st and c["comm"] == comm
                 and c["remaining"] > 0 and c["deadline"] >= arrival and self._mine(c, agent)]
         return max(live, key=lambda c: c["price"]) if live else None
+
+    def claim(self, agent: str, st: str, comm: str, arrival: int) -> None:
+        """No-op here: the prototype's contracts are unowned by default (or
+        assigned at posting time by Corporate), so a Hauler never needs an
+        explicit claim step to use one. Kept only so Hauler.act can call
+        `board.claim(...)` unconditionally, whether `board` is this
+        prototype or --live's LiveContracts, which does need it (#115)."""
+        return
 
     def _cr(self, txn: str, legs) -> None:
         ref = self.ref
@@ -848,6 +891,18 @@ class Hauler:
             return
         inv = inventory(ref, self.agent)
 
+        # Ship upgrades (agora/upgrades.py): cut hazard/piracy odds, a real
+        # trade-off against cash. ref.upgrades.buy() is the referee's own
+        # public method (#requirement 2); upgrades_enabled is False unless
+        # --live or an explicit AGORA_UPGRADES=1/--prototype run turns it
+        # on, so this never spends CR in the existing --prototype tests.
+        # One tier of whichever's cheapest, once there is cash to spare.
+        if getattr(ref, "upgrades_enabled", False) and inv["CR"] > 40000:
+            for kind in ("shielding", "hold", "armor"):
+                if ref.upgrades.tier(self.agent, kind) < 1:
+                    ref.upgrades.buy(self.agent, kind)
+                    break
+
         # Waiting on a halted book's reopening auction: keep the resting bid.
         if self.plan and (ref.circuit_breaker.is_halted(st, self.plan[1])
                           or ref.circuit_breaker.is_halted(st, "FUEL")):
@@ -913,6 +968,11 @@ class Hauler:
         _, dest, comm, qty, ask, route = best
 
         # 3. Buy; fly now, or wait for the auction if the buy tripped a halt.
+        # Claim the contract this margin was priced against before paying
+        # for cargo (a live delivery needs ownership first, #115); a no-op
+        # on the prototype board, which has no claim step.
+        if board is not None:
+            board.claim(self.agent, dest, comm, ref.current_round + route["rounds"])
         res = order(ref, self.agent, "bid", qty, ask, comm, st, "buy")
         if res.get("status") == "circuit_breaker_halted":
             stats["halts_caused"] += 1
@@ -1321,6 +1381,338 @@ def depot_floor(ref: AgoraReferee) -> int:
         "SELECT balance FROM accounts WHERE agent_id LIKE 'depot_%'"))
 
 
+# ------------------------------------------------------------ --live: the referee's own rules
+
+def build_live_referee(seed: Optional[int] = None, warmup_rounds: int = 5, db_path: str = ":memory:") -> AgoraReferee:
+    """The referee --live plays against: agora.server.build_referee_from_env(),
+    the exact function /referee/admin/new_game's server calls, then a
+    bare-confirm new_game (every current setting kept -- see its
+    docstring) plus a fixed seed and warmup_rounds, so runs are
+    reproducible run to run (referee.py new_game: "identical runs
+    diverge" otherwise). One function, reused rather than re-implemented,
+    so the two cannot drift (#economy_sim --live)."""
+    ref = server_mod.build_referee_from_env(db_path=db_path)
+    ref.new_game(seed=seed, warmup_rounds=warmup_rounds)
+    return ref
+
+
+class LiveContracts:
+    """--live's contracts adapter: the same call shape Hauler/Novice use
+    via ref._sim_contracts (`best_for(...)`, `deliver(agent, st)`), but
+    every action is the referee's real ContractDesk (agora/contracts.py)
+    -- claim, deliver, list -- not the prototype's invented rules. Unlike
+    the prototype board, the live desk always requires ownership before
+    delivery (#115: claiming locks a 25% deposit); there is no unowned,
+    first-come mode. `deliver()` claims opportunistically -- anything at
+    this station, unclaimed, that the fleet is already holding cargo for
+    -- and Hauler.act separately claims the contract a route was priced
+    against before it pays for cargo (see its step 3)."""
+
+    def __init__(self, ref: AgoraReferee, contractors: Optional[set] = None):
+        self.ref = ref
+        # fleets allowed to claim/deliver; None means every fleet (matches
+        # the prototype's `contractors` filter -- an idler or maker must
+        # never take on a contract's penalty risk).
+        self.contractors = contractors
+        self.owned = True  # informational: the live desk is always owned
+
+    def _allowed(self, agent: Optional[str]) -> bool:
+        return agent is not None and (self.contractors is None or agent in self.contractors)
+
+    def best_for(self, st: str, comm: str, arrival: int, agent: Optional[str] = None) -> Optional[dict]:
+        """Read-only valuation: the best price among contracts at `st` this
+        fleet already owns, or that are still unclaimed. Never claims --
+        claiming locks a real deposit, and does not belong in a probe over
+        every (destination, commodity) pair Hauler.act considers."""
+        best = None
+        for c in self.ref.contract_desk.list(status="open", station_id=st):
+            if c["instrument"] != comm or c["deadline"] < arrival:
+                continue
+            if c["owner"] is not None and c["owner"] != agent:
+                continue
+            if best is None or c["price"] > best["price"]:
+                best = c
+        return {"price": best["price"], "remaining": best["qty_remaining"]} if best else None
+
+    def claim(self, agent: str, st: str, comm: str, arrival: int) -> None:
+        """Claim the best still-unclaimed matching contract for `agent`,
+        once it has actually committed to fly `comm` toward `st`."""
+        if not self._allowed(agent):
+            return
+        for c in self.ref.contract_desk.list(status="open", station_id=st):
+            if c["instrument"] != comm or c["deadline"] < arrival or c["owner"] is not None:
+                continue
+            if self.ref.contract_desk.claim(agent, c["contract_id"]).get("kind") == "contract_claim_ok":
+                return
+
+    def deliver(self, agent: str, st: str) -> int:
+        if not self._allowed(agent):
+            return 0
+        ref = self.ref
+        for c in ref.contract_desk.list(status="open", station_id=st):
+            if c["owner"] is None and ref.get_balance(agent, c["instrument"]) > 0:
+                ref.contract_desk.claim(agent, c["contract_id"])
+        got = 0
+        for c in ref.contract_desk.list(status="open", station_id=st):
+            if c["owner"] != agent:
+                continue
+            res = ref.contract_desk.deliver(agent, c["contract_id"])
+            got += (res.get("payload") or {}).get("delivered", 0)
+        return got
+
+
+class LivePeerMatcher:
+    """--live's peer-trade matching: agora/peer.py ships offer/accept/
+    cancel and settles escrow automatically in ref.step_round(), but has
+    no matching engine of its own -- something has to decide who trades
+    with whom, at what price, which here is the same heuristic the
+    prototype PeerDesk used (seller's floor to the depot ask's midpoint;
+    a buyer takes it only if hauling on from `st` still pays). The
+    difference is every credit and unit moves through ref.peer.offer()
+    and ref.peer.accept(), the referee's own ledger entries, never a raw
+    SQL write -- so a live player's client could do exactly this.
+
+    `traders` restricts who this matcher acts for. An idler strategy calls
+    nothing on its own; ref.peer.offer/accept/cancel each call
+    ref.mark_active() first (agora/peer.py), so trading in its name would
+    also silently exempt it from that round's idle fee, which requirement
+    2 forbids (the sim would be inventing an action for a player who does
+    not act) and a --live idle4 run bore out directly: idlers traded their
+    genesis cargo with each other, and paid a fraction of the idle fee
+    --dock-fee's --prototype test pins exactly. None means every fleet."""
+
+    MIN_LOT = 20
+
+    def __init__(self, ref: AgoraReferee, traders: Optional[set] = None):
+        self.ref = ref
+        self.traders = traders
+
+    def _eligible(self, agent: str) -> bool:
+        return self.traders is None or agent in self.traders
+
+    def collect(self) -> None:
+        return  # ref.peer.step_locked, inside ref.step_round(), already collects for docked buyers
+
+    def _available(self, agent: str, inst: str) -> int:
+        return self.ref.peer._available(agent, inst)
+
+    @staticmethod
+    def _unit_trip_cost(view, st: str, dest: str, qty: int, r: int) -> float:
+        route = get_route(st, dest, r)
+        if not route or qty <= 0:
+            return float("inf")
+        return (route["fuel"] * (view[st]["FUEL"]["best_ask"] or 20) + route.get("toll", 0)) / qty
+
+    def _best_haul(self, view, st: str, comm: str, qty: int, r: int) -> float:
+        here = view[st][comm]["best_bid"] or 0
+        away = max(((view[d][comm]["best_bid"] or 0) - self._unit_trip_cost(view, st, d, qty, r)
+                    for d in STATIONS if d != st), default=0)
+        return max(here, away)
+
+    def match(self, views: Dict[str, dict]) -> None:
+        ref, r = self.ref, self.ref.current_round
+        for seller in FLEETS:
+            if not self._eligible(seller) or ref.fleet_out(seller):
+                continue
+            st = location(ref, seller)
+            if st is None:
+                continue
+            sv = views[seller]
+            for comm in ("FRAG", "FOOD", "ORE", "FUEL"):
+                have = self._available(seller, comm) - (100 if comm == "FUEL" else 0)
+                ask = sv[st][comm]["best_ask"]
+                if have < self.MIN_LOT or not ask:
+                    continue
+                floor = self._best_haul(sv, st, comm, have, r)
+                if floor >= ask - 1:
+                    continue
+                price = int((floor + ask) // 2)
+                if price <= floor:
+                    price = int(floor) + 1
+                if price >= ask:
+                    continue
+                for buyer in FLEETS:
+                    if buyer == seller or have < self.MIN_LOT or not self._eligible(buyer) or ref.fleet_out(buyer):
+                        continue
+                    loc = ref.get_vessel_location(buyer)
+                    at = loc["transit"]["destination"] if loc.get("status") == "in_transit" else loc["station_id"]
+                    qty = min(have, 500, max(0, (self._available(buyer, "CR") - 300) // price))
+                    if qty < self.MIN_LOT:
+                        continue
+                    bv = views[buyer]
+                    reach = 0.0 if at == st else self._unit_trip_cost(bv, at, st, qty, r)
+                    others = [d for d in STATIONS if d != st]
+                    gain = max((bv[d][comm]["best_bid"] or 0) - self._unit_trip_cost(bv, st, d, qty, r)
+                               for d in others) - reach
+                    if gain <= price:
+                        continue
+                    off = ref.peer.offer(seller, st, comm, qty, price)
+                    if off.get("kind") != "peer_offer_ok":
+                        continue
+                    eid = off["payload"]["escrow_id"]
+                    acc = ref.peer.accept(buyer, eid)
+                    if acc.get("kind") != "peer_accept_ok":
+                        ref.peer.cancel(seller, eid)
+                        continue
+                    have -= qty
+
+
+def _live_contracts_report(ref: AgoraReferee) -> dict:
+    rows = ref.conn.execute(
+        "SELECT status, qty_total, qty_remaining, price, owner, penalty, shortfall FROM station_contracts").fetchall()
+    delivered = sum(row["qty_total"] - row["qty_remaining"] for row in rows)
+    paid = sum((row["qty_total"] - row["qty_remaining"]) * row["price"] for row in rows)
+    lapsed = [row for row in rows if row["status"] == "lapsed"]
+    return {
+        "posted": len(rows),
+        "fulfilled": sum(1 for row in rows if row["status"] == "fulfilled"),
+        "units_delivered": delivered,
+        "paid": paid,
+        "expired": len(lapsed),
+        # a lapse only carries a penalty/deposit forfeit if someone had
+        # claimed it first (agora/contracts.py step_locked); most lapses
+        # here are simply never claimed at all.
+        "expired_claimed": sum(1 for row in lapsed if row["penalty"]),
+        "lapse_penalty_cr": sum(row["penalty"] for row in lapsed),
+        "lapse_shortfall_cr": sum(row["shortfall"] for row in lapsed),
+        "claims": sum(1 for row in rows if row["owner"] is not None),
+        "owned": True,
+        "transfers": 0,  # resale (list_for_sale/buy) is not modeled by any strategy yet
+        "transfer_cr": 0,
+    }
+
+
+def _live_corporate_report(ref: AgoraReferee) -> dict:
+    s = ref.corporate.summary()
+    bankruptcies = [{"fleet": a, "round": row["out_round"]} for a, row in s["corps"].items() if row["status"] == "bankrupt"]
+    takeovers = [{"fleet": a, "by": row["absorbed_by"], "round": row["out_round"]}
+                 for a, row in s["corps"].items() if row["status"] == "absorbed"]
+    claims = ref.conn.execute("SELECT COUNT(*) FROM station_contracts WHERE owner IS NOT NULL").fetchone()[0]
+    return {
+        "claims": claims,
+        "bankruptcies": bankruptcies,
+        "takeovers": takeovers,
+        "debt_end": {a: row["debt"] for a, row in s["corps"].items() if row["debt"]},
+        "winner": s["winner"],
+        "bonds_cr": ref.conn.execute("SELECT COALESCE(SUM(bond), 0) FROM station_contracts WHERE status = 'open'").fetchone()[0],
+    }
+
+
+def _live_peer_report(ref: AgoraReferee) -> dict:
+    rows = ref.conn.execute("SELECT status, qty, price FROM station_escrow WHERE status IN ('accepted', 'collected')").fetchall()
+    return {
+        "trades": len(rows),
+        "units": sum(row["qty"] for row in rows),
+        "cr": sum(row["qty"] * row["price"] for row in rows),
+        "uncollected": ref.conn.execute(
+            "SELECT COALESCE(SUM(qty), 0) FROM station_escrow WHERE status = 'accepted'").fetchone()[0],
+    }
+
+
+def _live_hazards_report(ref: AgoraReferee) -> dict:
+    rows = ref.conn.execute("SELECT delay, lost_qty FROM transit_hazards").fetchall()
+    return {"delays": sum(1 for row in rows if row["delay"]), "losses": sum(1 for row in rows if row["lost_qty"])}
+
+
+def _live_piracy_report(ref: AgoraReferee) -> dict:
+    raids = ref.conn.execute("SELECT COUNT(*) FROM piracy_raids").fetchone()[0]
+    privateer_contracts = ref.conn.execute("SELECT COUNT(*) FROM piracy_privateers").fetchone()[0]
+    return {"raids": raids, "privateer_contracts": privateer_contracts}
+
+
+def _run_live(scenario: str, seed: int, rounds: int, check_every: int = 25) -> dict:
+    """Simulates the live game: see build_live_referee() and the module
+    docstring's --live section. No sim-side ContractBoard, Corporate,
+    Hazards, Piracy or Fog is instantiated -- those are the referee's own
+    engines, driven automatically by ref.step_round() and
+    ref.initiate_transit(); LiveContracts and LivePeerMatcher are the only
+    sim-authored decisions left (which contract to claim, who peer-trades
+    with whom), and both act only through the referee's public methods."""
+    ref = build_live_referee(seed=seed, warmup_rounds=5)
+
+    def build_fleet(a: str, kind: str):
+        if kind in ("hauler", "privateer"):
+            # live has no way to avoid a halt other than resting and
+            # waiting for the reopening auction, so always tolerate it.
+            return Hauler(a, tolerate_halts=True)
+        if kind == "novice":
+            return Novice(a, seed=seed)
+        return STRATEGY[kind](a)
+
+    fleets = {a: build_fleet(a, kind) for a, kind in SCENARIOS[scenario].items()}
+    start = {a: score(ref, a) for a in FLEETS}
+    stats = {"transits": 0, "halts_caused": 0, "band_blocked": 0, "stranded_events": 0, "contract_deliveries": 0}
+    contractors = {a for a, k in SCENARIOS[scenario].items() if k in CONTRACTORS}
+    cboard = LiveContracts(ref, contractors=contractors) if ref.contracts_enabled else None
+    ref._sim_contracts = cboard
+    # Idlers call nothing on their own; keeping them out of peer matching
+    # is what makes ref.mark_active() (called by offer/accept/cancel) not
+    # silently exempt them from the idle fee. Makers act every round
+    # anyway, so they stay eligible, matching the prototype.
+    peer_traders = {a for a, k in SCENARIOS[scenario].items() if k != "idler"}
+    desk = LivePeerMatcher(ref, traders=peer_traders) if ref.peer_trades else None
+    first_negative_depot = None
+    first_invariant_failure = None
+    spread = []
+
+    t0 = time.time()
+    for _ in range(rounds):
+        quotes = ref.get_depot_summary()["stations"]
+        spread.append((quotes["earth"]["ORE"]["best_bid"] or 0) - (quotes["ceres"]["ORE"]["best_ask"] or 0))
+        # The per-fleet fogged view (agora/fog.py), the same shape and the
+        # same call the live /referee/depots API makes per viewer -- not a
+        # sim-side jitter, and not raw referee internals.
+        views = {a: (ref.fog.depot_view(ref, a)["stations"] if ref.fog else quotes) for a in FLEETS}
+        if desk is not None:
+            desk.collect()
+            desk.match(views)
+        live_fleets = [a for a in fleets if not ref.fleet_out(a)]
+        for a in live_fleets:
+            fleets[a].act(ref, views[a], stats)
+        ref.step_round()
+        if first_negative_depot is None and depot_floor(ref) < 0:
+            first_negative_depot = ref.current_round
+        if first_invariant_failure is None and ref.current_round % check_every == 0:
+            ok, errs = ref.verify_ledger_invariants()
+            if not ok:
+                first_invariant_failure = (ref.current_round, errs[:2])
+    elapsed = time.time() - t0
+
+    board = {e["agent_id"]: e["net_worth"] for e in ref.get_leaderboard()}
+    end = {a: score(ref, a) for a in FLEETS}
+    halts = ref.conn.execute("SELECT COUNT(*) FROM circuit_breaker_halts").fetchone()[0]
+    q = max(1, len(spread) // 4)
+    return {
+        "scenario": scenario, "genesis": "flat", "mode": "live", "seed": seed, "rounds": rounds,
+        "depot_model": ref.depot_model, "band_pct": ref.circuit_breaker.band_pct,
+        "reactive_bands": True,
+        "dock_fee": 0, "dock_fees_collected": 0,
+        "contracts": _live_contracts_report(ref) if ref.contracts_enabled else None,
+        "fog": [ref.fog.lag, ref.fog.noise] if ref.fog else None,
+        "corporate": _live_corporate_report(ref) if ref.corporate_enabled else None,
+        "peer": _live_peer_report(ref) if ref.peer_trades else None,
+        "hazards": _live_hazards_report(ref) if ref.hazards.odds else None,
+        "piracy": _live_piracy_report(ref) if ref.piracy.enabled else None,
+        "depot_cr_end": {st: ref.get_balance(f"depot_{st}", "CR") for st in STATIONS},
+        "seconds": round(elapsed, 2),
+        "fleets": {a: {"strategy": SCENARIOS[scenario][a], "start": round(start[a]), "end": round(end[a]),
+                       "pnl": round(end[a] - start[a]), "leaderboard_nw": board.get(a)} for a in FLEETS},
+        "fills": classify_fills(ref),
+        "transits": stats["transits"],
+        "halts_total": halts,
+        "band_blocked_checks": stats["band_blocked"],
+        "stranded_events": stats["stranded_events"],
+        "bad_orders": stats.get("bad_orders", 0),
+        "day_trades": stats.get("day_trades", 0),
+        "vol": ref.spatial.vol, "theta": ref.spatial.theta,
+        "rejected_moves": stats.get("rejected_moves", 0),
+        "ore_spread_by_quarter": [round(statistics.mean(spread[i:i + q]), 1) for i in range(0, len(spread), q)][:4],
+        "first_negative_depot_round": first_negative_depot,
+        "first_invariant_failure": first_invariant_failure,
+        "live": True,
+    }
+
+
 # ------------------------------------------------------------ run
 
 def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict", check_every: int = 25,
@@ -1329,11 +1721,36 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
         fog: Optional[tuple] = None, peer: bool = False, corporate: bool = False,
         equity_mm: Optional[tuple] = None, exchange: Optional[tuple] = None, vol: Optional[float] = None,
         bond: float = 0.0, hazards: Optional[tuple] = None, piracy: Optional[tuple] = None,
-        theta: Optional[float] = None, spread_scale: Optional[float] = None) -> dict:
+        theta: Optional[float] = None, spread_scale: Optional[float] = None, live: bool = False) -> dict:
     """spread_scale compresses each good's base price toward its four-station
     mean (1.0 = live, 0.5 = half the gap). It edits agora.spatial.BASE_PRICES
     in place for the run and restores it; the static depot model hardcodes
-    some Earth/Ceres quotes, so use it with depot_model='reactive'."""
+    some Earth/Ceres quotes, so use it with depot_model='reactive'.
+
+    live=True runs --live instead (see build_live_referee/_run_live and the
+    module docstring): the referee, every feature flag, contracts,
+    corporate, hazards, piracy, fog and peer trades all come from
+    agora.server.build_referee_from_env(), not from the other keyword
+    arguments here, which --live does not accept -- callers that pass any
+    of them together with live=True get a TypeError, so the two modes are
+    never silently mixed. Only `scenario`, `seed`, `rounds` and
+    `check_every` apply; genesis must be "flat" (the only genesis the live
+    referee's own opening market produces)."""
+    if live:
+        unsupported = {
+            "depot_model": depot_model != "static", "band_pct": band_pct is not None,
+            "reactive_bands": reactive_bands is not True, "contracts": contracts, "dock_fee": dock_fee,
+            "owned_contracts": owned_contracts, "fog": fog is not None, "peer": peer, "corporate": corporate,
+            "equity_mm": equity_mm is not None, "exchange": exchange is not None, "vol": vol is not None,
+            "bond": bond, "hazards": hazards is not None, "piracy": piracy is not None, "theta": theta is not None,
+            "spread_scale": spread_scale is not None,
+        }
+        bad = [name for name, set_ in unsupported.items() if set_]
+        if bad:
+            raise TypeError(f"live=True ignores prototype-only settings; unset {bad} or pass live=False")
+        if genesis != "flat":
+            raise TypeError(f"live=True only runs the 'flat' genesis (the live referee's own opening market), not {genesis!r}")
+        return _run_live(scenario, seed, rounds, check_every)
     import agora.spatial as spatial_mod
     saved = {st: dict(v) for st, v in spatial_mod.BASE_PRICES.items()}
     if spread_scale is not None:
@@ -1515,6 +1932,13 @@ def _run(scenario, genesis, seed, rounds, mode, check_every, depot_model, band_p
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    mode_group = ap.add_mutually_exclusive_group()
+    mode_group.add_argument("--live", action="store_true", default=True,
+                             help="simulate the live game: agora.server.build_referee_from_env(), every "
+                                  "shipped feature on by default (this is the default mode)")
+    mode_group.add_argument("--prototype", action="store_true",
+                             help="the old opt-in-per-flag mode with sim-side prototypes for features the "
+                                  "referee does not implement yet; back-compat for experiments")
     ap.add_argument("--rounds", type=int, default=300)
     ap.add_argument("--seeds", type=int, default=2)
     ap.add_argument("--scenario", choices=sorted(SCENARIOS), action="append")
@@ -1558,6 +1982,25 @@ def main() -> int:
     ap.add_argument("--json", action="store_true", help="print raw results as JSON")
     ap.add_argument("--hang-timeout", type=int, default=300, help="dump stacks and exit if a run hangs")
     args = ap.parse_args()
+    live = not args.prototype
+
+    prototype_flags = {
+        "--depot-model": args.depot_model != "static", "--band-pct": args.band_pct is not None,
+        "--drip": bool(args.drip), "--contracts": args.contracts, "--owned-contracts": args.owned_contracts,
+        "--corporate": args.corporate, "--vol": args.vol is not None, "--spread-scale": args.spread_scale is not None,
+        "--theta": args.theta is not None, "--peer": args.peer, "--fog": args.fog is not None,
+        "--dock-fee": bool(args.dock_fee), "--free-quotes": args.free_quotes,
+        "--equity-mm": args.equity_mm is not None, "--exchange": args.exchange is not None,
+        "--bond": bool(args.bond), "--hazards": args.hazards is not None, "--penalty": args.penalty is not None,
+        "--piracy": args.piracy is not None,
+    }
+    if live:
+        bad = [name for name, set_ in prototype_flags.items() if set_]
+        if bad:
+            ap.error(f"{bad} require --prototype (--live builds its referee from AGORA_* env vars, "
+                     f"not these flags); set AGORA_* instead, or pass --prototype to use them")
+        if args.genesis and any(g != "flat" for g in args.genesis):
+            ap.error("--live only runs the 'flat' genesis; pass --prototype --genesis planet for that")
 
     if args.penalty is not None:
         Corporate.PENALTY = args.penalty
@@ -1566,6 +2009,10 @@ def main() -> int:
     faulthandler.dump_traceback_later(args.hang_timeout, exit=True)
     results = []
     for scen in args.scenario or ["mixed", "haulers4", "idle4"]:
+        if live:
+            for seed in range(1, args.seeds + 1):
+                results.append(run(scen, "flat", seed, args.rounds, live=True))
+            continue
         for gen in args.genesis or ["flat", "planet"]:
             for mode in (args.mode or ["strict", "tolerant"]) if scen != "idle4" else ["strict"]:
                 for seed in range(1, args.seeds + 1):
@@ -1597,6 +2044,14 @@ def main() -> int:
         print(f"  depot CR at end: {r['depot_cr_end']}  contracts: {r['contracts']}")
         print(f"  first negative depot balance: round {r['first_negative_depot_round']}  "
               f"invariant failure: {r['first_invariant_failure']}")
+        if r.get("corporate"):
+            print(f"  corporate: {r['corporate']}")
+        if r.get("peer"):
+            print(f"  peer: {r['peer']}")
+        if r.get("hazards"):
+            print(f"  hazards: {r['hazards']}")
+        if r.get("piracy"):
+            print(f"  piracy: {r['piracy']}")
         if r.get("stocks"):
             for a, f in r["stocks"]["fleets"].items():
                 if f["stock_pnl"] is not None:

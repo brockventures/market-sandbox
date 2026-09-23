@@ -2,6 +2,19 @@
 
 Status: proposal, 2026-09-22. Evidence: `tools/economy_sim.py` (#98, #100, #101).
 
+> **2026-09-23 update:** `tools/economy_sim.py` now defaults to `--live`,
+> which builds its referee with `agora.server.build_referee_from_env()` --
+> the exact function the production server calls -- and drives contracts,
+> corporate debt/bankruptcy/takeovers, hazards, piracy, fog and peer trades
+> through the referee's own shipped engines (`agora/contracts.py`,
+> `agora/corporate.py`, `agora/hazards.py`, `agora/piracy.py`, `agora/fog.py`,
+> `agora/peer.py`), not the sim-side prototype classes below. `--prototype`
+> keeps the old opt-in-per-flag behaviour for experimenting with mechanics
+> that have not shipped yet (e.g. `--owned-contracts`' claim-and-flip mode).
+> `tests/test_economy_sim.py::TestLiveRefereeParity` fails CI if a new
+> `AGORA_*` feature is added to `build_referee_from_env` without a matching
+> `--live` check.
+
 ## Why
 
 Across every simulator run on 2026-09-22, fleets trade goods with each other
