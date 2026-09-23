@@ -16,12 +16,14 @@ class TestDefaultsOn(unittest.TestCase):
         self.assertEqual(ref.depot_model, 'reactive')
         self.assertEqual(ref.circuit_breaker.band_pct, 0.25)
         self.assertTrue(ref.peer_trades)
+        self.assertEqual((ref.fog.lag, ref.fog.noise), (3, 0.15))
 
     def test_env_can_turn_off(self):
-        with mock.patch.dict(os.environ, {'AGORA_PEER_TRADES': '0', 'AGORA_DEPOT_MODEL': 'static'}):
+        with mock.patch.dict(os.environ, {'AGORA_PEER_TRADES': '0', 'AGORA_DEPOT_MODEL': 'static', 'AGORA_FOG': '0'}):
             ref = build_referee_from_env(':memory:')
         self.assertFalse(ref.peer_trades)
         self.assertEqual(ref.depot_model, 'static')
+        self.assertIsNone(ref.fog)
 
 
 if __name__ == '__main__':

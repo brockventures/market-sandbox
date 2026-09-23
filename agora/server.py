@@ -1565,6 +1565,7 @@ def build_referee_from_env(db_path: str = 'agora.db') -> AgoraReferee:
       AGORA_DEPOT_MODEL=reactive
       AGORA_BAND_PCT=0.25      circuit-breaker band
       AGORA_PEER_TRADES=1      remote fleet-to-fleet goods trades
+      AGORA_FOG=3,0.15         fog of war (lag rounds, noise); 0 turns it off
     """
     def _on(name: str) -> bool:
         return os.environ.get(name, '1').strip().lower() not in ('0', 'false', 'off', 'no')
@@ -1574,7 +1575,19 @@ def build_referee_from_env(db_path: str = 'agora.db') -> AgoraReferee:
         band_pct = 0.25
     return AgoraReferee(db_path=db_path, depots=_on('AGORA_DEPOTS'), asymmetric=_on('AGORA_ASYMMETRIC'),
                         depot_model=os.environ.get('AGORA_DEPOT_MODEL', 'reactive').strip().lower(),
-                        band_pct=band_pct, peer_trades=_on('AGORA_PEER_TRADES'))
+                        band_pct=band_pct, peer_trades=_on('AGORA_PEER_TRADES'),
+                        fog=_fog_from_env())
+
+
+def _fog_from_env():
+    raw = os.environ.get('AGORA_FOG', '3,0.15').strip().lower()
+    if raw in ('0', 'false', 'off', 'no', ''):
+        return False
+    try:
+        lag, noise = raw.split(',')
+        return {'lag': int(lag), 'noise': float(noise)}
+    except ValueError:
+        return True
 
 
 def run_server(host: Optional[str] = None, port: int = 8080, referee: Optional[AgoraReferee] = None, auth_tokens: Optional[Dict[str, str]] = None):
