@@ -71,6 +71,7 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 
 import economy_sim as sim  # noqa: E402
 import agora.peer as peer_mod  # noqa: E402
+from agora import covert as covert_mod  # noqa: E402
 from agora import piracy as piracy_mod  # noqa: E402
 from agora.upgrades import CATALOG as UPGRADES  # noqa: E402
 
@@ -92,6 +93,8 @@ for _k in ("shielding", "hold", "armor", "engines"):
 ITEMS["escorts"] = {"type": "escort", "price": f"{int(piracy_mod.ESCORT_PCT * 100)}% of cargo a trip"}
 ITEMS["privateers"] = {"type": "privateer", "price": piracy_mod.PRIV_COST}
 ITEMS["stock buy"] = {"type": "stock", "price": f"{int(STOCK_STAKE * 100)}% of cash"}
+ITEMS["wiretaps"] = {"type": "wiretap", "price": covert_mod.WIRETAP_COST}
+ITEMS["sabotage"] = {"type": "sabotage", "price": covert_mod.SABOTAGE_COST}
 
 
 def net_worth(ref, agent: str) -> float:
@@ -128,10 +131,28 @@ class TreatedFleet(sim.Hauler):
             sim.Privateer._hire(self, ref, stats)
             if self._hires(ref) > before:
                 self._mark_bought(ref)
+        if self.item and self.item["type"] == "wiretap" and self.active(ref):
+            before = self._wiretaps(ref)
+            sim.Spy._plant(self, ref, stats)
+            if self._wiretaps(ref) > before:
+                self._mark_bought(ref)
+        if self.item and self.item["type"] == "sabotage" and self.active(ref):
+            before = self._sabotages(ref)
+            sim.Saboteur._strike(self, ref, stats)
+            if self._sabotages(ref) > before:
+                self._mark_bought(ref)
         super().act(ref, quotes, stats)
 
     def _hires(self, ref) -> int:
         return ref.conn.execute("SELECT COUNT(*) FROM piracy_privateers WHERE sponsor = ?",
+                                (self.agent,)).fetchone()[0]
+
+    def _wiretaps(self, ref) -> int:
+        return ref.conn.execute("SELECT COUNT(*) FROM covert_wiretaps WHERE actor = ?",
+                                (self.agent,)).fetchone()[0]
+
+    def _sabotages(self, ref) -> int:
+        return ref.conn.execute("SELECT COUNT(*) FROM corp_events WHERE actor = ? AND kind = 'sabotage'",
                                 (self.agent,)).fetchone()[0]
 
     # --- purchase hooks (called by Hauler.act after selling, while docked)

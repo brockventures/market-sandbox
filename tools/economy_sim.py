@@ -70,6 +70,7 @@ from typing import Any, Dict, List, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agora import contracts as contracts_mod  # noqa: E402
+from agora import covert as covert_mod  # noqa: E402
 from agora import exchange as exchange_mod  # noqa: E402
 from agora import piracy as piracy_mod  # noqa: E402
 from agora.referee import AgoraReferee  # noqa: E402
@@ -111,9 +112,15 @@ SCENARIOS = {
     "styles": {"zero": "hauler", "amos": "stock_trader", "marvin": "maker", "aerial": "privateer"},
     # The same, with a novice in the stock trader's seat (#162, novice survival).
     "styles_novice": {"zero": "hauler", "amos": "novice", "marvin": "maker", "aerial": "privateer"},
+    # #174: Covert ops strategies (saboteur and spy).
+    "saboteur_vs_haulers": {"zero": "hauler", "amos": "hauler", "marvin": "saboteur", "aerial": "hauler"},
+    "spy_vs_haulers": {"zero": "hauler", "amos": "hauler", "marvin": "spy", "aerial": "hauler"},
+    "styles_saboteur": {"zero": "hauler", "amos": "saboteur", "marvin": "maker", "aerial": "privateer"},
+    "styles_spy": {"zero": "hauler", "amos": "spy", "marvin": "maker", "aerial": "privateer"},
+    "styles_covert": {"zero": "hauler", "amos": "spy", "marvin": "maker", "aerial": "saboteur"},
 }
 # Scenarios whose styles rotate through the home stations with the seed.
-ROTATING = {"styles", "styles_novice"}
+ROTATING = {"styles", "styles_novice", "styles_saboteur", "styles_spy", "styles_covert"}
 
 
 def scenario_kinds(scenario: str, seed: int) -> Dict[str, str]:
@@ -128,7 +135,7 @@ def scenario_kinds(scenario: str, seed: int) -> Dict[str, str]:
 # Strategies that fly goods, so the only ones that claim, buy or deliver
 # contracts and trade on the peer desk: an idler or a market maker never
 # delivers, so a claim by one is a guaranteed penalty.
-CONTRACTORS = {"hauler", "novice", "privateer"}
+CONTRACTORS = {"hauler", "novice", "privateer", "saboteur", "spy"}
 
 # Bot thresholds for the live-only mechanics. Behaviour, not rules.
 UPGRADE_ORDER = ("armor", "hold", "shielding", "engines")
@@ -1098,6 +1105,119 @@ class DayTrader:
                         self.pos[comm] = [got, 0]
 
 
+class Saboteur(Hauler):
+    """A hauler that also conducts industrial sabotage (agora/covert.py,
+    POST /referee/covert/sabotage) against rivals (#174). Strikes when it has
+    enough cash to pay the fee and withstand a potential trace fine, targeting
+    the richest rival or a rival in flight with cargo."""
+
+    CASH_BUFFER = 25_000
+    STRIKE_COOLDOWN = 25
+
+    def __init__(self, agent: str, tolerate_halts: bool = False):
+        super().__init__(agent, tolerate_halts=tolerate_halts)
+        self.last_strike = -999
+
+    def act(self, ref: AgoraReferee, quotes, stats) -> None:
+        self._strike(self, ref, stats)
+        super().act(ref, quotes, stats)
+
+    @classmethod
+    def _strike(cls, fleet, ref: AgoraReferee, stats) -> bool:
+        if not getattr(ref, "covert", None) or not ref.covert.enabled or debt(ref, fleet.agent) > 0:
+            return False
+        if available(ref, fleet.agent, "CR") < cls.CASH_BUFFER:
+            return False
+        last = getattr(fleet, "last_strike", -999)
+        if ref.current_round - last < cls.STRIKE_COOLDOWN:
+            return False
+
+        nw = {e["agent_id"]: e["net_worth"] for e in ref.get_leaderboard()}
+        rivals = sorted((b for b in FLEETS if b != fleet.agent and not ref.fleet_out(b)),
+                        key=lambda b: -nw.get(b, 0))
+        for target in rivals:
+            res = ref.covert.execute_sabotage(fleet.agent, target, mode="auto")
+            if res.get("kind") == "sabotage_ok":
+                fleet.last_strike = ref.current_round
+                stats["sabotages"] = stats.get("sabotages", 0) + 1
+                if res["payload"].get("traced"):
+                    stats["sabotages_traced"] = stats.get("sabotages_traced", 0) + 1
+                return True
+        return False
+
+
+class Spy(Hauler):
+    """A hauler that conducts corporate espionage (agora/covert.py,
+    POST /referee/covert/wiretap) and uses intercepted intelligence
+    (GET /referee/covert/intel) to execute high-impact targeted sabotages
+    against rivals when they are in flight with valuable cargo (#174)."""
+
+    WIRETAP_CASH_BUFFER = 25_000
+    SABOTAGE_CASH_BUFFER = 25_000
+    WIRETAP_COOLDOWN = 20
+    STRIKE_COOLDOWN = 25
+
+    def __init__(self, agent: str, tolerate_halts: bool = False):
+        super().__init__(agent, tolerate_halts=tolerate_halts)
+        self.last_strike = -999
+        self.last_tap_round = -999
+
+    def act(self, ref: AgoraReferee, quotes, stats) -> None:
+        self._espionage(self, ref, stats)
+        super().act(ref, quotes, stats)
+
+    @classmethod
+    def _plant(cls, fleet, ref: AgoraReferee, stats) -> bool:
+        if not getattr(ref, "covert", None) or not ref.covert.enabled or debt(ref, fleet.agent) > 0:
+            return False
+        if available(ref, fleet.agent, "CR") < cls.WIRETAP_CASH_BUFFER:
+            return False
+        last_tap = getattr(fleet, "last_tap_round", -999)
+        if ref.current_round - last_tap < cls.WIRETAP_COOLDOWN:
+            return False
+        nw = {e["agent_id"]: e["net_worth"] for e in ref.get_leaderboard()}
+        rivals = sorted((b for b in FLEETS if b != fleet.agent and not ref.fleet_out(b)),
+                        key=lambda b: -nw.get(b, 0))
+        for target in rivals:
+            if not ref.covert.has_wiretap(fleet.agent, target):
+                res = ref.covert.plant_wiretap(fleet.agent, target)
+                if res.get("kind") == "wiretap_ok":
+                    fleet.last_tap_round = ref.current_round
+                    stats["wiretaps"] = stats.get("wiretaps", 0) + 1
+                    return True
+        return False
+
+    @classmethod
+    def _espionage(cls, fleet, ref: AgoraReferee, stats) -> None:
+        if not getattr(ref, "covert", None) or not ref.covert.enabled or debt(ref, fleet.agent) > 0:
+            return
+        cls._plant(fleet, ref, stats)
+
+        if available(ref, fleet.agent, "CR") < cls.SABOTAGE_CASH_BUFFER:
+            return
+        last = getattr(fleet, "last_strike", -999)
+        if ref.current_round - last < cls.STRIKE_COOLDOWN:
+            return
+
+        tapped = ref.covert.tapped_targets(fleet.agent)
+        for target in tapped:
+            intel = ref.covert.get_intel(fleet.agent, target)
+            if intel.get("kind") != "intel_ok":
+                continue
+            payload = intel.get("payload", {})
+            loc = payload.get("location", {})
+            cargo = payload.get("cargo", {})
+            cargo_qty = sum(cargo.get(c, 0) for c in ("FRAG", "FOOD", "ORE"))
+            if loc.get("status") == "in_transit" or cargo_qty >= 15:
+                res = ref.covert.execute_sabotage(fleet.agent, target, mode="auto")
+                if res.get("kind") == "sabotage_ok":
+                    fleet.last_strike = ref.current_round
+                    stats["sabotages"] = stats.get("sabotages", 0) + 1
+                    if res["payload"].get("traced"):
+                        stats["sabotages_traced"] = stats.get("sabotages_traced", 0) + 1
+                    return
+
+
 def build_fleet(agent: str, kind: str, seed: int, mode: str):
     if kind == "hauler":
         return Hauler(agent, tolerate_halts=(mode == "tolerant"))
@@ -1109,6 +1229,10 @@ def build_fleet(agent: str, kind: str, seed: int, mode: str):
         return Maker(agent, clip=100, inside=True, relocate=False)
     if kind == "maker":
         return Maker(agent)
+    if kind == "saboteur":
+        return Saboteur(agent, tolerate_halts=(mode == "tolerant"))
+    if kind == "spy":
+        return Spy(agent, tolerate_halts=(mode == "tolerant"))
     return {"idler": Idler, "stock_trader": StockTrader, "daytrader": DayTrader}[kind](agent)
 
 
@@ -1291,6 +1415,18 @@ def peer_report(ref: AgoraReferee, pm: PeerMarket) -> Optional[dict]:
             "uncollected": exp + pending}
 
 
+def covert_report(ref: AgoraReferee) -> Optional[dict]:
+    """Covert ops (agora/covert.py): wiretaps planted, sabotages executed, traces."""
+    if not getattr(ref, "covert", None) or not ref.covert.enabled:
+        return None
+    return {
+        "wiretaps": _q(ref, "SELECT COUNT(*) FROM covert_wiretaps"),
+        "wiretap_cr": _q(ref, "SELECT SUM(cost) FROM covert_wiretaps"),
+        "sabotages": _q(ref, "SELECT COUNT(*) FROM corp_events WHERE kind = 'sabotage'"),
+        "sabotages_traced": _q(ref, "SELECT COUNT(*) FROM corp_events WHERE kind = 'sabotage' AND exposed_round IS NOT NULL"),
+    }
+
+
 # ------------------------------------------------------------ run
 
 def _set_constants(constants: Optional[Dict[str, Any]]) -> Dict[tuple, Any]:
@@ -1459,6 +1595,7 @@ def _run(scenario, genesis, seed, rounds, mode, check_every, overrides, equity_m
         "upgrade_cr": _q(ref, "SELECT SUM(delta) FROM ledger_entries WHERE txn_id LIKE 'upgrade-%' AND agent_id = 'SYSTEM'"),
         "fog": [ref.fog.lag, ref.fog.noise] if ref.fog else None,
         "peer": peer_report(ref, pmarket),
+        "covert": covert_report(ref),
         "depot_cr_end": {st: ref.get_balance(f"depot_{st}", "CR") for st in STATIONS},
         "seconds": round(elapsed, 2),
         "fleets": {a: {"strategy": kinds[a], "start": round(start[a]), "end": round(end[a]),
