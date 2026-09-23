@@ -17,6 +17,11 @@ at the cheapest station. For each station and good, per round:
     buy qty  = FLOW_SCALE x consumption drip x U(FLOW_JITTER)
     sell qty = FLOW_SCALE x production drip  x U(FLOW_JITTER)
 
+On the main side (the dearest station's buyers, the cheapest station's
+sellers) the drip is further scaled by FLOW_MAIN_SCALE, which is 0 (#180):
+there the depot's own drips already are the station's demand and supply, and
+full main-side flow let a hauler farm it (see FLOW_MAIN_SCALE).
+
 NPC buyers will pay up to the depot's own ask (what they would pay the
 depot), and NPC sellers take no less than the depot's bid. They fill
 against the best resting FLEET orders first, in price-time priority, at the
@@ -58,6 +63,15 @@ from agora.spatial import STATIONS, COMMODITIES, BASE_PRICES
 FLOW_SCALE = 3.0
 # Each side's size is scaled by a uniform draw from this range every round.
 FLOW_JITTER = (0.5, 1.5)
+# Main-side NPC flow (a good's dearest station's buyers, its cheapest
+# station's sellers) as a share of the depot's main drip. Off (#180): there
+# the depot's own consumption and production drips are the station's demand
+# and supply. At 1.0 a hauler resting its cargo at the dear station's ask
+# sold up to ~300 units a round at the depot ask (about 11% over the depot
+# bid) without adding to the depot's hold, and hauling pulled far ahead of
+# every other style (hauler + privateer median about 580k against 290k).
+# Side stations, where makers quote, keep FLOW_SCALE x the side drip.
+FLOW_MAIN_SCALE = 0.0
 FLOW_GOODS = tuple(COMMODITIES)
 FLOW_ACCOUNT = 'SYSTEM'
 
@@ -79,6 +93,15 @@ def _drips(ref, st: str, comm: str) -> Tuple[int, int]:
             R.REACTIVE_MAIN_DRIP if st == dear else R.REACTIVE_SIDE_DRIP)
 
 
+def _flow_drips(ref, st: str, comm: str) -> Tuple[float, float]:
+    """(sell, buy) NPC base size a round: the depot's drips, with the main
+    side (above the side drip) scaled by FLOW_MAIN_SCALE."""
+    from agora import referee as R
+    prod, cons = _drips(ref, st, comm)
+    return (prod * FLOW_MAIN_SCALE if prod > R.REACTIVE_SIDE_DRIP else prod,
+            cons * FLOW_MAIN_SCALE if cons > R.REACTIVE_SIDE_DRIP else cons)
+
+
 class OrderFlowDesk:
     def __init__(self, ref, enabled: bool = False, seed: int = 0):
         self.ref = ref
@@ -95,7 +118,7 @@ class OrderFlowDesk:
 
     def expected(self, st: str, comm: str) -> Dict[str, float]:
         """Mean NPC buy and sell size a round at this station for this good."""
-        prod, cons = _drips(self.ref, st, comm)
+        prod, cons = _flow_drips(self.ref, st, comm)
         mid = (FLOW_JITTER[0] + FLOW_JITTER[1]) / 2
         return {'buy': FLOW_SCALE * cons * mid, 'sell': FLOW_SCALE * prod * mid}
 
@@ -201,7 +224,7 @@ class OrderFlowDesk:
         n = 0
         for st in STATIONS:
             for comm in FLOW_GOODS:
-                prod, cons = _drips(ref, st, comm)
+                prod, cons = _flow_drips(ref, st, comm)
                 want_buy = int(round(FLOW_SCALE * cons * self.rng.uniform(*FLOW_JITTER)))
                 want_sell = int(round(FLOW_SCALE * prod * self.rng.uniform(*FLOW_JITTER)))
                 book = ref.books.get(st, {}).get(comm)
@@ -220,7 +243,7 @@ class OrderFlowDesk:
 
     def status(self) -> Dict[str, Any]:
         """GET /referee/order-flow."""
-        return {'enabled': self.enabled, 'flow_scale': FLOW_SCALE, 'jitter': list(FLOW_JITTER),
+        return {'enabled': self.enabled, 'flow_scale': FLOW_SCALE, 'flow_main_scale': FLOW_MAIN_SCALE, 'jitter': list(FLOW_JITTER),
                 'expected': {st: {c: {k: round(v, 1) for k, v in self.expected(st, c).items()} for c in FLOW_GOODS}
                              for st in STATIONS},
                 'last': self.last, 'totals': dict(self.totals)}

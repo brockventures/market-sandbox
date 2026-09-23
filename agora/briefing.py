@@ -283,9 +283,12 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
                    "ask and sell down to the depot's bid, and they fill resting fleet orders first, best price first: "
                    "rest an ask at or below the depot ask, or a bid at or above the depot bid, and the station's "
                    "traders trade with you before the depot (a fleet order beats the depot at the same price). "
-                   "Buyers come mostly where a good is dearest, sellers where it is cheapest; about "
-                   f"{OF.FLOW_SCALE * REACTIVE_SIDE_DRIP:g} units a side a round everywhere else. Sizes and last round's fills: "
-                   "`GET /referee/order-flow`.")
+                   + ("Where a good is dearest its buyers are the depot's, and where it is cheapest its sellers "
+                      "are: no NPC traders on those sides. "
+                      if OF.FLOW_MAIN_SCALE == 0 else
+                      "Buyers come mostly where a good is dearest, sellers where it is cheapest. ")
+                   + f"About {OF.FLOW_SCALE * REACTIVE_SIDE_DRIP:g} units a side a round everywhere else. "
+                   "Sizes and last round's fills: `GET /referee/order-flow`.")
         out.append("")
     pir = getattr(ref, 'piracy', None)
     if pir is not None and pir.enabled:

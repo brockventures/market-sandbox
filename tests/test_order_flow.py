@@ -37,7 +37,9 @@ def flow_txns(ref):
 
 
 # Fixed sizes: no jitter, so a test knows exactly how much flow arrives.
-FIXED = mock.patch.multiple(OF, FLOW_SCALE=1.0, FLOW_JITTER=(1.0, 1.0))
+# FLOW_MAIN_SCALE=1.0: these test the fill mechanics on both sides; the live
+# main side is off (#180, TestMainSideOff).
+FIXED = mock.patch.multiple(OF, FLOW_SCALE=1.0, FLOW_MAIN_SCALE=1.0, FLOW_JITTER=(1.0, 1.0))
 
 
 class TestOnOff(unittest.TestCase):
@@ -271,3 +273,39 @@ class TestDeterminism(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestMainSideOff(unittest.TestCase):
+    """#180: live, there are no NPC buyers at a good's dearest station and no
+    NPC sellers at its cheapest; the depot's drips are that demand and supply.
+    Side-station flow, where makers quote, is unchanged."""
+
+    @mock.patch.multiple(OF, FLOW_SCALE=1.0, FLOW_JITTER=(1.0, 1.0))
+    def test_main_side_sized_zero_side_unchanged(self):
+        self.assertEqual(OF.FLOW_MAIN_SCALE, 0.0)
+        ref = game()
+        self.assertEqual(ref.order_flow.expected('ceres', 'FRAG'), {'buy': 0, 'sell': REACTIVE_SIDE_DRIP})
+        self.assertEqual(ref.order_flow.expected('earth', 'FRAG'), {'buy': REACTIVE_SIDE_DRIP, 'sell': 0})
+        self.assertEqual(ref.order_flow.expected('mars', 'FRAG'),
+                         {'buy': REACTIVE_SIDE_DRIP, 'sell': REACTIVE_SIDE_DRIP})
+        self.assertEqual(ref.order_flow.status()['flow_main_scale'], 0.0)
+
+    @mock.patch.multiple(OF, FLOW_SCALE=1.0, FLOW_JITTER=(1.0, 1.0))
+    def test_an_ask_at_the_dear_station_is_not_filled(self):
+        ref = game()
+        # amos starts at Ceres, FRAG's dearest station.
+        self.assertEqual(ref.get_vessel_location('amos')['station_id'], 'ceres')
+        _, ask = depot(ref, 'ceres', 'FRAG')
+        frag0 = ref.get_balance('amos', 'FRAG')
+        order(ref, 'amos', 'ask', 50, ask)
+        ref.step_round()
+        self.assertEqual(ref.get_balance('amos', 'FRAG'), frag0)
+        self.assertEqual(flow_txns(ref), set())
+
+    def test_briefing_says_so(self):
+        env = {k: v for k, v in os.environ.items() if not k.startswith('AGORA_')}
+        with mock.patch.dict(os.environ, env, clear=True):
+            ref = build_referee_from_env(':memory:')
+        ref.new_game(seed=1)
+        from agora.briefing import build_briefing
+        self.assertIn("no NPC traders on those sides", build_briefing(ref))
