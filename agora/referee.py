@@ -1770,7 +1770,8 @@ class AgoraReferee:
 
     def get_leaderboard(self) -> List[Dict[str, Any]]:
         """
-        Calculate Net Worth = Balance(Credits/CR) + Qty(FRAG) * Mark Price.
+        Calculate Net Worth = Balance(Credits/CR) + Qty(FRAG) * Mark Price
+        + Qty(FOOD|ORE) * mean station spot price.
         FRAG mark price is determined strictly against Ceres FRAG:
         1. Inside mid: (best_bid + best_ask) // 2 if both sides of book are present
         2. Last Ceres FRAG trade price if executed
@@ -1801,9 +1802,19 @@ class AgoraReferee:
             GROUP BY agent_id
         """)
         rows = cur.fetchall()
+        # FOOD and ORE (every fleet starts with 0) are marked at their mean
+        # spot price across all stations. Unmarked, buying either one read as
+        # a pure loss on the board, which punished the haul trades the game
+        # is built around.
+        commodity_marks = {}
+        for comm in ('FOOD', 'ORE'):
+            spots = [self.spatial.get_station_price(st, comm) for st in STATIONS] if self.spatial else []
+            commodity_marks[comm] = int(round(sum(spots) / len(spots))) if spots else 0
         board = []
         for r in rows:
-            net_worth = r['liquid'] + (r['frags'] * mark)
+            food = r['food'] or 0
+            ore = r['ore'] or 0
+            net_worth = r['liquid'] + (r['frags'] * mark) + food * commodity_marks['FOOD'] + ore * commodity_marks['ORE']
             board.append({
                 'agent_id': r['agent_id'],
                 'net_worth': net_worth,
@@ -1813,7 +1824,8 @@ class AgoraReferee:
                 'food': r['food'] if 'food' in r.keys() else 0,
                 'ore': r['ore'] if 'ore' in r.keys() else 0,
                 'bananas': r['frags'],  # backward compatibility alias
-                'mark_price': mark
+                'mark_price': mark,
+                'commodity_marks': commodity_marks
             })
         board.sort(key=lambda x: x['net_worth'], reverse=True)
         return board
