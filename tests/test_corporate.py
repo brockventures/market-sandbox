@@ -1,0 +1,116 @@
+import unittest
+
+from agora.referee import AgoraReferee
+from agora.corporate import BANKRUPT_ROUNDS, TAKEOVER_SHARES
+
+
+def game(**kw):
+    ref = AgoraReferee(depots=True, rival_shares=100, corporate=True, contracts=True, **kw)
+    ref.new_game(seed=4, warmup_rounds=2, depots=True, rival_shares=100, corporate=True, contracts=True)
+    return ref
+
+
+def move(ref, txn, legs):
+    with ref.lock, ref.conn:
+        ref.corporate._move(txn, legs)
+
+
+def clean(t, ref):
+    ok, errs = ref.verify_ledger_invariants()
+    t.assertTrue(ok, errs)
+
+
+class TestCorporate(unittest.TestCase):
+    def test_off_by_default(self):
+        ref = AgoraReferee()
+        ref.new_game(seed=4, warmup_rounds=2)
+        self.assertFalse(ref.corporate_enabled)
+        self.assertIsNone(ref.fleet_out('amos'))
+
+    def test_debt_paid_from_cash_first(self):
+        ref = game()
+        cr = ref.get_balance('amos', 'CR')
+        with ref.lock, ref.conn:
+            ref.corporate.add_debt('amos', 1000, 'test')
+        ref.step_round()
+        self.assertEqual(ref.corporate._row('amos')['debt'], 0)
+        self.assertLessEqual(ref.get_balance('amos', 'CR'), cr - 1000 + 1000)  # idle fee may apply too
+        clean(self, ref)
+
+    def test_debt_beyond_cash_auctions_treasury_to_rivals(self):
+        ref = game()
+        cr = ref.get_balance('amos', 'CR')
+        with ref.lock, ref.conn:
+            ref.corporate.add_debt('amos', cr + 500_000, 'test')
+        before = ref.get_balance('amos', 'EQ_AMOS')
+        ref.step_round()
+        self.assertLess(ref.get_balance('amos', 'EQ_AMOS'), before)
+        self.assertGreater(sum(ref.get_balance(b, 'EQ_AMOS') for b in ('zero', 'marvin', 'aerial')), 300)
+        self.assertLess(ref.corporate._row('amos')['debt'], cr + 500_000)
+        clean(self, ref)
+
+    def test_bankrupt_after_rounds_with_no_treasury(self):
+        ref = game()
+        # Hand amos's treasury away so nothing can be auctioned, then load debt.
+        t = ref.get_balance('amos', 'EQ_AMOS')
+        move(ref, 'test-strip', (('amos', 'EQ_AMOS', -t), ('SYSTEM', 'EQ_AMOS', t)))
+        with ref.lock, ref.conn:
+            ref.corporate.add_debt('amos', 10_000_000, 'test')
+        for _ in range(BANKRUPT_ROUNDS + 1):
+            ref.step_round()
+        self.assertEqual(ref.corporate.status('amos'), 'bankrupt')
+        self.assertEqual(ref.get_balance('amos', 'CR'), 0)
+        r = ref.submit_envelope({"v": 1, "kind": "order", "payload": {
+            "order_id": "x1", "agent_id": "amos", "side": "bid", "qty": 1, "limit_price": 5,
+            "instrument": "FUEL", "station_id": "earth", "seq_seen": ref.current_seq}})
+        self.assertEqual(r['payload']['reason'], 'fleet_out')
+        self.assertEqual(ref.initiate_transit('amos', 'mars')['payload']['reason'], 'fleet_out')
+        clean(self, ref)
+
+    def test_takeover_at_51_percent_absorbs_everything(self):
+        ref = game()
+        need = TAKEOVER_SHARES - ref.get_balance('zero', 'EQ_MARV')
+        move(ref, 'test-buyup', (('marvin', 'EQ_MARV', -need), ('zero', 'EQ_MARV', need)))
+        m_cr = ref.get_balance('marvin', 'CR')
+        z_cr = ref.get_balance('zero', 'CR')
+        ref.step_round()
+        self.assertEqual(ref.corporate.status('marvin'), 'absorbed')
+        self.assertEqual(ref.get_balance('marvin', 'CR'), 0)
+        self.assertGreaterEqual(ref.get_balance('zero', 'CR'), z_cr + m_cr - 50)  # idle fees
+        self.assertTrue([e for e in ref.corporate.summary()['events'] if e['kind'] == 'takeover' and e['agent_id'] == 'zero'])
+        self.assertEqual(ref.submit_envelope({"v": 1, "kind": "order", "payload": {
+            "order_id": "x2", "agent_id": "marvin", "side": "bid", "qty": 1, "limit_price": 5,
+            "instrument": "FUEL", "station_id": "earth", "seq_seen": ref.current_seq}})['payload']['reason'], 'fleet_out')
+        clean(self, ref)
+
+    def test_last_corp_standing_wins(self):
+        ref = game()
+        for target in ('marvin', 'aerial', 'amos'):
+            sym = {'marvin': 'EQ_MARV', 'aerial': 'EQ_AERL', 'amos': 'EQ_AMOS'}[target]
+            need = TAKEOVER_SHARES - ref.get_balance('zero', sym)
+            move(ref, f'test-buy-{target}', ((target, sym, -need), ('zero', sym, need)))
+        ref.step_round()
+        self.assertEqual(ref.corporate.summary()['winner'], 'zero')
+        from agora.briefing import build_briefing
+        self.assertIn('has won', build_briefing(ref))
+        clean(self, ref)
+
+    def test_unpaid_contract_penalty_becomes_debt(self):
+        ref = game()
+        for _ in range(4):
+            ref.step_round()
+        c = ref.contract_desk.list()[0]
+        ref.contract_desk.claim('aerial', c['contract_id'])
+        # Leave aerial nearly broke so the penalty cannot be paid.
+        cr = ref.get_balance('aerial', 'CR')
+        move(ref, 'test-drain', (('aerial', 'CR', -cr), ('SYSTEM', 'CR', cr)))
+        while ref.current_round <= c['deadline']:
+            ref.step_round()
+        self.assertGreater(ref.contract_desk.get(c['contract_id'])['shortfall'], 0)
+        ev = [e for e in ref.corporate.summary()['events'] if e['agent_id'] == 'aerial']
+        self.assertTrue(ev)
+        clean(self, ref)
+
+
+if __name__ == '__main__':
+    unittest.main()

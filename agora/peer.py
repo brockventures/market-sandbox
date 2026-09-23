@@ -83,6 +83,8 @@ class PeerDesk:
 
     def offer(self, seller: str, station_id: str, instrument: str, qty: int, price: int) -> Dict[str, Any]:
         self.ref.mark_active(seller)
+        if getattr(self.ref, 'fleet_out', None) and self.ref.fleet_out(seller):
+            return _reject('fleet_out', self.ref.fleet_out(seller))
         ref = self.ref
         st, inst = (station_id or '').lower().strip(), (instrument or '').upper().strip()
         if st not in STATIONS:
@@ -113,6 +115,8 @@ class PeerDesk:
 
     def accept(self, buyer: str, escrow_id: str) -> Dict[str, Any]:
         self.ref.mark_active(buyer)
+        if getattr(self.ref, 'fleet_out', None) and self.ref.fleet_out(buyer):
+            return _reject('fleet_out', self.ref.fleet_out(buyer))
         ref = self.ref
         with ref.lock, ref.conn:
             row = self._row(escrow_id)
