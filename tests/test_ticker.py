@@ -17,7 +17,7 @@ from agora.ticker import TickerEngine
 class TestTickerEngine(unittest.TestCase):
     def test_start_advances_rounds_on_schedule(self):
         referee = AgoraReferee()
-        ticker = TickerEngine(referee, interval_sec=0.05, inactivity_rounds=100)
+        ticker = TickerEngine(referee, interval_sec=0.05, inactivity_rounds=100, min_interval_sec=0.01)
         self.assertEqual(referee.current_round, 0)
 
         ticker.start()
@@ -44,7 +44,7 @@ class TestTickerEngine(unittest.TestCase):
 
     def test_manual_pause_and_resume(self):
         referee = AgoraReferee()
-        ticker = TickerEngine(referee, interval_sec=0.05, inactivity_rounds=100)
+        ticker = TickerEngine(referee, interval_sec=0.05, inactivity_rounds=100, min_interval_sec=0.01)
         ticker.start()
         try:
             ticker.pause(reason="manual_test")
@@ -119,7 +119,7 @@ class TestTickerEngine(unittest.TestCase):
             return original_step_round(*args, **kwargs)
 
         referee.step_round = flaky_step_round
-        ticker = TickerEngine(referee, interval_sec=0.05, inactivity_rounds=100)
+        ticker = TickerEngine(referee, interval_sec=0.05, inactivity_rounds=100, min_interval_sec=0.01)
         ticker.start()
         try:
             deadline = time.time() + 5.0

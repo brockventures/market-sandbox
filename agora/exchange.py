@@ -144,7 +144,7 @@ class EquityExchange:
         cr = max(0, ref.get_balance(EXCHANGE_ID, 'CR'))
         if round_num <= 0:
             return 0
-        if cr >= REPLENISH_FLOOR and (round_num % REPLENISH_ROUNDS != 0 or cr >= SEED_CR):
+        if cr >= REPLENISH_FLOOR:
             return 0
         delta = SEED_CR - cr
         if delta <= 0:
