@@ -165,6 +165,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 spawn_map=spawn_locations,
                 depot_model=payload.get('depot_model'),
                 band_pct=payload.get('band_pct'),
+                peer_trades=payload.get('peer_trades'),
             )
             self._send_json(200, {'v': 1, 'kind': 'new_game_ok', 'payload': result})
             return
@@ -1001,6 +1002,45 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 self._send_json(200, result)
             return
 
+        if path in ('/referee/peer/offer', '/referee/peer/accept', '/referee/peer/cancel'):
+            auth_agent, auth_err = self._authenticate_request()
+            if auth_err:
+                self._send_json(401, auth_err)
+                return
+            try:
+                length = int(self.headers.get('Content-Length', 0))
+                data = json.loads(self.rfile.read(length).decode('utf-8')) if length else {}
+            except Exception as e:
+                self._send_json(400, {'v': 1, 'kind': 'reject',
+                                      'payload': {'reason': 'invalid_format', 'detail': f'Malformed JSON: {e}'}})
+                return
+            ref = self.referee or AgoraReferee()
+            if not ref.peer_trades:
+                self._send_json(409, {'v': 1, 'kind': 'reject', 'payload': {
+                    'reason': 'peer_trades_disabled',
+                    'detail': 'Peer trades are off in this game. Start one with new_game {"peer_trades": true}.'}})
+                return
+            # Same impersonation rule as /referee/orders: admin and the shared
+            # combine token may act for a named fleet; a fleet token acts as itself.
+            agent = data.get('agent_id') if auth_agent in ('admin', 'combine') else auth_agent
+            if not agent:
+                self._send_json(400, {'v': 1, 'kind': 'reject',
+                                      'payload': {'reason': 'agent_required', 'detail': 'agent_id is required with this token'}})
+                return
+            if path.endswith('/offer'):
+                try:
+                    qty, price = int(data.get('qty', 0)), int(data.get('price', data.get('limit_price', 0)))
+                except (TypeError, ValueError):
+                    qty, price = 0, 0
+                result = ref.peer.offer(agent, data.get('station_id') or data.get('station'),
+                                        data.get('instrument') or data.get('commodity'), qty, price)
+            elif path.endswith('/accept'):
+                result = ref.peer.accept(agent, str(data.get('escrow_id', '')))
+            else:
+                result = ref.peer.cancel(agent, str(data.get('escrow_id', '')))
+            self._send_json(400 if result.get('kind') == 'reject' else 200, result)
+            return
+
         if path not in ('/referee/orders', '/referee/quick_order'):
             self._send_json(404, {'error': 'not_found', 'path': self.path})
             return
@@ -1200,6 +1240,11 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        elif path == '/referee/peer/offers':
+            st = query_params.get('station_id', [None])[0]
+            status = query_params.get('status', ['offered'])[0]
+            self._send_json(200, {'status': 'ok', 'peer_trades': ref.peer_trades,
+                                  'offers': ref.peer.list(station_id=st, status=status)})
         elif path == '/referee/fleets':
             rows = ref.conn.execute(
                 "SELECT agent_id, display_name, home_station, genesis_cr, genesis_frag, genesis_fuel FROM fleet_roster ORDER BY agent_id"
@@ -1240,6 +1285,10 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                     'book': 'GET /referee/book',
                     'leaderboard': 'GET /referee/leaderboard',
                     'briefing': 'GET /referee/briefing (plain-text rules + live board for LLM players)',
+                    'peer_offers': 'GET /referee/peer/offers?station_id=&status=offered|accepted',
+                    'peer_offer': 'POST /referee/peer/offer {station_id, instrument, qty, price} (docked at station_id)',
+                    'peer_accept': 'POST /referee/peer/accept {escrow_id} (from anywhere)',
+                    'peer_cancel': 'POST /referee/peer/cancel {escrow_id} (seller, before acceptance)',
                     'ticks': 'GET /referee/ticks?since_seq=0',
                     'accounts': 'GET /referee/accounts (auth required)',
                     'orders': 'POST /referee/orders (auth required)',

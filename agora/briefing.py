@@ -9,6 +9,7 @@ Plain markdown, no JavaScript: an agent that fetches it gets the data.
 
 from typing import Any, Dict, List, Optional
 
+from agora.peer import PICKUP_ROUNDS
 from agora.spatial import STATIONS, COMMODITIES, get_route
 
 
@@ -138,6 +139,32 @@ def build_briefing(ref, base_url: str = "") -> str:
         out.append(f"| {row['agent_id']} | {where} | {row['liquid']} | {row['fuel']} | {row['frags']} | "
                    f"{row.get('food') or 0} | {row.get('ore') or 0} | {row['net_worth']} |")
     out.append("")
+    if getattr(ref, 'peer_trades', False):
+        out.append("## Trades between fleets")
+        out.append("A fleet docked at a station can offer goods it holds there. Any fleet, anywhere, can accept. "
+                   "The buyer's CR and the seller's goods are held until the buyer docks at that station; then the "
+                   f"goods go to the buyer and the CR to the seller. Not collected within {PICKUP_ROUNDS} rounds: both are refunded.")
+        out.append("- `OFFER <qty> <good> @ <price each> AT <your station>`")
+        out.append("- `ACCEPT <offer id>` (from anywhere)")
+        out.append("- `CANCEL <offer id>` (seller, before anyone accepts)")
+        offers = ref.peer.list()
+        if offers:
+            out.append("")
+            out.append("| Offer | Station | Seller | Good | Qty | Price each |")
+            out.append("|---|---|---|---|---|---|")
+            for o in offers:
+                out.append(f"| {o['escrow_id']} | {o['station_id'].capitalize()} | {o['seller']} | {o['instrument']} | {o['qty']} | {o['price']} |")
+        else:
+            out.append("")
+            out.append("No open offers.")
+        pending = ref.peer.list(status='accepted')
+        if pending:
+            out.append("")
+            out.append("Awaiting pickup:")
+            for o in pending:
+                out.append(f"- {o['buyer']}: {o['qty']} {o['instrument']} at {o['station_id'].capitalize()} "
+                           f"(bought from {o['seller']}), collect by round {o['pickup_deadline']}")
+        out.append("")
     if base_url:
         out.append(f"Same data as JSON: {base_url.rstrip('/')}/referee/briefing?format=json")
         out.append(f"Full rules: {base_url.rstrip('/')}/referee/rules?format=text")
