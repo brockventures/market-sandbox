@@ -317,6 +317,19 @@ class CircuitBreakerEngine:
                     txn_id = f"auction-{next_seq}-{trade_id}"
                     currency = 'CR'
 
+                    # A bare UPDATE on a missing (agent, instrument) row is a
+                    # silent no-op, so a first-time holder's credit vanished
+                    # while the matching debit applied. Ensure all four rows
+                    # exist first, same as the continuous-matching path.
+                    for acct, acct_inst in (
+                        (best_bid.agent_id, currency), (best_ask.agent_id, currency),
+                        (best_bid.agent_id, inst), (best_ask.agent_id, inst),
+                    ):
+                        self.conn.execute(
+                            "INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, ?, 0)",
+                            (acct, acct_inst),
+                        )
+
                     # Currency deltas
                     self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = ? AND instrument = ?", (cost, best_bid.agent_id, currency))
                     self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?", (cost, best_ask.agent_id, currency))
