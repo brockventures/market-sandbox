@@ -18,6 +18,7 @@ from agora.order_book import OrderBook, Order, Trade
 from agora.galnet import GalNetEngine
 from agora.peer import PeerDesk, env_peer_trades
 from agora.contracts import ContractDesk, env_contracts
+from agora.corporate import CorporateDesk, env_corporate
 from agora.fog import FogEngine, env_fog, parse_fog
 
 STOCK_EXCHANGE_STATION = 'ceres'  # the one book every fleet stock trades on
@@ -87,8 +88,11 @@ class AgoraReferee:
         exchange_vol: Optional[float] = None,
         contracts: Optional[bool] = None,
         hazards: Any = None,
+        corporate: Optional[bool] = None,
     ):
         self.db_path = db_path
+        # Debt, distress sales, bankruptcy and takeovers (agora/corporate.py).
+        self.corporate_enabled = env_corporate() if corporate is None else bool(corporate)
         # Owned, tradable station contracts with a claim deposit (agora/contracts.py).
         self.contracts_enabled = env_contracts() if contracts is None else bool(contracts)
         self._hazard_odds = env_hazards() if hazards is None else parse_hazards(hazards)
@@ -136,6 +140,7 @@ class AgoraReferee:
         self._init_db()
         self.peer = PeerDesk(self)
         self.contract_desk = ContractDesk(self)
+        self.corporate = CorporateDesk(self)
         self.hazards = HazardEngine(self.conn, self._hazard_odds)
         self.equity = SyndicateEquityEngine(self.conn, self)
         self.salvage = DerelictSalvageEngine(self.conn, self)
@@ -457,7 +462,7 @@ class AgoraReferee:
                 'accounts', 'ledger_entries', 'book_events', 'station_prices',
                 'transits', 'vessel_locations', 'equity_loans', 'distress_beacons',
                 'rescue_rfqs', 'rescue_quotes', 'salvage_claims',
-                'circuit_breaker_halts', 'orders', 'station_escrow', 'station_contracts', 'transit_hazards',
+                'circuit_breaker_halts', 'orders', 'station_escrow', 'station_contracts', 'transit_hazards', 'corp_status', 'corp_events',
             ):
                 self.conn.execute(f"DELETE FROM {table}")
             self.conn.execute(
@@ -498,6 +503,7 @@ class AgoraReferee:
         exchange_vol: Optional[float] = None,
         contracts: Optional[bool] = None,
         hazards: Any = None,
+        corporate: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Full clean-slate reset, callable live via POST /referee/admin/reset:
@@ -525,6 +531,8 @@ class AgoraReferee:
             self.contracts_enabled = bool(contracts)
         if hazards is not None:
             self.hazards.odds = parse_hazards(hazards)
+        if corporate is not None:
+            self.corporate_enabled = bool(corporate)
         self._active_this_round = set()
         self.asymmetric_enabled = asymmetric
         if asymmetric or spawn_map:
@@ -565,6 +573,7 @@ class AgoraReferee:
         exchange_vol: Optional[float] = None,
         contracts: Optional[bool] = None,
         hazards: Any = None,
+        corporate: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Wipes the board exactly like reset_to_genesis(), but rolls a genuinely
@@ -593,6 +602,8 @@ class AgoraReferee:
             self.contracts_enabled = bool(contracts)
         if hazards is not None:
             self.hazards.odds = parse_hazards(hazards)
+        if corporate is not None:
+            self.corporate_enabled = bool(corporate)
         self._active_this_round = set()
         self.asymmetric_enabled = asymmetric
         if asymmetric or spawn_map:
@@ -931,8 +942,18 @@ class AgoraReferee:
             return {'station_id': st, 'prices': all_prices.get(st, {}), 'round': self.current_round}
         return {'round': self.current_round, 'prices': all_prices}
 
+    def fleet_out(self, agent_id: Optional[str]) -> Optional[str]:
+        """Why a bankrupt or taken-over corp cannot act, or None."""
+        if not agent_id or not getattr(self, 'corporate_enabled', False):
+            return None
+        return self.corporate.out_reason(agent_id)
+
     def initiate_transit(self, agent_id: str, destination: str, commodity: str = 'FRAG', cargo_qty: int = 0, perishable: Optional[bool] = None) -> Dict[str, Any]:
         self.mark_active(agent_id)
+        out = self.fleet_out(agent_id)
+        if out:
+            return {'v': 1, 'kind': 'reject', 'reply': 'optional', 'floor': self.floor,
+                    'payload': {'reason': 'fleet_out', 'detail': out}}
         with self.lock:
             dest = destination.lower().strip()
             if dest not in STATIONS:
@@ -1211,6 +1232,7 @@ class AgoraReferee:
                 # Peer escrow: buyers who are now docked collect; overdue pickups refund.
                 peer_report = self.peer.step_locked(new_round) if self.peer_trades else None
                 contract_report = self.contract_desk.step_locked(new_round) if self.contracts_enabled else None
+                corporate_report = self.corporate.step_locked(new_round) if self.corporate_enabled else None
 
             # Distribute bilateral borrow fees & audit maintenance margin
             borrow_fee_reports = self.equity.step_borrow_fees(new_round)
@@ -1230,6 +1252,7 @@ class AgoraReferee:
                 'circuit_breaker_reopens': reopen_reports,
                 'peer_escrow': peer_report,
                 'contracts': contract_report,
+                'corporate': corporate_report,
                 'idle_fees': idle_fees,
             }
 
@@ -1448,6 +1471,10 @@ class AgoraReferee:
         # 1. Format validation
         if not all([order_id, agent_id, instrument, side, qty is not None, limit_price is not None]):
             return self._reject_envelope(order_id or 'unknown', agent_id or 'unknown', 'invalid_format', 'Missing required order fields')
+
+        out = self.fleet_out(agent_id)
+        if out:
+            return self._reject_envelope(order_id, agent_id, 'fleet_out', out)
 
         if instrument not in COMMODITIES and instrument != 'BANANA' and instrument not in EQUITY_SYMBOLS:
             return self._reject_envelope(order_id or 'unknown', agent_id or 'unknown', 'invalid_format', f"Unsupported instrument: {instrument}")
@@ -2117,6 +2144,9 @@ class AgoraReferee:
             b['stocks'] = held
             b['stocks_value'] = value
             b['net_worth'] += value
+        if getattr(self, 'corporate_enabled', False):
+            for b in board:
+                b['status'] = self.corporate.status(b['agent_id'])
         board.sort(key=lambda x: x['net_worth'], reverse=True)
         return board
 

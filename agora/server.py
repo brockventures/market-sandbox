@@ -190,6 +190,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 exchange_vol=payload.get('exchange_vol'),
                 contracts=payload.get('contracts'),
                 hazards=payload.get('hazards'),
+                corporate=payload.get('corporate'),
             )
             self._send_json(200, {'v': 1, 'kind': 'new_game_ok', 'payload': result})
             return
@@ -1354,6 +1355,9 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        elif path == '/referee/corporate':
+            self._send_json(200, {'status': 'ok', 'corporate_enabled': ref.corporate_enabled,
+                                  'round': ref.current_round, **ref.corporate.summary()})
         elif path == '/referee/contracts':
             status = query_params.get('status', ['open'])[0]
             st = query_params.get('station_id', [None])[0]
@@ -1407,6 +1411,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                     'briefing': 'GET /referee/briefing (plain-text rules + live board for LLM players)',
                     'peer_offers': 'GET /referee/peer/offers?station_id=&status=offered|accepted',
                     'contracts': 'GET /referee/contracts?status=open|fulfilled|lapsed&station_id=',
+                    'corporate': 'GET /referee/corporate (debt, corp status, takeovers, winner)',
                     'contract_actions': 'POST /referee/contracts/{id}/claim | list {price} | buy | deliver {qty}',
                     'peer_offer': 'POST /referee/peer/offer {station_id, instrument, qty, price} (docked at station_id)',
                     'peer_accept': 'POST /referee/peer/accept {escrow_id} (from anywhere)',
@@ -1637,6 +1642,7 @@ def build_referee_from_env(db_path: str = 'agora.db') -> AgoraReferee:
       AGORA_EXCHANGE_SHARES=100  shares of each fleet the exchange market maker holds (max 200); 0 = off
       AGORA_EXCHANGE_VOL=0.03  per-round volatility of the exchange's stock prices
       AGORA_CONTRACTS=1        owned, tradable station contracts (25% deposit, 50% lapse penalty)
+      AGORA_CORPORATE=1        debt, distress share sales, bankruptcy, 51% takeovers
       AGORA_HAZARDS=0.2,0.1    per-trip chance of a 1-3 round delay, and of losing 30-70% of the cargo; 0 = off
     """
     def _on(name: str) -> bool:
@@ -1653,7 +1659,8 @@ def build_referee_from_env(db_path: str = 'agora.db') -> AgoraReferee:
                         exchange_shares=_int_env('AGORA_EXCHANGE_SHARES', 100),
                         exchange_vol=_float_env('AGORA_EXCHANGE_VOL', 0.03),
                         contracts=_on('AGORA_CONTRACTS'),
-                        hazards=os.environ.get('AGORA_HAZARDS', '0.2,0.1'))
+                        hazards=os.environ.get('AGORA_HAZARDS', '0.2,0.1'),
+                        corporate=_on('AGORA_CORPORATE'))
 
 
 def _float_env(name: str, default: float) -> float:

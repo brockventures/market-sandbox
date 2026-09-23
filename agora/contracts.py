@@ -115,6 +115,8 @@ class ContractDesk:
     def claim(self, agent: str, cid: str) -> Dict[str, Any]:
         ref = self.ref
         ref.mark_active(agent)
+        if ref.fleet_out(agent):
+            return _reject('fleet_out', ref.fleet_out(agent))
         with ref.lock, ref.conn:
             row = self._row(cid)
             if not row or row['status'] != 'open' or row['deadline'] < ref.current_round:
@@ -147,6 +149,8 @@ class ContractDesk:
     def buy(self, buyer: str, cid: str) -> Dict[str, Any]:
         ref = self.ref
         ref.mark_active(buyer)
+        if ref.fleet_out(buyer):
+            return _reject('fleet_out', ref.fleet_out(buyer))
         with ref.lock, ref.conn:
             row = self._row(cid)
             if not row or row['status'] != 'open' or row['deadline'] < ref.current_round:
@@ -212,6 +216,8 @@ class ContractDesk:
                 self._move(f"contract-lapse-{row['contract_id']}", (
                     ('SYSTEM', 'CR', -row['bond']), (self._station_account(row['station_id']), 'CR', row['bond']),
                     (row['owner'], 'CR', -paid), ('SYSTEM', 'CR', paid)))
+            if shortfall and getattr(ref, 'corporate_enabled', False):
+                ref.corporate.add_debt(row['owner'], shortfall, f"unpaid penalty on contract {row['contract_id']}")
             ref.conn.execute("UPDATE station_contracts SET status = 'lapsed', bond = 0, list_price = NULL, "
                              "penalty = ?, shortfall = ? WHERE contract_id = ?",
                              (penalty, shortfall, row['contract_id']))

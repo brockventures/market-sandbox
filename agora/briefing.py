@@ -187,6 +187,31 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
             f"{r['agent_id']}: " + (", ".join(f"{q} {sym}" for sym, q in sorted(r.get('stocks', {}).items())) or "none")
             for r in board))
         out.append("")
+    if getattr(ref, 'corporate_enabled', False):
+        from agora.corporate import AUCTION_CAP, BANKRUPT_ROUNDS, TAKEOVER_SHARES
+        summ = ref.corporate.summary()
+        out.append("## Corporate risk")
+        out.append(f"A penalty you cannot pay becomes debt. Each round your cash pays it down first. Still in debt, your "
+                   f"goods are sold to the local depot (when docked), then up to {AUCTION_CAP} of your own treasury shares "
+                   f"a round are auctioned to your rivals at a discount. In debt for {BANKRUPT_ROUNDS} rounds with no "
+                   f"treasury shares left, you are bankrupt and out. A rival holding {TAKEOVER_SHARES} of your shares "
+                   f"(51%) takes you over: your cash, goods, holdings, contracts and debt become theirs, and you are out. "
+                   f"The last corp standing wins; otherwise the leaderboard decides at the final bell. You can also sell "
+                   f"your own shares to raise cash, and buying a rival's shares is how a takeover starts.")
+        out.append("")
+        out.append("| Corp | Status | Debt | Rounds in debt |")
+        out.append("|---|---|---|---|")
+        for a_id, r in sorted(summ['corps'].items()):
+            st = r['status'] + (f" (by {r['absorbed_by']})" if r.get('absorbed_by') else "")
+            out.append(f"| {a_id} | {st} | {r['debt']} | {r['rounds_in_debt']} |")
+        if summ['winner']:
+            out.append("")
+            out.append(f"**{summ['winner']} has won: last corp standing.**")
+        if summ['events']:
+            out.append("")
+            for e in summ['events'][:8]:
+                out.append(f"- round {e['round']}: {e['detail'] if e['detail'].startswith(e['agent_id']) else e['agent_id'] + ': ' + e['detail']}")
+        out.append("")
     odds = getattr(getattr(ref, 'hazards', None), 'odds', None)
     if odds:
         out.append("## Hazards in flight")
