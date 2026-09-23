@@ -1731,6 +1731,13 @@ class AgoraReferee:
                     )
                 needed_qty -= bid.remaining_qty
 
+        # 3c. Resting fleet orders on the other side that their owner can no
+        # longer pay for (CR or goods taken since they were placed, e.g. by a
+        # debt payment or a contract penalty) are cancelled before matching:
+        # the book never re-checks funding at fill time, and a stale bid was
+        # filled into a negative balance (#162 sim, styles_novice seed 20).
+        self._prune_unfunded_locked(target_book, 'ask' if side == 'bid' else 'bid')
+
         # 4. Matching & Atomic Ledger Settlement
         order = Order(
             order_id=order_id,
@@ -2024,6 +2031,29 @@ class AgoraReferee:
         """
         with self.lock:
             return self._cancel_order_locked(agent_id, order_id)
+
+    def _prune_unfunded_locked(self, book: OrderBook, side: str) -> List[str]:
+        """Cancel resting fleet orders on `side` of `book` whose owner's
+        balance no longer covers everything it has committed on that side
+        (all its bids' CR, or all its asks of that good). Depots and SYSTEM
+        are left alone: their quotes are re-funded at every refresh."""
+        pruned = []
+        for o in list(book.bids if side == 'bid' else book.asks):
+            a = o.agent_id
+            if a == 'SYSTEM' or a.startswith('depot_'):
+                continue
+            if side == 'bid':
+                need = sum(x.remaining_qty * x.limit_price for st_books in self.books.values()
+                           for b in st_books.values() for x in b.bids if x.agent_id == a)
+                have = self.get_balance(a, self.get_currency_instrument(a))
+            else:
+                need = sum(x.remaining_qty for st_books in self.books.values()
+                           for b in st_books.values() for x in b.asks if x.agent_id == a and x.instrument == o.instrument)
+                have = self.get_balance(a, o.instrument)
+            if have < need:
+                self._cancel_order_locked(a, o.order_id)
+                pruned.append(o.order_id)
+        return pruned
 
     def _cancel_order_locked(self, agent_id: str, order_id: str) -> Dict[str, Any]:
         """

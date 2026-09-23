@@ -207,6 +207,50 @@ class TestFills(unittest.TestCase):
         self.assertTrue(ok, errs)
 
 
+class TestUnfundedRestingOrders(unittest.TestCase):
+    """A resting order whose funding left the account since it was placed is
+    cancelled before anything matches it (found by the #162 sim: a maker
+    sold into a novice's stale bid after a debt payment took its CR)."""
+
+    def drain(self, ref, agent, inst, keep):
+        gone = ref.get_balance(agent, inst) - keep
+        with ref.conn:
+            for acct, d in ((agent, -gone), ('SYSTEM', gone)):
+                ref.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?", (d, acct, inst))
+                ref.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES ('t-drain', 0, ?, ?, ?)",
+                                 (acct, inst, d))
+
+    def hit(self, ref, price):
+        return ref.submit_envelope({'v': 1, 'kind': 'order', 'payload': {
+            'order_id': 'marvin-hit', 'agent_id': 'marvin', 'side': 'ask', 'qty': 50, 'limit_price': price,
+            'instrument': 'FRAG', 'station_id': 'mars', 'seq_seen': ref.current_seq}})
+
+    def test_a_stale_bid_is_cancelled_not_filled_into_a_negative_balance(self):
+        ref = game(flow=False)
+        ref.conn.execute("UPDATE vessel_locations SET station_id = 'mars' WHERE agent_id = 'zero'")
+        bid, ask = depot(ref, 'mars', 'FRAG')
+        self.assertGreaterEqual(ask - bid, 2)
+        frag0 = ref.get_balance('zero', 'FRAG')
+        order(ref, 'zero', 'bid', 100, bid + 1, tag='stale')   # funded when placed
+        self.drain(ref, 'zero', 'CR', 5)                        # then the CR goes
+        self.assertNotEqual(self.hit(ref, bid + 1)['kind'], 'reject')
+        self.assertEqual(ref.get_balance('zero', 'CR'), 5)
+        self.assertEqual(ref.get_balance('zero', 'FRAG'), frag0)
+        status = ref.conn.execute("SELECT status FROM orders WHERE order_id LIKE 'zero-stale-%'").fetchone()[0]
+        self.assertEqual(status, 'cancelled')
+        ok, errs = ref.verify_ledger_invariants()
+        self.assertTrue(ok, errs)
+
+    def test_a_funded_bid_still_fills(self):
+        ref = game(flow=False)
+        ref.conn.execute("UPDATE vessel_locations SET station_id = 'mars' WHERE agent_id = 'zero'")
+        bid, _ = depot(ref, 'mars', 'FRAG')
+        frag0 = ref.get_balance('zero', 'FRAG')
+        order(ref, 'zero', 'bid', 100, bid + 1, tag='ok')
+        self.hit(ref, bid + 1)
+        self.assertEqual(ref.get_balance('zero', 'FRAG'), frag0 + 50)
+
+
 class TestDeterminism(unittest.TestCase):
     def _fills(self, seed):
         ref = game(seed=seed)
