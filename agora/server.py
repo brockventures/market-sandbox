@@ -192,6 +192,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 hazards=payload.get('hazards'),
                 corporate=payload.get('corporate'),
                 upgrades=payload.get('upgrades'),
+                piracy=payload.get('piracy'),
             )
             self._send_json(200, {'v': 1, 'kind': 'new_game_ok', 'payload': result})
             return
@@ -702,7 +703,8 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 destination=destination,
                 commodity=commodity,
                 cargo_qty=cargo_qty,
-                perishable=perishable
+                perishable=perishable,
+                escort=bool(payload.get('escort')),
             )
             if result.get('kind') == 'reject':
                 self._send_json(400, result)
@@ -1135,6 +1137,38 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             self._send_json(400 if result.get('kind') == 'reject' else 200, result)
             return
 
+        # Piracy (#145): POST /referee/piracy/{transit_id}/respond and POST /referee/privateers
+        if (len(parts) == 4 and parts[:2] == ['referee', 'piracy'] and parts[3] == 'respond') \
+                or path == '/referee/privateers':
+            auth_agent, auth_err = self._authenticate_request()
+            if auth_err:
+                self._send_json(401, auth_err)
+                return
+            try:
+                length = int(self.headers.get('Content-Length', 0))
+                data = json.loads(self.rfile.read(length).decode('utf-8')) if length else {}
+            except Exception as e:
+                self._send_json(400, {'v': 1, 'kind': 'reject',
+                                      'payload': {'reason': 'invalid_format', 'detail': f'Malformed JSON: {e}'}})
+                return
+            ref = self.referee or AgoraReferee()
+            if not ref.piracy.enabled and path == '/referee/privateers':
+                self._send_json(409, {'v': 1, 'kind': 'reject', 'payload': {
+                    'reason': 'piracy_disabled',
+                    'detail': 'Piracy is off in this game. Start one with new_game {"piracy": "0.15,0.04"}.'}})
+                return
+            agent = data.get('agent_id') if auth_agent in ('admin', 'combine') else auth_agent
+            if not agent:
+                self._send_json(400, {'v': 1, 'kind': 'reject',
+                                      'payload': {'reason': 'agent_required', 'detail': 'agent_id is required with this token'}})
+                return
+            if path == '/referee/privateers':
+                result = ref.piracy.hire(agent, str(data.get('target', '')))
+            else:
+                result = ref.piracy.respond(agent, parts[2], str(data.get('choice', '')))
+            self._send_json(400 if result.get('kind') == 'reject' else 200, result)
+            return
+
         if path not in ('/referee/orders', '/referee/quick_order'):
             self._send_json(404, {'error': 'not_found', 'path': self.path})
             return
@@ -1398,6 +1432,8 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             self._send_json(200, {'status': 'ok', 'contracts_enabled': ref.contracts_enabled,
                                   'round': ref.current_round,
                                   'contracts': ref.contract_desk.list(status=status, station_id=st)})
+        elif path == '/referee/piracy':
+            self._send_json(200, {'status': 'ok', **ref.piracy.status(self._reader())})
         elif path == '/referee/peer/offers':
             st = query_params.get('station_id', [None])[0]
             status = query_params.get('status', ['offered'])[0]
@@ -1448,6 +1484,10 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                     'corporate': 'GET /referee/corporate (debt, corp status, takeovers, winner)',
                     'upgrades': 'GET /referee/upgrades?agent_id= ; POST /referee/upgrades/buy {kind}',
                     'contract_actions': 'POST /referee/contracts/{id}/claim | list {price} | buy | deliver {qty}',
+                    'piracy': 'GET /referee/piracy (hot station, odds, recent raids, privateer contracts)',
+                    'piracy_respond': 'POST /referee/piracy/{transit_id}/respond {choice: pay|surrender|fight} (before the next round tick)',
+                    'privateers': 'POST /referee/privateers {target} (3,000 CR, +15% raid chance on the target for 20 rounds)',
+                    'transit': 'POST /stations/transit {destination, commodity, cargo_qty, escort: optional bool}',
                     'peer_offer': 'POST /referee/peer/offer {station_id, instrument, qty, price} (docked at station_id)',
                     'peer_accept': 'POST /referee/peer/accept {escrow_id} (from anywhere)',
                     'peer_cancel': 'POST /referee/peer/cancel {escrow_id} (seller, before acceptance)',
@@ -1680,6 +1720,7 @@ def build_referee_from_env(db_path: str = 'agora.db') -> AgoraReferee:
       AGORA_CORPORATE=1        debt, distress share sales, bankruptcy, 51% takeovers
       AGORA_UPGRADES=1         ship upgrades (shielding, hold, armor, engines) that cut hazard/piracy odds
       AGORA_HAZARDS=0.2,0.1    per-trip chance of a 1-3 round delay, and of losing 30-70% of the cargo; 0 = off
+      AGORA_PIRACY=0.15,0.04   raid chance on belt (tolled) and inner routes, before hot-station and cargo-value scaling; 0 = off
     """
     def _on(name: str) -> bool:
         return os.environ.get(name, '1').strip().lower() not in ('0', 'false', 'off', 'no')
@@ -1697,7 +1738,8 @@ def build_referee_from_env(db_path: str = 'agora.db') -> AgoraReferee:
                         contracts=_on('AGORA_CONTRACTS'),
                         hazards=os.environ.get('AGORA_HAZARDS', '0.2,0.1'),
                         corporate=_on('AGORA_CORPORATE'),
-                        upgrades=_on('AGORA_UPGRADES'))
+                        upgrades=_on('AGORA_UPGRADES'),
+                        piracy=os.environ.get('AGORA_PIRACY', '0.15,0.04'))
 
 
 def _float_env(name: str, default: float) -> float:

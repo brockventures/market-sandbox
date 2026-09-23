@@ -34,6 +34,7 @@ from agora.equity import (
 from agora.salvage import DerelictSalvageEngine
 from agora.circuit_breaker import CircuitBreakerEngine, DEFAULT_BAND_PCT
 from agora.hazards import HazardEngine, env_hazards, parse_hazards
+from agora.piracy import PiracyDesk, env_piracy, parse_piracy, ESCORT_PCT as PIRACY_ESCORT_PCT
 from agora.exchange import EquityExchange, EXCHANGE_ID, clamp_shares, DEFAULT_VOL
 
 
@@ -91,6 +92,7 @@ class AgoraReferee:
         hazards: Any = None,
         corporate: Optional[bool] = None,
         upgrades: Optional[bool] = None,
+        piracy: Any = None,
     ):
         self.db_path = db_path
         # Debt, distress sales, bankruptcy and takeovers (agora/corporate.py).
@@ -100,6 +102,8 @@ class AgoraReferee:
         # Owned, tradable station contracts with a claim deposit (agora/contracts.py).
         self.contracts_enabled = env_contracts() if contracts is None else bool(contracts)
         self._hazard_odds = env_hazards() if hazards is None else parse_hazards(hazards)
+        # Raids on the space lanes (agora/piracy.py): (belt, inner) odds or None = off.
+        self._piracy_odds = env_piracy() if piracy is None else parse_piracy(piracy)
         # The stock exchange's market maker (agora/exchange.py): shares of
         # each fleet it takes from treasury at genesis. 0 = no exchange quotes.
         self.exchange_shares = clamp_shares(exchange_shares) if exchange_shares is not None else 0
@@ -147,6 +151,7 @@ class AgoraReferee:
         self.corporate = CorporateDesk(self)
         self.upgrades = UpgradeDesk(self)
         self.hazards = HazardEngine(self.conn, self._hazard_odds)
+        self.piracy = PiracyDesk(self, self._piracy_odds)
         self.equity = SyndicateEquityEngine(self.conn, self)
         self.salvage = DerelictSalvageEngine(self.conn, self)
         self.circuit_breaker = CircuitBreakerEngine(self.conn, self, band_pct=self.band_pct)
@@ -468,6 +473,7 @@ class AgoraReferee:
                 'transits', 'vessel_locations', 'equity_loans', 'distress_beacons',
                 'rescue_rfqs', 'rescue_quotes', 'salvage_claims',
                 'circuit_breaker_halts', 'orders', 'station_escrow', 'station_contracts', 'transit_hazards', 'corp_status', 'corp_events', 'fleet_upgrades',
+                'piracy_raids', 'piracy_privateers',
             ):
                 self.conn.execute(f"DELETE FROM {table}")
             self.conn.execute(
@@ -510,6 +516,7 @@ class AgoraReferee:
         hazards: Any = None,
         corporate: Optional[bool] = None,
         upgrades: Optional[bool] = None,
+        piracy: Any = None,
     ) -> Dict[str, Any]:
         """
         Full clean-slate reset, callable live via POST /referee/admin/reset:
@@ -541,6 +548,8 @@ class AgoraReferee:
             self.corporate_enabled = bool(corporate)
         if upgrades is not None:
             self.upgrades_enabled = bool(upgrades)
+        if piracy is not None:
+            self.piracy.odds = parse_piracy(piracy)
         self._active_this_round = set()
         self.asymmetric_enabled = asymmetric
         if asymmetric or spawn_map:
@@ -560,6 +569,7 @@ class AgoraReferee:
         self._start_exchange(seed=0)
         self.contract_desk.reset(0)
         self.hazards.reset(0)
+        self.piracy.reset(0)
 
         return {'seq': 0, 'floor': self.floor, 'fleets': [r['agent_id'] for r in
                 self.conn.execute("SELECT agent_id FROM fleet_roster").fetchall()]}
@@ -583,6 +593,7 @@ class AgoraReferee:
         hazards: Any = None,
         corporate: Optional[bool] = None,
         upgrades: Optional[bool] = None,
+        piracy: Any = None,
     ) -> Dict[str, Any]:
         """
         Wipes the board exactly like reset_to_genesis(), but rolls a genuinely
@@ -615,6 +626,8 @@ class AgoraReferee:
             self.corporate_enabled = bool(corporate)
         if upgrades is not None:
             self.upgrades_enabled = bool(upgrades)
+        if piracy is not None:
+            self.piracy.odds = parse_piracy(piracy)
         self._active_this_round = set()
         self.asymmetric_enabled = asymmetric
         if asymmetric or spawn_map:
@@ -654,6 +667,7 @@ class AgoraReferee:
         self._start_exchange(seed=roll_seed)
         self.contract_desk.reset(roll_seed)
         self.hazards.reset(roll_seed)
+        self.piracy.reset(roll_seed)
 
         return {
             'seq': 0,
@@ -959,7 +973,8 @@ class AgoraReferee:
             return None
         return self.corporate.out_reason(agent_id)
 
-    def initiate_transit(self, agent_id: str, destination: str, commodity: str = 'FRAG', cargo_qty: int = 0, perishable: Optional[bool] = None) -> Dict[str, Any]:
+    def initiate_transit(self, agent_id: str, destination: str, commodity: str = 'FRAG', cargo_qty: int = 0, perishable: Optional[bool] = None,
+                         escort: bool = False) -> Dict[str, Any]:
         self.mark_active(agent_id)
         out = self.fleet_out(agent_id)
         if out:
@@ -1056,6 +1071,26 @@ class AgoraReferee:
                         'payload': {'reason': 'insufficient_cargo', 'detail': f"Required {cargo_qty} {comm}, available {avail_comm} (balance {comm_bal} - committed {committed_comm})"}
                     }
 
+            # Piracy escort (agora/piracy.py): paid at departure, on top of
+            # any toll. Ignored when piracy is off or there is no cargo.
+            escort = bool(escort) and self.piracy.enabled and cargo_qty > 0
+            escort_fee = self.piracy.escort_fee(comm, cargo_qty) if escort else 0
+            if escort_fee > 0:
+                cr_bal = self.get_balance(agent_id, 'CR')
+                committed_cr = sum(
+                    o.remaining_qty * o.limit_price
+                    for st_books in self.books.values()
+                    for b in st_books.values()
+                    for o in b.bids
+                    if o.agent_id == agent_id
+                )
+                avail_cr = cr_bal - committed_cr
+                if avail_cr < toll_required + escort_fee:
+                    return {
+                        'v': 1, 'kind': 'reject', 'reply': 'optional', 'floor': self.floor,
+                        'payload': {'reason': 'insufficient_credits_for_escort', 'detail': f"An escort for {cargo_qty} {comm} costs {escort_fee} CR ({int(PIRACY_ESCORT_PCT * 100)}% of the cargo's value){f' plus the {toll_required} CR toll' if toll_required else ''}; available {avail_cr} CR. Move without an escort, or raise cash first."}
+                    }
+
             # Cancel open resting orders for agent at origin station
             if origin in self.books:
                 for b in self.books[origin].values():
@@ -1107,6 +1142,12 @@ class AgoraReferee:
                 """, (transit_id, agent_id, origin, dest, dep_round, arr_round, comm, cargo_qty - hz_lost, required_fuel, int(is_perishable), decay_rate, toll_required))
                 self.hazards.record(transit_id, agent_id, dep_round, hz_delay, hz_lost, comm, hz_note)
 
+                # Piracy: escort fee, then the raid roll on what is still aboard.
+                self.piracy.charge_escort_locked(transit_id, agent_id, escort_fee)
+                piracy = self.piracy.roll_departure_locked(
+                    transit_id, agent_id, origin, dest, toll_required > 0, comm,
+                    max(0, cargo_qty - hz_lost), escort, escort_fee, dep_round)
+
                 # 5. Vessel locations
                 self.conn.execute("""
                     INSERT INTO vessel_locations (agent_id, station_id, docked_since, updated_at)
@@ -1137,6 +1178,7 @@ class AgoraReferee:
                         'perishable': is_perishable,
                         'decay_rate': decay_rate,
                         'hazard': {'delay': hz_delay, 'lost_qty': hz_lost, 'note': hz_note} if hz_note else None,
+                        'piracy': piracy,
                     })
                 ))
 
@@ -1161,6 +1203,7 @@ class AgoraReferee:
                     'perishable': is_perishable,
                     'decay_rate': decay_rate,
                     'hazard': {'delay': hz_delay, 'lost_qty': hz_lost, 'note': hz_note} if hz_note else None,
+                    'piracy': piracy,
                 }
             }
 
@@ -1187,6 +1230,10 @@ class AgoraReferee:
                 # returns early from it, and reactive is the live default.
                 if self.exchange_shares:
                     self.exchange.refresh_locked()
+
+                # Piracy: unanswered demands are fought now, before arrivals
+                # settle, so a fight's loss or delay applies to this trip.
+                piracy_report = self.piracy.step_locked(new_round)
 
                 # Settle arriving transits
                 cur = self.conn.cursor()
@@ -1271,6 +1318,7 @@ class AgoraReferee:
                 'peer_escrow': peer_report,
                 'contracts': contract_report,
                 'corporate': corporate_report,
+                'piracy': piracy_report,
                 'idle_fees': idle_fees,
             }
 
