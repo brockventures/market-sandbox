@@ -160,6 +160,27 @@ class ContractBoard:
         return got
 
 
+def charge_docking_fees(ref: AgoraReferee, fee: int) -> int:
+    """Issue #73 prototype: every docked fleet pays `fee` CR per round to
+    SYSTEM (balanced ledger entries). A fleet that cannot pay is charged what
+    it has. Returns the total collected."""
+    total = 0
+    with ref.lock, ref.conn:
+        for agent in FLEETS:
+            if location(ref, agent) is None:
+                continue
+            due = min(fee, max(0, ref.get_balance(agent, "CR")))
+            if due <= 0:
+                continue
+            txn = f"dockfee-{agent}-{ref.current_round}"
+            for acct, d in ((agent, -due), ("SYSTEM", due)):
+                ref.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = 'CR'", (d, acct))
+                ref.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, 'CR', ?)",
+                                 (txn, ref.current_seq, acct, d))
+            total += due
+    return total
+
+
 # ------------------------------------------------------------ strategies
 
 class Hauler:
@@ -389,7 +410,7 @@ def depot_floor(ref: AgoraReferee) -> int:
 
 def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict", check_every: int = 25,
         depot_model: str = "static", band_pct: Optional[float] = None, reactive_bands: bool = True,
-        contracts: bool = False) -> dict:
+        contracts: bool = False, dock_fee: int = 0) -> dict:
     # Reactive depots are the referee's own implementation (agora/referee.py,
     # AGORA_DEPOT_MODEL), so these numbers describe what would ship.
     ref = AgoraReferee(depots=True, asymmetric=True, depot_model=depot_model,
@@ -416,6 +437,8 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
         for strat in fleets.values():
             strat.act(ref, quotes, stats)
         ref.step_round()
+        if dock_fee:
+            stats["dock_fees"] = stats.get("dock_fees", 0) + charge_docking_fees(ref, dock_fee)
         if first_negative_depot is None and depot_floor(ref) < 0:
             first_negative_depot = ref.current_round
         if first_invariant_failure is None and ref.current_round % check_every == 0:
@@ -432,6 +455,7 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
         "scenario": scenario, "genesis": genesis, "mode": mode, "seed": seed, "rounds": rounds,
         "depot_model": depot_model, "band_pct": ref.circuit_breaker.band_pct,
         "reactive_bands": reactive_bands,
+        "dock_fee": dock_fee, "dock_fees_collected": stats.get("dock_fees", 0),
         "contracts": None if cboard is None else {"posted": cboard.posted, "units_delivered": cboard.delivered,
                                                   "paid": cboard.paid, "expired": cboard.expired},
         "depot_cr_end": {st: ref.get_balance(f"depot_{st}", "CR") for st in STATIONS},
@@ -463,6 +487,7 @@ def main() -> int:
     ap.add_argument("--drip", type=int, nargs=2, metavar=("MAIN", "SIDE"), default=None,
                     help="reactive depots: per-round restock/consumption at the main and other stations (default 100 20)")
     ap.add_argument("--contracts", action="store_true", help="enable the #74 station contract prototype")
+    ap.add_argument("--dock-fee", type=int, default=0, help="#73 prototype: CR charged per round to each docked fleet")
     ap.add_argument("--free-quotes", action="store_true",
                     help="reactive depots: do not hold quotes inside the circuit-breaker band")
     ap.add_argument("--json", action="store_true", help="print raw results as JSON")
@@ -479,7 +504,8 @@ def main() -> int:
                 for seed in range(1, args.seeds + 1):
                     results.append(run(scen, gen, seed, args.rounds, mode,
                                        depot_model=args.depot_model, band_pct=args.band_pct,
-                                       reactive_bands=not args.free_quotes, contracts=args.contracts))
+                                       reactive_bands=not args.free_quotes, contracts=args.contracts,
+                                       dock_fee=args.dock_fee))
     faulthandler.cancel_dump_traceback_later()
 
     if args.json:

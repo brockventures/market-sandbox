@@ -32,6 +32,13 @@ class TestEconomySim(unittest.TestCase):
         self.assertGreater(r["contracts"]["units_delivered"], 0)
         self.assertIsNone(r["first_invariant_failure"])
 
+    def test_dock_fee_charges_idlers(self):
+        r = run("idle4", "flat", seed=1, rounds=20, dock_fee=10)
+        for f in r["fleets"].values():
+            self.assertEqual(f["pnl"], -200)
+        self.assertEqual(r["dock_fees_collected"], 800)
+        self.assertIsNone(r["first_invariant_failure"])
+
     def test_planet_genesis_preserves_value(self):
         r = run("idle4", "planet", seed=1, rounds=1)
         for f in r["fleets"].values():
