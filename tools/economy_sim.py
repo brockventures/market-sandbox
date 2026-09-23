@@ -232,18 +232,18 @@ def pickups(ref: AgoraReferee, agent: str) -> List[dict]:
 
 def buy_upgrades(ref: AgoraReferee, agent: str, cash_mult: float, stats) -> None:
     """POST /referee/upgrades/buy: the next tier of the first upgrade in
-    UPGRADE_ORDER not yet maxed, once available CR is cash_mult x its price.
+    UPGRADE_ORDER not yet maxed whose next tier is on sale, once available CR is cash_mult x its price.
     At most one a round, never in debt. The board counts an upgrade at half
     its price, so the threshold keeps a fleet's working capital intact."""
     if not ref.upgrades_enabled or location(ref, agent) is None or debt(ref, agent) > 0:
         return
     for kind in UPGRADE_ORDER:
-        if upgrades_mod.UNLOCKS.get(kind, 0) > ref.current_round:
-            continue  # not on sale yet (the briefing shows the lock)
         t = ref.upgrades.tier(agent, kind)
         prices = UPGRADES[kind]["prices"]
         if t >= len(prices):
             continue
+        if upgrades_mod.unlock_round(kind, t + 1) > ref.current_round:
+            continue  # next tier not on sale yet (the catalog and briefing show the lock)
         if available(ref, agent, "CR") >= prices[t] * cash_mult:
             if ref.upgrades.buy(agent, kind).get("kind") == "upgrade_ok":
                 stats["upgrades_bought"] = stats.get("upgrades_bought", 0) + 1

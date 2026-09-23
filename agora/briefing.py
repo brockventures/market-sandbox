@@ -251,11 +251,19 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
                    "is still a bet that protection pays for itself; the purchase itself lifts your stock about 2%. "
                    "`POST /referee/upgrades/buy {\"kind\": \"<kind>\"}`")
         out.append("")
-        out.append("| Upgrade | Effect | Tier prices |")
+        out.append("Tiers are fitted in order and go on sale on the shipyard schedule below; GalNet announces "
+                   "each one. A tier's odds factor replaces the one before it.")
+        out.append("")
+        out.append("| Upgrade | Effect | Tiers: price, odds factor, on sale from |")
         out.append("|---|---|---|")
         for c in ref.upgrades.catalog():
-            lock = (f" (locked until round {c['unlock_round']}: shipyards retooling)" if c.get('locked') else "")
-            out.append(f"| {c['kind']} | {c['what']}{lock} | {' / '.join(str(p) for p in c['prices'])} |")
+            tiers = []
+            for t in c['tier_detail']:
+                odds = f" x{t['factor']:g}" if c['kind'] != 'engines' else ""
+                when = (f"locked until round {t['unlock_round']}" if t['locked']
+                        else "on sale" if t['unlock_round'] == 0 else f"on sale since round {t['unlock_round']}")
+                tiers.append(f"t{t['tier']} {t['price']:,}{odds} ({when})")
+            out.append(f"| {c['kind']} | {c['what']} | {'; '.join(tiers)} |")
         rows = ref.conn.execute("SELECT agent_id, kind, tier FROM fleet_upgrades ORDER BY agent_id, kind").fetchall()
         if rows:
             out.append("")

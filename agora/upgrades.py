@@ -6,17 +6,30 @@ allow corps to upgrade their ships to lower these probabilities" (the
 flight hazards in agora/hazards.py and, once live, piracy #145).
 
 Bought with CR while docked at any station, permanent for the game, one
-tier at a time. Each tier multiplies an odd:
-- shielding: flight-delay chance x0.7 (tier 1), x0.4 (tier 2)
-- hold:      cargo-loss chance x0.6 / x0.3, and a loss takes 30% less
-- armor:     piracy raid chance x0.7 / x0.4 (read by agora/piracy.py)
-- engines:   one tier; trips of 3+ rounds take one round less
+tier at a time and in order. Tiers go on sale on one shared, staggered
+shipyard schedule (#181, Ryan 2026-09-23: staged tiers across the game
+rather than any one must-buy; no two unlocks in the same round):
+
+    round   0  shielding t1, armor t1      125  hold t2
+           40  engines t1                  175  shielding t3
+           50  hold t1                     200  armor t3
+           75  shielding t2                225  hold t3
+          100  armor t2                    250  engines t2
+
+Every unlock after round 0 is announced on GalNet that round. Each tier multiplies an odd (the factor replaces the
+previous tier's, it does not stack on it):
+- shielding: flight-delay chance x0.85 / x0.6 / x0.35
+- hold:      cargo-loss chance x0.75 / x0.45 / x0.25; tiers 2 and 3 also
+             make a loss take 30% less (LOSS_SIZE)
+- armor:     piracy raid chance x0.7 / x0.45 / x0.25 (read by agora/piracy.py)
+- engines:   tier 1: trips of 3+ rounds take one round less; tier 2: trips
+             of 5+ rounds take a further round less (ENGINE_CUTS)
 Upgrades are capitalized at CAPITAL_PCT (50%) of what was paid: net worth,
 and so the stock's NAV, counts half the cost as a fitted asset (#151,
 settled with Zero 2026-09-23 10:33: "a 50% haircut for custom fitting").
 Buying one still costs half its price on the board, so it stays a bet, and
 the purchase is a public event the stock exchange reads as +2% (see
-agora/exchange.py SHOCKS). Prices below are a starting point.
+agora/exchange.py SHOCKS).
 """
 
 import os
@@ -24,28 +37,39 @@ from typing import Any, Dict, List
 
 CAPITAL_PCT = 0.5
 
+# Per tier: prices, odds factors, and the round the tier goes on sale.
 CATALOG: Dict[str, Dict[str, Any]] = {
-    "shielding": {"prices": [4_000, 9_000], "factors": [0.7, 0.4],
+    "shielding": {"prices": [3_000, 7_000, 14_000], "factors": [0.85, 0.6, 0.35], "unlocks": [0, 75, 175],
                   "what": "cuts the chance of a flight delay"},
-    "hold":      {"prices": [4_000, 9_000], "factors": [0.6, 0.3],
-                  "what": "cuts the chance of losing cargo in flight, and a loss takes 30% less"},
-    "armor":     {"prices": [7_500, 11_000], "factors": [0.7, 0.4],
+    "hold":      {"prices": [4_000, 9_000, 16_000], "factors": [0.75, 0.45, 0.25], "unlocks": [50, 125, 225],
+                  "what": "cuts the chance of losing cargo in flight; from tier 2 a loss also takes 30% less"},
+    "armor":     {"prices": [7_500, 11_000, 18_000], "factors": [0.7, 0.45, 0.25], "unlocks": [0, 100, 200],
                   "what": "cuts the chance of a pirate raid"},
-    "engines":   {"prices": [12_000], "factors": [1.0],
-                  "what": "trips of 3 rounds or more take one round less"},
+    "engines":   {"prices": [12_000, 24_000], "factors": [1.0, 1.0], "unlocks": [40, 250],
+                  "what": "tier 1: trips of 3+ rounds take one round less; tier 2: trips of 5+ rounds "
+                          "take a further round less"},
 }
 
+# hold: the size of a cargo loss, by tier held (tier 0 first).
+LOSS_SIZE = [1.0, 1.0, 0.7, 0.7]
+# engines: (minimum trip length in rounds, rounds cut) that each tier adds.
+ENGINE_CUTS = [(3, 1), (5, 1)]
 
-# Upgrades not on sale from the start: kind -> the round its first tier
-# unlocks, announced on GalNet that round. #154's dominance harness (PR #167)
-# found hold tier 1 bought in round 1 beat never buying it in 75% of seeds
-# (armor tier 1: 76%, so armor tier 1 went from 5,000 to 7,500 above).
-UNLOCKS: Dict[str, int] = {"hold": 100}
-UNLOCK_NEWS: Dict[str, tuple] = {
-    "hold": ("SHIPYARD RETOOLING COMPLETE: HARDENED HOLDS NOW FITTING",
-             "Sol's shipyards have finished retooling their cargo bays. Hardened holds, which cut the chance of "
-             "losing cargo in flight and the size of any loss, can now be fitted at every station."),
-}
+NEWS_NOUN = {"shielding": "SHIELDING", "hold": "HARDENED HOLDS", "armor": "ARMOR PLATING", "engines": "ENGINES"}
+
+
+def unlock_round(kind: str, tier: int) -> int:
+    """The round tier `tier` (1-based) of `kind` goes on sale."""
+    return CATALOG[kind]["unlocks"][tier - 1]
+
+
+def unlock_news(kind: str, tier: int) -> tuple:
+    """(headline, body) of the GalNet story for this tier's unlock."""
+    c = CATALOG[kind]
+    return (f"SHIPYARDS NOW FITTING {NEWS_NOUN.get(kind, kind.upper())} TIER {tier}",
+            f"Sol's shipyards have finished retooling and can now fit {kind} tier {tier} at every station, "
+            f"for {c['prices'][tier - 1]:,} CR. {kind.capitalize()} {c['what']}. "
+            f"Tiers are fitted in order.")
 
 
 def env_upgrades() -> bool:
@@ -85,6 +109,19 @@ class UpgradeDesk:
         t = self.tier(agent, kind)
         return CATALOG[kind]["factors"][t - 1] if t else 1.0
 
+    def loss_size_factor(self, agent: str) -> float:
+        """Share of the rolled cargo loss a hold upgrade leaves (LOSS_SIZE)."""
+        if not getattr(self.ref, 'upgrades_enabled', False):
+            return 1.0
+        return LOSS_SIZE[min(self.tier(agent, 'hold'), len(LOSS_SIZE) - 1)]
+
+    def engine_cut(self, agent: str, rounds: int) -> int:
+        """Rounds the engines upgrade takes off a trip of `rounds` rounds."""
+        if not getattr(self.ref, 'upgrades_enabled', False):
+            return 0
+        t = self.tier(agent, 'engines')
+        return sum(cut for need, cut in ENGINE_CUTS[:t] if rounds >= need)
+
     def book_value(self, agent: str) -> int:
         """Fitted upgrades as an asset: CAPITAL_PCT of every tier's price."""
         total = 0
@@ -97,34 +134,43 @@ class UpgradeDesk:
             "SELECT kind, tier FROM fleet_upgrades WHERE agent_id = ?", (agent,))}
 
     def catalog(self) -> List[Dict[str, Any]]:
+        """GET /referee/upgrades catalog: every tier's price, factor, unlock
+        round and whether it is still locked. unlock_round / locked are tier 1's."""
         r = getattr(self.ref, 'current_round', 0)
-        return [{"kind": k, "tiers": len(v["prices"]), "prices": v["prices"], "factors": v["factors"],
-                 "what": v["what"], "unlock_round": UNLOCKS.get(k),
-                 "locked": UNLOCKS.get(k, 0) > r} for k, v in CATALOG.items()]
+        out = []
+        for k, v in CATALOG.items():
+            tiers = [{"tier": i + 1, "price": p, "factor": v["factors"][i], "unlock_round": v["unlocks"][i],
+                      "locked": v["unlocks"][i] > r} for i, p in enumerate(v["prices"])]
+            out.append({"kind": k, "tiers": len(v["prices"]), "prices": v["prices"], "factors": v["factors"],
+                        "unlock_rounds": v["unlocks"], "what": v["what"], "tier_detail": tiers,
+                        "unlock_round": v["unlocks"][0], "locked": tiers[0]["locked"]})
+        return out
 
     def step_locked(self, round_num: int) -> List[str]:
         """Called from step_round under ref.lock inside its transaction: post
-        the GalNet story for any upgrade that unlocks this round (once a game)."""
+        the GalNet story for every tier that unlocks by this round and has not
+        had one yet (once a game each; round-0 tiers are on sale from the start)."""
         import json
         import time
         from agora.galnet import GalNetNewsEvent
         posted = []
-        for kind, at in sorted(UNLOCKS.items()):
-            if round_num < at:
-                continue
-            eid = f"gn-shipyard-{kind}"
-            if self.ref.conn.execute("SELECT 1 FROM book_events WHERE kind = 'news' AND payload LIKE ?",
-                                     (f'%"{eid}"%',)).fetchone():
-                continue
-            headline, body = UNLOCK_NEWS.get(kind, (f"{kind.upper()} UPGRADES NOW ON SALE", f"{kind} can now be fitted."))
-            ev = GalNetNewsEvent(id=eid, round=round_num, timestamp=time.time(), station_id='', commodity='',
-                                 headline=headline, body=body, drift_bias=0.0, duration_rounds=0)
-            galnet = getattr(self.ref, 'galnet', None)
-            if galnet is not None:
-                galnet.events.append(ev)
-            self.ref.conn.execute("INSERT INTO book_events (seq, kind, payload) VALUES (?, 'news', ?)",
-                                  (self.ref.current_seq + 1, json.dumps(ev.to_dict())))
-            posted.append(kind)
+        for kind, c in CATALOG.items():
+            for i, at in enumerate(c["unlocks"]):
+                if at <= 0 or round_num < at:
+                    continue
+                eid = f"gn-shipyard-{kind}-t{i + 1}"
+                if self.ref.conn.execute("SELECT 1 FROM book_events WHERE kind = 'news' AND payload LIKE ?",
+                                         (f'%"{eid}"%',)).fetchone():
+                    continue
+                headline, body = unlock_news(kind, i + 1)
+                ev = GalNetNewsEvent(id=eid, round=round_num, timestamp=time.time(), station_id='', commodity='',
+                                     headline=headline, body=body, drift_bias=0.0, duration_rounds=0)
+                galnet = getattr(self.ref, 'galnet', None)
+                if galnet is not None:
+                    galnet.events.append(ev)
+                self.ref.conn.execute("INSERT INTO book_events (seq, kind, payload) VALUES (?, 'news', ?)",
+                                      (self.ref.current_seq + 1, json.dumps(ev.to_dict())))
+                posted.append(f"{kind} t{i + 1}")
         return posted
 
     def buy(self, agent: str, kind: str) -> Dict[str, Any]:
@@ -136,10 +182,6 @@ class UpgradeDesk:
         kind = (kind or '').strip().lower()
         if kind not in CATALOG:
             return _reject('invalid_upgrade', f"Unknown upgrade '{kind}'. Options: {sorted(CATALOG)}")
-        unlock = UNLOCKS.get(kind, 0)
-        if ref.current_round < unlock:
-            return _reject('upgrade_locked', f"{kind} is not on sale until round {unlock}: the shipyards are "
-                                             f"retooling (round now {ref.current_round}). GalNet will announce it.")
         with ref.lock, ref.conn:
             loc = ref.get_vessel_location(agent)
             if loc.get('status') != 'docked':
@@ -148,6 +190,11 @@ class UpgradeDesk:
             prices = CATALOG[kind]["prices"]
             if t >= len(prices):
                 return _reject('max_tier', f"{kind} is already at its top tier ({t})")
+            unlock = unlock_round(kind, t + 1)
+            if ref.current_round < unlock:
+                return _reject('upgrade_locked', f"{kind} tier {t + 1} is not on sale until round {unlock}: the "
+                                                 f"shipyards are retooling (round now {ref.current_round}). "
+                                                 f"GalNet will announce it.")
             price = prices[t]
             avail = ref.peer._available(agent, 'CR')
             if avail < price:
