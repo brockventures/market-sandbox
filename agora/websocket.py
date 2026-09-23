@@ -114,24 +114,74 @@ class TerminalDiffEngine:
     against cached sequence numbers and entity state hashes.
     """
 
-    def __init__(self, referee: AgoraReferee, galnet: Optional[GalNetEngine] = None):
+    def __init__(self, referee: AgoraReferee, galnet: Optional[GalNetEngine] = None, public_fog: bool = False):
         self.referee = referee
         self.galnet = galnet
+        # public_fog: while fog is on, a non-admin stream shows what every
+        # fleet can see: all four stations at the public (stale, jittered)
+        # view, no exact goods books, prints or bands. Stocks stay exact.
+        self.public_fog = bool(public_fog and getattr(referee, 'fog', None))
+        self.last_depots_hash: str = ""
         self.last_seq: int = 0
         self.last_leaderboard_hash: str = ""
         self.last_book_hash: Dict[Tuple[str, str], str] = {}
         self.last_circuit_hash: Dict[Tuple[str, str], str] = {}
         self.last_equity_hash: str = ""
 
+    # ---------------------------------------------------------- fog helpers
+
+    def _is_stock(self, inst: str) -> bool:
+        return inst.startswith("EQ_")
+
+    def _book(self, st: str, inst: str) -> Dict[str, Any]:
+        if not self.public_fog or self._is_stock(inst):
+            return self.referee.get_book_snapshot(st, inst)
+        q = self._depots()["stations"].get(st, {}).get(inst, {})
+        side = lambda px, s: ([{"order_id": None, "agent_id": f"depot_{st}", "side": s, "qty": None,
+                                "limit_price": px, "seq_seen": None}] if px else [])
+        return {"instrument": inst, "fogged": True, "bids": side(q.get("best_bid"), "bid"),
+                "asks": side(q.get("best_ask"), "ask")}
+
+    def _last(self, st: str, inst: str):
+        if self.public_fog and not self._is_stock(inst):
+            return None, None
+        return self.referee.get_last_price(st, inst), self.referee.get_last_qty(st, inst)
+
+    def _bands(self, st: str, inst: str):
+        if self.public_fog and not self._is_stock(inst):
+            return []
+        return self.referee.get_circuit_breaker_bands(st, inst)
+
+    def _halts(self):
+        halts = self.referee.get_circuit_breaker_halts()
+        if not self.public_fog:
+            return halts
+        # Which book is halted is public; the prices around the halt are not.
+        return [{k: v for k, v in h.items() if not any(w in k for w in ("price", "limit", "vwap", "volume"))}
+                for h in halts]
+
+    def _ticks(self, since_seq: int = 0):
+        ticks = self.referee.get_ticks(since_seq=since_seq)
+        return self.referee.fog.filter_ticks(self.referee, None, ticks) if self.public_fog else ticks
+
+    def _depots(self) -> Dict[str, Any]:
+        ref = self.referee
+        if self.public_fog:
+            return ref.fog.depot_view(ref, None)
+        return ref.get_depot_summary()
+
     def get_snapshot(self, station_id: str = "ceres", instrument: str = "FRAG") -> Dict[str, Any]:
         """Generate a full initial snapshot frame covering all terminal panels."""
         st = station_id.lower()
         inst = instrument.upper()
-        book_snap = self.referee.get_book_snapshot(st, inst)
+        book_snap = self._book(st, inst)
         leaderboard = self.referee.get_leaderboard()
-        bands = self.referee.get_circuit_breaker_bands(st, inst)
-        halts = self.referee.get_circuit_breaker_halts()
-        ticks = self.referee.get_ticks()[-25:]
+        bands = self._bands(st, inst)
+        halts = self._halts()
+        ticks = self._ticks()[-25:]
+        depots = self._depots()
+        self.last_depots_hash = hashlib.md5(json.dumps(depots, sort_keys=True).encode("utf-8")).hexdigest()
+        last_price, last_qty = self._last(st, inst)
         locations = self.referee.get_all_vessel_locations()
         windows = self.referee.get_orbital_windows()
         equity = self.referee.get_equity_summary() if hasattr(self.referee, "get_equity_summary") else {}
@@ -154,8 +204,11 @@ class TerminalDiffEngine:
             "instrument": inst,
             "leaderboard": leaderboard,
             "book": book_snap,
-            "last_price": self.referee.get_last_price(st, inst),
-            "last_qty": self.referee.get_last_qty(st, inst),
+            "last_price": last_price,
+            "last_qty": last_qty,
+            "depots": depots,
+            "fog": ({"view": "public", "lag": self.referee.fog.lag, "noise": self.referee.fog.noise}
+                    if self.public_fog else None),
             "circuit": {
                 "bands": bands,
                 "halts": halts
@@ -177,7 +230,7 @@ class TerminalDiffEngine:
 
         # 1. Incremental trade ticks / book events
         if curr_seq > self.last_seq:
-            new_ticks = self.referee.get_ticks(since_seq=self.last_seq)
+            new_ticks = self._ticks(since_seq=self.last_seq)
             if new_ticks:
                 diffs.append({
                     "type": "ticks",
@@ -187,7 +240,7 @@ class TerminalDiffEngine:
             self.last_seq = curr_seq
 
         # 2. Order book depth diff
-        book_snap = self.referee.get_book_snapshot(st, inst)
+        book_snap = self._book(st, inst)
         book_hash = hashlib.md5(json.dumps(book_snap, sort_keys=True).encode("utf-8")).hexdigest()
         if book_hash != self.last_book_hash.get((st, inst)):
             self.last_book_hash[(st, inst)] = book_hash
@@ -197,9 +250,16 @@ class TerminalDiffEngine:
                 "station_id": st,
                 "instrument": inst,
                 "book": book_snap,
-                "last_price": self.referee.get_last_price(st, inst),
-                "last_qty": self.referee.get_last_qty(st, inst)
+                "last_price": self._last(st, inst)[0],
+                "last_qty": self._last(st, inst)[1]
             })
+
+        # 2b. All-station depot quotes (public fog view while fog is on)
+        depots = self._depots()
+        dep_hash = hashlib.md5(json.dumps(depots, sort_keys=True).encode("utf-8")).hexdigest()
+        if dep_hash != self.last_depots_hash:
+            self.last_depots_hash = dep_hash
+            diffs.append({"type": "depots", "seq": curr_seq, "depots": depots})
 
         # 3. Mark-to-market leaderboard diff
         leaderboard = self.referee.get_leaderboard()
@@ -213,8 +273,8 @@ class TerminalDiffEngine:
             })
 
         # 4. Circuit breaker state diff
-        bands = self.referee.get_circuit_breaker_bands(st, inst)
-        halts = self.referee.get_circuit_breaker_halts()
+        bands = self._bands(st, inst)
+        halts = self._halts()
         circ_hash = hashlib.md5(
             json.dumps({"bands": bands, "halts": halts}, sort_keys=True).encode("utf-8")
         ).hexdigest()
@@ -249,7 +309,8 @@ class TerminalDiffEngine:
 def handle_terminal_websocket(
     handler: BaseHTTPRequestHandler,
     referee: AgoraReferee,
-    galnet: Optional[GalNetEngine] = None
+    galnet: Optional[GalNetEngine] = None,
+    public_fog: bool = False
 ):
     """
     Perform RFC 6455 HTTP 101 Switching Protocols handshake on /ws/terminal,
@@ -274,7 +335,7 @@ def handle_terminal_websocket(
     sock = handler.connection
     sock.setblocking(False)
 
-    diff_engine = TerminalDiffEngine(referee, galnet)
+    diff_engine = TerminalDiffEngine(referee, galnet, public_fog=public_fog)
     station_id = "ceres"
     instrument = "FRAG"
 

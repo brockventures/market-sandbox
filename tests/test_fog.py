@@ -101,8 +101,30 @@ class TestFogEndpoints(unittest.TestCase):
         _, body = self._get('/referee/briefing')
         self.assertIn('public view', body)
 
-    def test_terminal_stream_blocked(self):
-        self.assertEqual(self._get('/ws/terminal')[0], 403)
+    def test_terminal_stream_info_says_public(self):
+        code, r = self._get('/ws/terminal')
+        self.assertEqual((code, r['fog']), (200, 'public'))
+
+
+class TestFoggedTerminalStream(unittest.TestCase):
+    def test_public_snapshot_hides_exact_goods_prices(self):
+        from agora.websocket import TerminalDiffEngine
+        ref = AgoraReferee(depots=True)
+        ref.new_game(seed=5, depots=True, fog=True)
+        for _ in range(5):
+            ref.step_round()
+        snap = TerminalDiffEngine(ref, public_fog=True).get_snapshot('ceres', 'ORE')
+        self.assertTrue(snap['book']['fogged'])
+        self.assertIsNone(snap['last_price'])
+        self.assertEqual(snap['circuit']['bands'], [])
+        self.assertEqual(set(snap['depots']['stations']), {'earth', 'luna', 'mars', 'ceres'})
+        self.assertIsNone(snap['depots']['fog']['exact_station'])
+        self.assertEqual(snap['fog']['view'], 'public')
+        self.assertEqual(snap['depots'], ref.fog.depot_view(ref, None))
+        stock = TerminalDiffEngine(ref, public_fog=True).get_snapshot('ceres', 'EQ_AMOS')
+        self.assertNotIn('fogged', stock['book'])
+        exact = TerminalDiffEngine(ref, public_fog=False).get_snapshot('ceres', 'ORE')
+        self.assertNotIn('fogged', exact['book'])
 
 
 if __name__ == '__main__':
