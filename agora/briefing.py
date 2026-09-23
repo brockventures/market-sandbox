@@ -110,6 +110,9 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
     out.append("- A BUY at or above the station's ask fills now. A SELL at or below its bid fills now.")
     out.append("- Any other price rests on the book until another fleet takes it, or you cancel it.")
     out.append("- FOOD loses 5% per round in transit on belt routes.")
+    if getattr(ref, 'idle_fee', 0):
+        out.append(f"- Idle fee: a docked fleet that does nothing in a round (no order, cancel, move or offer) "
+                   f"pays {ref.idle_fee} CR, in any round where another fleet is playing.")
     out.append("")
     out.append("## Worked example")
     ceres_ore = depots.get('stations', {}).get('ceres', {}).get('ORE', {})
