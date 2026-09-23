@@ -120,8 +120,13 @@ class ContractBoard:
     PREMIUM = (1.3, 1.6)
     HOLD = 3  # rounds a buyer keeps a contract before it will resell
 
-    def __init__(self, ref: AgoraReferee, seed: int, owned: bool = False):
+    def __init__(self, ref: AgoraReferee, seed: int, owned: bool = False, claim: bool = False):
         self.ref = ref
+        # claim: contracts start unowned and undeliverable; a corp must claim
+        # one (Corporate.claim) before it can deliver. on_expire is called
+        # with each contract that lapses undelivered.
+        self.claim_mode = claim
+        self.on_expire = None
         self.rng = random.Random(seed * 7919)
         # owned: each contract is awarded to one corp, only the owner can
         # deliver into it, and owners can sell contracts to other corps.
@@ -139,6 +144,8 @@ class ContractBoard:
         for c in self.open:
             if c["deadline"] < r and c["remaining"] > 0:
                 self.expired += 1
+                if self.on_expire:
+                    self.on_expire(c)
         self.open = [c for c in self.open if c["deadline"] >= r and c["remaining"] > 0]
         if r % self.EVERY == 0:
             comm = self.rng.choice(["FRAG", "FOOD", "ORE", "FUEL"])
@@ -148,10 +155,12 @@ class ContractBoard:
                               "remaining": self.rng.randint(*self.QTY),
                               "deadline": r + self.rng.randint(*self.DEADLINE),
                               "price": int(round(BASE_PRICES[st][comm] * self.rng.uniform(*self.PREMIUM))),
-                              "owner": self.rng.choice(FLEETS) if self.owned else None})
+                              "owner": (self.rng.choice(FLEETS) if self.owned and not self.claim_mode else None)})
             self.posted += 1
 
     def _mine(self, c: dict, agent: Optional[str]) -> bool:
+        if self.claim_mode:
+            return c["owner"] is not None and c["owner"] == agent
         return c["owner"] is None or c["owner"] == agent
 
     def best_for(self, st: str, comm: str, arrival: int, agent: Optional[str] = None) -> Optional[dict]:
@@ -355,6 +364,195 @@ class PeerDesk:
                     self.cr += qty * price
                     self.remote += at != st or loc.get("status") != "docked"
                     have -= qty
+
+
+# ------------------------------------------------------------ corporate risk (debt, distress, takeovers)
+
+class Corporate:
+    """Ryan, #agent-chat 2026-09-22 23:02: real risk for the corps.
+
+    - Claims: contracts start unowned. Each round the corp that values an
+      open contract most (value_to, from its own position and view) claims
+      it, at most MAX_CLAIMS open per corp. Novices are overconfident:
+      they value contracts at 1.0-2.5x their true worth.
+    - Penalty: a contract that lapses undelivered costs its current owner
+      PENALTY x the undelivered value.
+    - Debt: what a corp owes beyond its CR. Distress settles it each round:
+      sell goods to the local depot at its bid, then auction the corp's own
+      treasury shares at DISCOUNT x NAV to the richest rival that can pay.
+    - Takeover: a rival holding TAKEOVER_SHARES of a corp's stock absorbs it
+      (all balances and contracts pass to the acquirer, which also takes on
+      its debt). A corp that absorbs every rival wins outright.
+    """
+
+    MAX_CLAIMS = 2
+    PENALTY = 0.5  # tuned 2026-09-22: at 0.5 the corps that go bust are the overconfident claimers
+    DISCOUNT = 0.7
+    TAKEOVER_SHARES = 510
+    AUCTION_CAP = 100   # treasury shares a distressed corp sells per round
+    PRICE_FLOOR = 10    # CR/share floor under the auction price, before DISCOUNT
+    BANKRUPT_ROUNDS = 10  # rounds in debt with no treasury shares left before a corp is out
+
+    def __init__(self, ref: AgoraReferee, board: "ContractBoard", kinds: Dict[str, str], seed: int):
+        self.ref, self.board, self.kinds = ref, board, kinds
+        self.rng = random.Random(seed * 31337)
+        self.debt = {a: 0 for a in FLEETS}
+        self.out: Dict[str, str] = {}  # absorbed corp -> acquirer, or "bankrupt"
+        self._since_debt: Dict[str, int] = {}
+        self.stats = {"claims": 0, "penalties": 0, "penalty_cr": 0, "goods_sold_cr": 0,
+                      "share_auctions": 0, "shares_auctioned": 0, "takeovers": [], "bankruptcies": [], "winner": None,
+                      "max_debt": 0, "rounds_in_debt": 0}
+        board.on_expire = self._expired
+
+    def active(self) -> List[str]:
+        return [a for a in FLEETS if a not in self.out]
+
+    def _move(self, txn: str, legs) -> None:
+        ref = self.ref
+        with ref.lock, ref.conn:
+            for acct, inst, d in legs:
+                if not d:
+                    continue
+                ref.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, ?, 0)", (acct, inst))
+                ref.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?", (d, acct, inst))
+                ref.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)",
+                                 (txn, ref.current_seq, acct, inst, d))
+
+    def _sym(self, a: str) -> str:
+        return {"amos": "EQ_AMOS", "marvin": "EQ_MARV", "zero": "EQ_ZERO", "aerial": "EQ_AERL"}[a]
+
+    # ------------------------------------------------------------ claims and penalties
+
+    def claim(self, views: Dict[str, dict]) -> None:
+        held = {a: sum(1 for c in self.board.open if c["owner"] == a) for a in FLEETS}
+        for c in self.board.open:
+            if c["owner"] is not None or c["remaining"] <= 0:
+                continue
+            bids = []
+            for a in self.active():
+                if held[a] >= self.MAX_CLAIMS:
+                    continue
+                v = self.board.value_to(a, c, views[a])
+                if self.kinds.get(a) == "novice":
+                    v = int(max(v, c["price"] * min(c["remaining"], 500) * 0.1) * self.rng.uniform(1.0, 2.5))
+                if v > 0:
+                    bids.append((v, a))
+            if bids:
+                _, a = max(bids)
+                c["owner"] = a
+                held[a] += 1
+                self.stats["claims"] += 1
+
+    def _expired(self, c: dict) -> None:
+        owner = c.get("owner")
+        if not owner:
+            return
+        pen = int(c["price"] * c["remaining"] * self.PENALTY)
+        self.stats["penalties"] += 1
+        self.stats["penalty_cr"] += pen
+        self.debt[owner] += pen
+
+    # ------------------------------------------------------------ distress
+
+    def _pay_down(self, a: str) -> None:
+        pay = min(self.debt[a], self.ref.get_balance(a, "CR"))
+        if pay > 0:
+            self._move(f"debt-{a}-{self.ref.current_round}-{pay}", ((a, "CR", -pay), ("SYSTEM", "CR", pay)))
+            self.debt[a] -= pay
+
+    def settle(self) -> None:
+        ref = self.ref
+        any_debt = False
+        for a in self.active():
+            self._pay_down(a)
+            if self.debt[a] <= 0:
+                continue
+            # 1. goods to the local depot at its bid
+            st = location(ref, a)
+            if st:
+                q = ref.get_depot_summary()["stations"][st]
+                for comm in ("FRAG", "FOOD", "ORE"):
+                    have, bid = ref.get_balance(a, comm), q[comm]["best_bid"]
+                    if have > 0 and bid and self.debt[a] > 0:
+                        before = ref.get_balance(a, "CR")
+                        order(ref, a, "ask", min(have, self.debt[a] // bid + 1), bid, comm, st, "distress")
+                        self.stats["goods_sold_cr"] += ref.get_balance(a, "CR") - before
+                self._pay_down(a)
+            # 2. auction own treasury shares at a discount: at most
+            #    AUCTION_CAP shares a round, split between rivals in
+            #    proportion to their cash, priced off the better of NAV and
+            #    the board mark (a bust corp's NAV alone collapses to 1).
+            if self.debt[a] > 0:
+                sym = self._sym(a)
+                base = {e["agent_id"]: e["net_worth"] - e.get("stocks_value", 0) for e in ref.get_leaderboard()}
+                m = ref.stock_marks(base)[sym]
+                px = max(1, int(max(m["nav"], m["mark"], self.PRICE_FLOOR) * self.DISCOUNT))
+                n = min(ref.get_balance(a, sym), -(-self.debt[a] // px), self.AUCTION_CAP)
+                rivals = [(ref.get_balance(b, "CR"), b) for b in self.active() if b != a]
+                total = sum(c for c, _ in rivals) or 1
+                for cash, b in sorted(rivals, reverse=True):
+                    if n <= 0:
+                        break
+                    k = min(n, cash // px, max(1, round(self.AUCTION_CAP * cash / total)))
+                    if k <= 0:
+                        continue
+                    self._move(f"auction-{sym}-{b}-{ref.current_round}",
+                               ((a, sym, -k), (b, sym, k), (b, "CR", -k * px), (a, "CR", k * px)))
+                    self.stats["share_auctions"] += 1
+                    self.stats["shares_auctioned"] += k
+                    n -= k
+                self._pay_down(a)
+            if self.debt[a] > 0:
+                any_debt = True
+                self.stats["max_debt"] = max(self.stats["max_debt"], self.debt[a])
+                self._since_debt[a] = self._since_debt.get(a, 0) + 1
+                # Bankrupt: still in debt with no treasury shares left to sell
+                # after BANKRUPT_ROUNDS rounds. The corp is out; its remaining
+                # assets go to its creditors (SYSTEM).
+                if ref.get_balance(a, self._sym(a)) <= 0 and self._since_debt[a] >= self.BANKRUPT_ROUNDS:
+                    cancel_all(ref, a)
+                    legs = []
+                    for r in ref.conn.execute("SELECT instrument, balance FROM accounts WHERE agent_id = ? "
+                                              "AND balance != 0", (a,)).fetchall():
+                        legs += [(a, r["instrument"], -r["balance"]), ("SYSTEM", r["instrument"], r["balance"])]
+                    self._move(f"bankrupt-{a}-{ref.current_round}", legs)
+                    for c in self.board.open:
+                        if c["owner"] == a:
+                            c["owner"] = None
+                    self.out[a] = "bankrupt"
+                    self.stats["bankruptcies"].append({"round": ref.current_round, "fleet": a, "debt": self.debt[a]})
+            else:
+                self._since_debt[a] = 0
+        if any_debt:
+            self.stats["rounds_in_debt"] += 1
+
+    # ------------------------------------------------------------ takeovers
+
+    def takeovers(self) -> None:
+        ref = self.ref
+        for target in self.active():
+            sym = self._sym(target)
+            for raider in self.active():
+                if raider == target or target in self.out:
+                    continue
+                if ref.get_balance(raider, sym) < self.TAKEOVER_SHARES:
+                    continue
+                cancel_all(ref, target)
+                legs = []
+                for r in ref.conn.execute("SELECT instrument, balance FROM accounts WHERE agent_id = ? AND balance != 0",
+                                          (target,)).fetchall():
+                    legs += [(target, r["instrument"], -r["balance"]), (raider, r["instrument"], r["balance"])]
+                self._move(f"takeover-{raider}-{target}-{ref.current_round}", legs)
+                for c in self.board.open:
+                    if c["owner"] == target:
+                        c["owner"] = raider
+                self.debt[raider] += self.debt[target]
+                self.debt[target] = 0
+                self.out[target] = raider
+                self.stats["takeovers"].append({"round": ref.current_round, "raider": raider, "target": target})
+        alive = self.active()
+        if len(alive) == 1 and self.stats["winner"] is None:
+            self.stats["winner"] = {"fleet": alive[0], "round": ref.current_round}
 
 
 # ------------------------------------------------------------ fog of war
@@ -626,6 +824,9 @@ class Novice:
         if self.rng.random() < self.p_bad:
             self._bad_order(ref, st, stats)
             return
+        board = getattr(ref, "_sim_contracts", None)
+        if board is not None and board.deliver(self.agent, st):
+            stats["contract_deliveries"] += 1
         if self.rng.random() >= self.p_keep:
             cancel_all(ref, self.agent)
         inv = inventory(ref, self.agent)
@@ -763,12 +964,20 @@ def depot_floor(ref: AgoraReferee) -> int:
 def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict", check_every: int = 25,
         depot_model: str = "static", band_pct: Optional[float] = None, reactive_bands: bool = True,
         contracts: bool = False, dock_fee: int = 0, owned_contracts: bool = False,
-        fog: Optional[tuple] = None, peer: bool = False) -> dict:
+        fog: Optional[tuple] = None, peer: bool = False, corporate: bool = False) -> dict:
     # Reactive depots are the referee's own implementation (agora/referee.py,
     # AGORA_DEPOT_MODEL), so these numbers describe what would ship.
+    # corporate: claimed contracts with penalties, debt, distress share
+    # auctions and 51% takeovers (Corporate); implies owned contracts and
+    # the live 100-share rival cross-holdings.
     ref = AgoraReferee(depots=True, asymmetric=True, depot_model=depot_model,
-                       band_pct=band_pct, reactive_bands=reactive_bands)
-    ref.new_game(seed=seed, depots=True, asymmetric=True, depot_model=depot_model)
+                       band_pct=band_pct, reactive_bands=reactive_bands,
+                       rival_shares=100 if corporate else 0)
+    # warmup_rounds is fixed: left unset, new_game draws it from SystemRandom
+    # and identical runs diverge (found 2026-09-22; runs before this were not
+    # reproducible run to run, only statistically comparable).
+    ref.new_game(seed=seed, warmup_rounds=5, depots=True, asymmetric=True, depot_model=depot_model,
+                 rival_shares=100 if corporate else 0)
     if genesis == "planet":
         apply_planet_genesis(ref)
     def build(a: str, kind: str):
@@ -780,7 +989,9 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
     fleets = {a: build(a, kind) for a, kind in SCENARIOS[scenario].items()}
     start = {a: score(ref, a) for a in FLEETS}
     stats = {"transits": 0, "halts_caused": 0, "band_blocked": 0, "stranded_events": 0, "contract_deliveries": 0}
-    cboard = ContractBoard(ref, seed, owned=owned_contracts) if (contracts or owned_contracts) else None
+    cboard = (ContractBoard(ref, seed, owned=owned_contracts or corporate, claim=corporate)
+              if (contracts or owned_contracts or corporate) else None)
+    corp = Corporate(ref, cboard, SCENARIOS[scenario], seed) if corporate else None
     fogger = Fog(fog[0], fog[1], seed) if fog else None
     desk = PeerDesk(ref) if peer else None
     ref._sim_contracts = cboard
@@ -797,14 +1008,21 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
         if fogger is not None:
             fogger.record(quotes)
         views = {a: (fogger.view(ref, a, quotes) if fogger else quotes) for a in FLEETS}
+        if corp is not None:
+            corp.claim(views)
         if cboard is not None and cboard.owned:
             cboard.trade(views)
         if desk is not None:
             desk.collect()
             desk.match(views)
         for a, strat in fleets.items():
+            if corp is not None and a in corp.out:
+                continue
             strat.act(ref, views[a], stats)
         ref.step_round()
+        if corp is not None:
+            corp.settle()
+            corp.takeovers()
         if dock_fee:
             stats["dock_fees"] = stats.get("dock_fees", 0) + charge_docking_fees(ref, dock_fee)
         if first_negative_depot is None and depot_floor(ref) < 0:
@@ -829,6 +1047,8 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
                                                   "owned": cboard.owned, "transfers": cboard.transfers,
                                                   "transfer_cr": cboard.transfer_cr},
         "fog": list(fog) if fog else None,
+        "corporate": None if corp is None else dict(corp.stats, debt_end={a: d for a, d in corp.debt.items() if d},
+                                                    absorbed=corp.out),
         "peer": None if desk is None else {"trades": desk.trades, "units": desk.units, "cr": desk.cr,
                                            "remote": desk.remote,
                                            "uncollected": sum(desk.pickups.values())},
@@ -865,6 +1085,8 @@ def main() -> int:
     ap.add_argument("--contracts", action="store_true", help="enable the #74 station contract prototype")
     ap.add_argument("--owned-contracts", action="store_true",
                     help="contracts are awarded to one corp, only it can deliver, and corps can sell them to each other")
+    ap.add_argument("--corporate", action="store_true",
+                    help="claimed contracts with penalties, debt, distress share auctions, 51%% takeovers")
     ap.add_argument("--peer", action="store_true",
                     help="fleet-to-fleet goods trades agreed at a distance, collected at the seller's station")
     ap.add_argument("--fog", type=float, nargs=2, metavar=("LAG", "NOISE"), default=None,
@@ -889,7 +1111,7 @@ def main() -> int:
                                        reactive_bands=not args.free_quotes, contracts=args.contracts,
                                        dock_fee=args.dock_fee, owned_contracts=args.owned_contracts,
                                        fog=(int(args.fog[0]), args.fog[1]) if args.fog else None,
-                                       peer=args.peer))
+                                       peer=args.peer, corporate=args.corporate))
     faulthandler.cancel_dump_traceback_later()
 
     if args.json:
