@@ -71,8 +71,11 @@ This ports the #74 contract board from the simulator, with ownership.
   (300–800), deadline (6–10 rounds out), price (1.3–1.6× base). Same
   parameters as the simulator.
 - **Award.** The first fleet to `CLAIM` a contract owns it. A fleet holds at
-  most 2 open contracts. The simulator awarded contracts at random; claiming
-  is the live equivalent.
+  most 2 open contracts. Claims are handled on arrival under the referee
+  lock, so two claims never tie. If claims are ever batched per round,
+  pick the winner by uniform random draw, not by row or fleet order (Zero,
+  review of #102). The simulator awarded contracts at random; claiming is
+  the live equivalent.
 - **Delivery.** Only the owner can deliver, when docked at the contract's
   station. Partial delivery is allowed. The station pays from `SYSTEM`.
 - **Resale.** The owner lists the contract at a price, and any fleet anywhere
