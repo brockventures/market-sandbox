@@ -1085,6 +1085,13 @@ class AgoraReferee:
                         'v': 1, 'kind': 'reject', 'reply': 'optional', 'floor': self.floor,
                         'payload': {'reason': 'insufficient_cargo', 'detail': f"Required {cargo_qty} {comm}, available {avail_comm} (balance {comm_bal} - committed {committed_comm})"}
                     }
+                # FUEL shipped as cargo and the trip's burn both come out of
+                # the same FUEL balance, so they must fit together (#160).
+                if comm == 'FUEL' and avail_fuel < required_fuel + cargo_qty:
+                    return {
+                        'v': 1, 'kind': 'reject', 'reply': 'optional', 'floor': self.floor,
+                        'payload': {'reason': 'insufficient_fuel', 'detail': f"Route {origin}->{dest} burns {required_fuel} FUEL and you are shipping {cargo_qty} FUEL as cargo: needs {required_fuel + cargo_qty}, available {avail_fuel} (balance {fuel_bal} - committed {committed_fuel})"}
+                    }
 
             # Piracy escort (agora/piracy.py): paid at departure, on top of
             # any toll. Ignored when piracy is off or there is no cargo.
