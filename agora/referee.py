@@ -17,6 +17,7 @@ from pathlib import Path
 from agora.order_book import OrderBook, Order, Trade
 from agora.galnet import GalNetEngine
 from agora.peer import PeerDesk, env_peer_trades
+from agora.fog import FogEngine, env_fog, parse_fog
 from agora.spatial import (
     StationPriceEngine, STATIONS, COMMODITIES, BASE_PRICES, get_route, ROUTES,
     get_alignment_windows, PERISHABLE_COMMODITIES
@@ -74,8 +75,11 @@ class AgoraReferee:
         band_pct: Optional[float] = None,
         reactive_bands: bool = True,
         peer_trades: Optional[bool] = None,
+        fog: Any = None,
     ):
         self.db_path = db_path
+        _fog = parse_fog(fog) if fog is not None else env_fog()
+        self.fog: Optional[FogEngine] = FogEngine(*_fog) if _fog else None
         # Fleet-to-fleet goods trades agreed at a distance (agora/peer.py).
         self.peer_trades = env_peer_trades() if peer_trades is None else bool(peer_trades)
         self.depot_model = depot_model if depot_model in DEPOT_MODELS else _env_depot_model()
@@ -113,6 +117,8 @@ class AgoraReferee:
             self.seed_depots()
         if asymmetric:
             self.set_asymmetric_roster()
+        if self.fog:
+            self.fog.record(self)
 
     def set_asymmetric_roster(self, spawn_map: Optional[Dict[str, str]] = None) -> None:
         """Update fleet_roster with asymmetric home stations and sync vessel locations."""
@@ -436,6 +442,7 @@ class AgoraReferee:
         depot_model: Optional[str] = None,
         band_pct: Optional[float] = None,
         peer_trades: Optional[bool] = None,
+        fog: Any = None,
     ) -> Dict[str, Any]:
         """
         Full clean-slate reset, callable live via POST /referee/admin/reset:
@@ -465,6 +472,7 @@ class AgoraReferee:
         self.spatial = StationPriceEngine()
         if self.depots_enabled:
             self.seed_depots()
+        self._configure_fog(fog, seed=0)
 
         return {'seq': 0, 'floor': self.floor, 'fleets': [r['agent_id'] for r in
                 self.conn.execute("SELECT agent_id FROM fleet_roster").fetchall()]}
@@ -479,6 +487,7 @@ class AgoraReferee:
         depot_model: Optional[str] = None,
         band_pct: Optional[float] = None,
         peer_trades: Optional[bool] = None,
+        fog: Any = None,
     ) -> Dict[str, Any]:
         """
         Wipes the board exactly like reset_to_genesis(), but rolls a genuinely
@@ -529,11 +538,13 @@ class AgoraReferee:
 
         if self.depots_enabled:
             self.seed_depots()
+        self._configure_fog(fog, seed=roll_seed)
 
         return {
             'seq': 0,
             'floor': self.floor,
             'seed': roll_seed,
+            'fog': None if not self.fog else {'lag': self.fog.lag, 'noise': self.fog.noise},
             'warmup_rounds': rounds_to_roll,
             'opening_prices': opening_prices,
             'fleets': [r['agent_id'] for r in self.conn.execute("SELECT agent_id FROM fleet_roster").fetchall()],
@@ -580,6 +591,17 @@ class AgoraReferee:
         cur.execute("SELECT COALESCE(MAX(seq), 0) FROM book_events")
         row = cur.fetchone()
         return row[0] if row else 0
+
+    def _configure_fog(self, fog: Any, seed: int) -> None:
+        """fog=None keeps the current setting (re-seeded for the new game);
+        False turns it off; True or {"lag", "noise"} turns it on."""
+        if fog is None:
+            cfg = (self.fog.lag, self.fog.noise) if self.fog else None
+        else:
+            cfg = parse_fog(fog)
+        self.fog = FogEngine(cfg[0], cfg[1], seed) if cfg else None
+        if self.fog:
+            self.fog.record(self)
 
     def _get_next_seq(self) -> int:
         return self.current_seq + 1
@@ -1042,6 +1064,9 @@ class AgoraReferee:
 
             # Audit active circuit breaker halts and execute call auction reopens
             reopen_reports = self.circuit_breaker.step_round(new_round)
+
+            if self.fog:
+                self.fog.record(self)
 
             return {
                 'status': 'ok',
