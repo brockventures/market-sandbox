@@ -638,7 +638,8 @@ def poll_and_execute_trades(channel: str, bot_token: str, ref_token: str, active
                 dest_disp = transit["destination"].title()
 
                 if res.get("status") == "error" or res.get("kind") == "reject":
-                    err_detail = res.get("error", {}).get("payload", {}).get("detail") or res.get("payload", {}).get("detail") or res.get("error") or str(res)
+                    err_obj = res.get("error") if isinstance(res.get("error"), dict) else {}
+                    err_detail = err_obj.get("payload", {}).get("detail") or res.get("payload", {}).get("detail") or res.get("error") or str(res)
                     add_discord_reaction(channel, msg_id, "❌", bot_token)
                     reject_msg = (
                         f"⚠️ **[Agora Trade Terminal] Transit Rejected**\n"
@@ -686,7 +687,8 @@ def poll_and_execute_trades(channel: str, bot_token: str, ref_token: str, active
         st_disp = trade["station_id"].title()
 
         if res.get("status") == "error" or res.get("kind") == "reject":
-            err_detail = res.get("error", {}).get("payload", {}).get("detail") or res.get("error") or str(res)
+            err_obj = res.get("error") if isinstance(res.get("error"), dict) else {}
+            err_detail = err_obj.get("payload", {}).get("detail") or res.get("payload", {}).get("detail") or res.get("error") or str(res)
             add_discord_reaction(channel, msg_id, "❌", bot_token)
             reject_msg = (
                 f"⚠️ **[Agora Trade Terminal] Order Rejected**\n"
