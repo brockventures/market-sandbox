@@ -162,6 +162,8 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 depots=depots,
                 asymmetric=asymmetric,
                 spawn_map=spawn_locations,
+                depot_model=payload.get('depot_model'),
+                band_pct=payload.get('band_pct'),
             )
             self._send_json(200, {'v': 1, 'kind': 'new_game_ok', 'payload': result})
             return
@@ -212,6 +214,8 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 depots=depots,
                 asymmetric=asymmetric,
                 spawn_map=spawn_locations,
+                depot_model=payload.get('depot_model'),
+                band_pct=payload.get('band_pct'),
             )
             self._send_json(200, {'v': 1, 'kind': 'reset_ok', 'payload': result})
             return
