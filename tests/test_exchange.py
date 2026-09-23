@@ -62,6 +62,19 @@ class TestEquityExchange(unittest.TestCase):
         ok, errs = ref.verify_ledger_invariants()
         self.assertTrue(ok, errs)
 
+    def test_buying_pushes_the_price_up(self):
+        def ask_after(buy):
+            ref = AgoraReferee(rival_shares=100, exchange_shares=100, exchange_vol=0)
+            ref.new_game(seed=7, warmup_rounds=3, rival_shares=100, exchange_shares=100, exchange_vol=0)
+            if buy:
+                ask = ref.books['ceres']['EQ_ZERO'].best_ask()
+                ref.submit_envelope({"v": 1, "kind": "order", "payload": {
+                    "order_id": "t-b", "agent_id": "amos", "side": "bid", "qty": 20, "limit_price": ask,
+                    "instrument": "EQ_ZERO", "station_id": "ceres", "seq_seen": ref.current_seq}})
+            ref.step_round()
+            return ref.books['ceres']['EQ_ZERO'].best_ask()
+        self.assertGreater(ask_after(True), ask_after(False))
+
     def test_seeded_games_reproduce_prices(self):
         def path():
             ref = game()

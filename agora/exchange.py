@@ -17,6 +17,7 @@ Each round it quotes every stock two-sided around a reference price:
     anchor = mean of the fleet's NAV over the last ANCHOR_ROUNDS rounds,
              carried forward along that window's trend (a plain mean lags)
     ref   += REVERSION * (anchor - ref) + VOL * ref * N(0, 1)
+           + IMPACT * ref * (shares the exchange sold - bought last round) / DEPTH
     bid    = ref * (1 - SPREAD), ask = ref * (1 + SPREAD), DEPTH shares a side
 
 The anchor is smoothed because raw NAV drops whenever a hauler's cargo is
@@ -46,6 +47,12 @@ REVERSION = 0.1
 DEFAULT_VOL = 0.03
 DEFAULT_SPREAD = 0.03
 DEFAULT_DEPTH = 20
+# Price impact (Ryan, #agent-chat 2026-09-23 08:26: "buying the stock should
+# make the price go up"): each share the exchange sold since last round
+# lifts its price by IMPACT / DEPTH, each share it bought lowers it. A full
+# side of DEPTH shares moves the price IMPACT (5%). The move persists and
+# decays only through reversion toward NAV.
+IMPACT = 0.05
 
 
 def clamp_shares(n: Any) -> int:
@@ -68,6 +75,7 @@ class EquityExchange:
         self.rng = random.Random(f"exchange-{seed}")
         self.navs: Dict[str, List[float]] = {}
         self.price: Dict[str, float] = {}
+        self.held: Dict[str, int] = {}
 
     # ------------------------------------------------------------ genesis
 
@@ -107,7 +115,11 @@ class EquityExchange:
                 anchor += slope * (len(hist) - 1) / 2
             anchor = max(1.0, anchor)
             p = self.price.get(sym, anchor)
-            p = p + REVERSION * (anchor - p) + self.vol * p * self.rng.gauss(0.0, 1.0)
+            now_held = ref.get_balance(EXCHANGE_ID, sym)
+            net_sold = self.held.get(sym, now_held) - now_held
+            self.held[sym] = now_held
+            p = (p + REVERSION * (anchor - p) + self.vol * p * self.rng.gauss(0.0, 1.0)
+                 + IMPACT * p * net_sold / self.depth)
             p = max(1.0, p)
             self.price[sym] = p
 
