@@ -3,6 +3,7 @@ agora.referee - Central referee for order validation, solvency auditing,
 book matching, and atomic double-entry ledger settlement.
 """
 
+import os
 import sqlite3
 import json
 import time
@@ -24,7 +25,7 @@ from agora.equity import (
     AGENT_BY_SYMBOL, DEFAULT_BORROW_FEE_RATE
 )
 from agora.salvage import DerelictSalvageEngine
-from agora.circuit_breaker import CircuitBreakerEngine
+from agora.circuit_breaker import CircuitBreakerEngine, DEFAULT_BAND_PCT
 
 
 ASYMMETRIC_SPAWN_LOCATIONS: Dict[str, str] = {
@@ -33,6 +34,30 @@ ASYMMETRIC_SPAWN_LOCATIONS: Dict[str, str] = {
     'marvin': 'mars',
     'aerial': 'luna',
 }
+
+
+# Reactive depot model (AGORA_DEPOT_MODEL=reactive, or depot_model= on the
+# constructor / new_game / reset). Tuned in tools/economy_sim.py, 2026-09-22:
+# finite shelves restocked by a per-round production drip, a finite buy-side
+# hold drained by consumption, and quotes skewed by both.
+DEPOT_MODELS = ("static", "reactive")
+REACTIVE_TARGET = 2000        # shelf capacity and hold capacity, units
+REACTIVE_MAIN_DRIP = 100      # per-round restock (cheapest station) / consumption (dearest station)
+REACTIVE_SIDE_DRIP = 20       # per-round restock / consumption everywhere else
+REACTIVE_SKEW = 0.5           # price elasticity to shelf / hold fill
+
+
+def _env_depot_model() -> str:
+    m = os.environ.get("AGORA_DEPOT_MODEL", "static").strip().lower()
+    return m if m in DEPOT_MODELS else "static"
+
+
+def _env_band_pct() -> float:
+    try:
+        v = float(os.environ.get("AGORA_BAND_PCT", ""))
+        return v if 0 < v < 1 else DEFAULT_BAND_PCT
+    except ValueError:
+        return DEFAULT_BAND_PCT
 
 
 class AgoraReferee:
@@ -44,8 +69,17 @@ class AgoraReferee:
         spatial: Optional[StationPriceEngine] = None,
         depots: bool = False,
         asymmetric: bool = False,
+        depot_model: Optional[str] = None,
+        band_pct: Optional[float] = None,
+        reactive_bands: bool = True,
     ):
         self.db_path = db_path
+        self.depot_model = depot_model if depot_model in DEPOT_MODELS else _env_depot_model()
+        self.band_pct = band_pct if band_pct is not None else _env_band_pct()
+        # Keep reactive quotes inside the circuit-breaker band (True), or let
+        # them float freely and trip halts (False).
+        self.reactive_bands = reactive_bands
+        self._reactive: Dict[str, Any] = {}
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.lock = threading.Lock()
@@ -69,7 +103,7 @@ class AgoraReferee:
         self._init_db()
         self.equity = SyndicateEquityEngine(self.conn, self)
         self.salvage = DerelictSalvageEngine(self.conn, self)
-        self.circuit_breaker = CircuitBreakerEngine(self.conn, self)
+        self.circuit_breaker = CircuitBreakerEngine(self.conn, self, band_pct=self.band_pct)
         if self.depots_enabled:
             self.seed_depots()
         if asymmetric:
@@ -387,13 +421,15 @@ class AgoraReferee:
         self.book = self.books['ceres'][self.default_instrument if self.default_instrument in self.books['ceres'] else 'FRAG']
         self.equity = SyndicateEquityEngine(self.conn, self)
         self.salvage = DerelictSalvageEngine(self.conn, self)
-        self.circuit_breaker = CircuitBreakerEngine(self.conn, self)
+        self.circuit_breaker = CircuitBreakerEngine(self.conn, self, band_pct=self.band_pct)
 
     def reset_to_genesis(
         self,
         depots: Optional[bool] = None,
         asymmetric: Optional[bool] = None,
         spawn_map: Optional[Dict[str, str]] = None,
+        depot_model: Optional[str] = None,
+        band_pct: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Full clean-slate reset, callable live via POST /referee/admin/reset:
@@ -401,6 +437,10 @@ class AgoraReferee:
         If asymmetric=True or spawn_map is provided, updates fleet_roster
         home_station prior to re-seeding.
         """
+        if depot_model in DEPOT_MODELS:
+            self.depot_model = depot_model
+        if band_pct is not None and 0 < float(band_pct) < 1:
+            self.band_pct = float(band_pct)
         if depots is not None:
             self.depots_enabled = depots
         self.asymmetric_enabled = asymmetric
@@ -428,6 +468,8 @@ class AgoraReferee:
         depots: Optional[bool] = None,
         asymmetric: Optional[bool] = None,
         spawn_map: Optional[Dict[str, str]] = None,
+        depot_model: Optional[str] = None,
+        band_pct: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Wipes the board exactly like reset_to_genesis(), but rolls a genuinely
@@ -436,6 +478,10 @@ class AgoraReferee:
         If asymmetric=True or spawn_map is provided, updates fleet_roster
         home_station prior to re-seeding.
         """
+        if depot_model in DEPOT_MODELS:
+            self.depot_model = depot_model
+        if band_pct is not None and 0 < float(band_pct) < 1:
+            self.band_pct = float(band_pct)
         if depots is not None:
             self.depots_enabled = depots
         self.asymmetric_enabled = asymmetric
@@ -1846,6 +1892,7 @@ class AgoraReferee:
         """
         with self.lock, self.conn:
             self.depots_enabled = True
+            self._reset_reactive_state()
             for st in STATIONS:
                 depot_id = f"depot_{st}"
                 # Ensure vessel is docked at home station
@@ -1893,6 +1940,8 @@ class AgoraReferee:
         Refresh two-sided continuous depot resting liquidity across all stations
         for FRAG and FUEL based on current spatial spot prices.
         """
+        if getattr(self, 'depot_model', 'static') == 'reactive':
+            return self._refresh_reactive_depots_locked()
         round_num = getattr(self, 'current_round', 0)
         for st in STATIONS:
             depot_id = f"depot_{st}"
@@ -2015,9 +2064,140 @@ class AgoraReferee:
                         VALUES (?, ?, ?, ?, ?, ?, ?, 'open', NULL, 0, ?)
                     """, (oid, depot_id, comm, side, qty, price, seq, st))
 
+    def _reset_reactive_state(self) -> None:
+        """Fresh shelves and holds; called whenever depots are (re)seeded."""
+        shelf, hold, prod, cons = {}, {}, {}, {}
+        for c in COMMODITIES:
+            cheap = min(STATIONS, key=lambda st: BASE_PRICES[st][c])
+            dear = max(STATIONS, key=lambda st: BASE_PRICES[st][c])
+            for st in STATIONS:
+                shelf[(st, c)] = REACTIVE_TARGET // 2
+                hold[(st, c)] = 0
+                prod[(st, c)] = REACTIVE_MAIN_DRIP if st == cheap else REACTIVE_SIDE_DRIP
+                cons[(st, c)] = REACTIVE_MAIN_DRIP if st == dear else REACTIVE_SIDE_DRIP
+        row = self.conn.execute("SELECT COALESCE(MAX(entry_id), 0) FROM ledger_entries").fetchone()
+        self._reactive = {"shelf": shelf, "hold": hold, "prod": prod, "cons": cons,
+                          "ledger_cursor": row[0], "refreshed_round": None}
+
+    def _depot_transfer_locked(self, txn_id: str, depot_id: str, inst: str, qty: int) -> None:
+        """Balanced SYSTEM <-> depot transfer (qty > 0 credits the depot)."""
+        next_seq = self.current_seq
+        for acct, d in ((depot_id, qty), ('SYSTEM', -qty)):
+            self.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, ?, 0)", (acct, inst))
+            self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?", (d, acct, inst))
+            self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)",
+                              (txn_id, next_seq, acct, inst, d))
+
+    def _refresh_reactive_depots_locked(self) -> None:
+        """
+        Reactive depots. Caller holds self.lock.
+
+        Gross depot flows since the last refresh come from the ledger (trade
+        and auction settlements only), so a depot that bought and sold the
+        same good in one round moves both its shelf and its hold. Once per
+        round the shelf restocks and the hold drains by the drip rates.
+        Quotes: one level each side; the ask rises as the shelf empties, the
+        bid falls as the hold fills. Bid notional is capped at depot CR and
+        ask size at depot stock, as in the static model.
+        """
+        if not self._reactive:
+            self._reset_reactive_state()
+        rx = self._reactive
+        rows = self.conn.execute(
+            "SELECT entry_id, agent_id, instrument, delta FROM ledger_entries "
+            "WHERE entry_id > ? AND agent_id LIKE 'depot_%' "
+            "AND (txn_id LIKE 'trade-%' OR txn_id LIKE 'auction-%')",
+            (rx["ledger_cursor"],)).fetchall()
+        for r in rows:
+            st = r["agent_id"][len("depot_"):]
+            key = (st, r["instrument"])
+            if key in rx["shelf"]:
+                if r["delta"] < 0:
+                    rx["shelf"][key] = max(0, rx["shelf"][key] + r["delta"])
+                else:
+                    rx["hold"][key] += r["delta"]
+        top = self.conn.execute("SELECT COALESCE(MAX(entry_id), 0) FROM ledger_entries").fetchone()[0]
+        rx["ledger_cursor"] = max(rx["ledger_cursor"], top)
+
+        round_num = getattr(self, 'current_round', 0)
+        new_round = rx["refreshed_round"] != round_num
+        rx["refreshed_round"] = round_num
+
+        for st in STATIONS:
+            depot_id = f"depot_{st}"
+            cr_budget = max(0, self.get_balance(depot_id, 'CR'))
+            for comm in COMMODITIES:
+                key = (st, comm)
+                if new_round:
+                    # Production: the station adds real goods to its depot.
+                    produced = min(rx["prod"][key], REACTIVE_TARGET - rx["shelf"][key])
+                    if produced > 0:
+                        rx["shelf"][key] += produced
+                        self._depot_transfer_locked(f"depot-produce-{st}-{comm}-r{round_num}",
+                                                    depot_id, comm, produced)
+                    # Consumption: the station uses up goods its depot bought
+                    # and pays the depot base price for them. This is what
+                    # returns cash to importing depots; without it Earth and
+                    # Ceres drained to ~0 CR by round ~1,100 and trading stopped
+                    # (tools/economy_sim.py, 2,000-round run, 2026-09-22).
+                    # Paid at the depot's own current bid, so a depot recovers
+                    # roughly what it spent: paying base price made depots
+                    # accumulate ~5M CR over 2,000 rounds.
+                    consumed = min(rx["cons"][key], rx["hold"][key], max(0, self.get_balance(depot_id, comm)))
+                    if consumed > 0:
+                        spot_now = self.spatial.get_station_price(st, comm) if self.spatial else BASE_PRICES[st][comm]
+                        unit = max(1, int(round(spot_now * 0.97 * (REACTIVE_TARGET / (REACTIVE_TARGET + rx["hold"][key])) ** REACTIVE_SKEW)))
+                        txn = f"depot-consume-{st}-{comm}-r{round_num}"
+                        self._depot_transfer_locked(txn, depot_id, comm, -consumed)
+                        self._depot_transfer_locked(txn, depot_id, 'CR', consumed * unit)
+                    rx["hold"][key] = max(0, rx["hold"][key] - rx["cons"][key])
+
+                book = self.books.setdefault(st, {}).setdefault(comm, OrderBook(instrument=comm))
+                book.bids = [o for o in book.bids if o.agent_id != depot_id]
+                book.asks = [o for o in book.asks if o.agent_id != depot_id]
+                self.conn.execute(
+                    "DELETE FROM orders WHERE agent_id = ? AND station_id = ? AND instrument = ? AND status = 'open'",
+                    (depot_id, st, comm))
+
+                spot = self.spatial.get_station_price(st, comm) if self.spatial else BASE_PRICES[st][comm]
+                shelf_ratio = REACTIVE_TARGET / max(rx["shelf"][key], REACTIVE_TARGET * 0.05)
+                ask = max(2, int(round(spot * 1.03 * min(3.0, shelf_ratio ** REACTIVE_SKEW))))
+                bid = int(round(spot * 0.97 * (REACTIVE_TARGET / (REACTIVE_TARGET + rx["hold"][key])) ** REACTIVE_SKEW))
+                bid = max(1, min(ask - 1, bid))
+
+                if self.reactive_bands and hasattr(self, 'circuit_breaker') and self.circuit_breaker:
+                    bands = self.circuit_breaker.get_bands(st, comm)
+                    lo, hi = bands.get('lower_limit'), bands.get('upper_limit')
+                    if lo is not None and hi is not None:
+                        min_p, max_p = int(math.ceil(lo)), int(math.floor(hi))
+                        if max_p > min_p:
+                            ask = max(min_p + 1, min(ask, max_p))
+                            bid = max(min_p, min(bid, ask - 1))
+
+                ask_qty = min(rx["shelf"][key], max(0, self.get_balance(depot_id, comm)))
+                bid_qty = min(max(0, REACTIVE_TARGET - rx["hold"][key]), cr_budget // bid if bid > 0 else 0)
+                cr_budget -= bid_qty * bid
+
+                seq = self.current_seq
+                for side, price, qty in (('bid', bid, bid_qty), ('ask', ask, ask_qty)):
+                    if qty <= 0:
+                        continue
+                    oid = f"{depot_id}-{comm.lower()}-{side}-r{round_num}-rx"
+                    order = Order(order_id=oid, agent_id=depot_id, instrument=comm, side=side,
+                                  qty=qty, limit_price=price, seq_seen=seq)
+                    if side == 'bid':
+                        book._insert_bid(order)
+                    else:
+                        book._insert_ask(order)
+                    self.conn.execute("""
+                        INSERT OR REPLACE INTO orders (order_id, agent_id, instrument, side, qty, limit_price, seq_seen, status, resolved_seq, filled_qty, station_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, 'open', NULL, 0, ?)
+                    """, (oid, depot_id, comm, side, qty, price, seq, st))
+
     def get_depot_summary(self) -> Dict[str, Any]:
         """Return summary of all station depot quotes and depths."""
-        res = {'depots_enabled': self.depots_enabled, 'stations': {}}
+        res = {'depots_enabled': self.depots_enabled, 'depot_model': self.depot_model,
+               'band_pct': self.band_pct, 'stations': {}}
         for st in STATIONS:
             res['stations'][st] = {}
             for comm in COMMODITIES:
