@@ -16,6 +16,7 @@ from pathlib import Path
 
 from agora.order_book import OrderBook, Order, Trade
 from agora.galnet import GalNetEngine
+from agora.peer import PeerDesk, env_peer_trades
 from agora.spatial import (
     StationPriceEngine, STATIONS, COMMODITIES, BASE_PRICES, get_route, ROUTES,
     get_alignment_windows, PERISHABLE_COMMODITIES
@@ -72,8 +73,11 @@ class AgoraReferee:
         depot_model: Optional[str] = None,
         band_pct: Optional[float] = None,
         reactive_bands: bool = True,
+        peer_trades: Optional[bool] = None,
     ):
         self.db_path = db_path
+        # Fleet-to-fleet goods trades agreed at a distance (agora/peer.py).
+        self.peer_trades = env_peer_trades() if peer_trades is None else bool(peer_trades)
         self.depot_model = depot_model if depot_model in DEPOT_MODELS else _env_depot_model()
         self.band_pct = band_pct if band_pct is not None else _env_band_pct()
         # Keep reactive quotes inside the circuit-breaker band (True), or let
@@ -101,6 +105,7 @@ class AgoraReferee:
         }
         self.book = self.books['ceres'][self.default_instrument if self.default_instrument in self.books['ceres'] else 'FRAG']
         self._init_db()
+        self.peer = PeerDesk(self)
         self.equity = SyndicateEquityEngine(self.conn, self)
         self.salvage = DerelictSalvageEngine(self.conn, self)
         self.circuit_breaker = CircuitBreakerEngine(self.conn, self, band_pct=self.band_pct)
@@ -397,7 +402,7 @@ class AgoraReferee:
                 'accounts', 'ledger_entries', 'book_events', 'station_prices',
                 'transits', 'vessel_locations', 'equity_loans', 'distress_beacons',
                 'rescue_rfqs', 'rescue_quotes', 'salvage_claims',
-                'circuit_breaker_halts', 'orders',
+                'circuit_breaker_halts', 'orders', 'station_escrow',
             ):
                 self.conn.execute(f"DELETE FROM {table}")
             self.conn.execute(
@@ -430,6 +435,7 @@ class AgoraReferee:
         spawn_map: Optional[Dict[str, str]] = None,
         depot_model: Optional[str] = None,
         band_pct: Optional[float] = None,
+        peer_trades: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Full clean-slate reset, callable live via POST /referee/admin/reset:
@@ -443,6 +449,8 @@ class AgoraReferee:
             self.band_pct = float(band_pct)
         if depots is not None:
             self.depots_enabled = depots
+        if peer_trades is not None:
+            self.peer_trades = bool(peer_trades)
         self.asymmetric_enabled = asymmetric
         if asymmetric or spawn_map:
             mapping = spawn_map or ASYMMETRIC_SPAWN_LOCATIONS
@@ -470,6 +478,7 @@ class AgoraReferee:
         spawn_map: Optional[Dict[str, str]] = None,
         depot_model: Optional[str] = None,
         band_pct: Optional[float] = None,
+        peer_trades: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Wipes the board exactly like reset_to_genesis(), but rolls a genuinely
@@ -484,6 +493,8 @@ class AgoraReferee:
             self.band_pct = float(band_pct)
         if depots is not None:
             self.depots_enabled = depots
+        if peer_trades is not None:
+            self.peer_trades = bool(peer_trades)
         self.asymmetric_enabled = asymmetric
         if asymmetric or spawn_map:
             mapping = spawn_map or ASYMMETRIC_SPAWN_LOCATIONS
@@ -1023,6 +1034,9 @@ class AgoraReferee:
                     self.conn.execute("INSERT INTO book_events (seq, kind, payload) VALUES (?, 'transit_arrived', ?)", (next_seq, json.dumps(arrival_payload)))
                     arrived_list.append(arrival_payload)
 
+                # Peer escrow: buyers who are now docked collect; overdue pickups refund.
+                peer_report = self.peer.step_locked(new_round) if self.peer_trades else None
+
             # Distribute bilateral borrow fees & audit maintenance margin
             borrow_fee_reports = self.equity.step_borrow_fees(new_round)
 
@@ -1035,7 +1049,8 @@ class AgoraReferee:
                 'prices': self.spatial.get_prices(),
                 'arrived_transits': arrived_list,
                 'borrow_fee_reports': borrow_fee_reports,
-                'circuit_breaker_reopens': reopen_reports
+                'circuit_breaker_reopens': reopen_reports,
+                'peer_escrow': peer_report,
             }
 
     def get_equity_summary(self) -> Dict[str, Any]:
@@ -1866,10 +1881,14 @@ class AgoraReferee:
             spots = [self.spatial.get_station_price(st, comm) for st in STATIONS] if self.spatial else []
             commodity_marks[comm] = int(round(sum(spots) / len(spots))) if spots else 0
         board = []
+        # Goods and CR held in peer escrow still count toward whoever owns them.
+        escrow = self.peer.holdings_adjustment() if getattr(self, 'peer', None) else {}
         for r in rows:
-            food = r['food'] or 0
-            ore = r['ore'] or 0
-            net_worth = r['liquid'] + (r['frags'] * mark) + food * commodity_marks['FOOD'] + ore * commodity_marks['ORE']
+            adj = escrow.get(r['agent_id'], {})
+            food = (r['food'] or 0) + adj.get('FOOD', 0)
+            ore = (r['ore'] or 0) + adj.get('ORE', 0)
+            net_worth = (r['liquid'] + adj.get('CR', 0) + ((r['frags'] or 0) + adj.get('FRAG', 0)) * mark
+                         + food * commodity_marks['FOOD'] + ore * commodity_marks['ORE'])
             board.append({
                 'agent_id': r['agent_id'],
                 'net_worth': net_worth,
