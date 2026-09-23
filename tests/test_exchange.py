@@ -97,6 +97,43 @@ class TestEquityExchange(unittest.TestCase):
         self.assertEqual(ref.exchange_shares, MAX_SHARES)
         self.assertLess(3 * 100 + MAX_SHARES, 510)
 
+    def test_replenish_from_system_when_cash_depleted(self):
+        ref = game()
+        # Artificially drain exchange cash below floor
+        with ref.conn:
+            ref.conn.execute("UPDATE accounts SET balance = 5000 WHERE agent_id = ? AND instrument = 'CR'", (EXCHANGE_ID,))
+            ref.conn.execute("UPDATE accounts SET balance = balance + 95000 WHERE agent_id = 'SYSTEM' AND instrument = 'CR'")
+            ref.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES ('drain', 0, ?, 'CR', -95000)", (EXCHANGE_ID,))
+            ref.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES ('drain', 0, 'SYSTEM', 'CR', 95000)")
+        self.assertEqual(ref.get_balance(EXCHANGE_ID, 'CR'), 5000)
+
+        ref.step_round()
+        # Should be replenished back to SEED_CR (100_000)
+        self.assertEqual(ref.get_balance(EXCHANGE_ID, 'CR'), 100_000)
+        ok, errs = ref.verify_ledger_invariants()
+        self.assertTrue(ok, errs)
+
+    def test_equitable_budget_allocation_across_symbols(self):
+        ref = game()
+        # Leave exchange with constrained cash so symbols must share
+        with ref.conn:
+            ref.conn.execute("UPDATE accounts SET balance = 30000 WHERE agent_id = ? AND instrument = 'CR'", (EXCHANGE_ID,))
+            ref.conn.execute("UPDATE accounts SET balance = balance + 70000 WHERE agent_id = 'SYSTEM' AND instrument = 'CR'")
+            ref.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES ('drain', 0, ?, 'CR', -70000)", (EXCHANGE_ID,))
+            ref.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES ('drain', 0, 'SYSTEM', 'CR', 70000)")
+        
+        # Manually refresh without stepping round so replenishment floor isn't triggered
+        with ref.lock, ref.conn:
+            ref.exchange.refresh_locked()
+
+        # Verify all 4 symbols have active bids rather than only the first one
+        for sym in ('EQ_AERL', 'EQ_AMOS', 'EQ_MARV', 'EQ_ZERO'):
+            book = ref.books['ceres'][sym]
+            bid = book.best_bid()
+            self.assertIsNotNone(bid, f"Symbol {sym} missing bid under constrained budget")
+            bids = [o for o in book.bids if o.agent_id == EXCHANGE_ID]
+            self.assertGreater(len(bids), 0)
+
 
 if __name__ == '__main__':
     unittest.main()

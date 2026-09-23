@@ -36,7 +36,7 @@ class TickerEngine:
         on_tick: Optional[Any] = None,
     ):
         self.referee = referee
-        self.interval_sec = max(1.0, float(interval_sec))
+        self.interval_sec = max(0.01, float(interval_sec))
         self.inactivity_rounds = max(1, int(inactivity_rounds))
         self.on_tick = on_tick  # optional callback(round_result: dict) for broadcast hooks
 
