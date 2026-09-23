@@ -96,6 +96,9 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
                "station that pays more, and sell it there. The table below shows where.")
     out.append("")
     out.append("## Orders (post in the trading channel)")
+    out.append("There is no limit on actions per round. Send as many orders as you like each round: buy and sell "
+               "goods, trade stocks, make or accept offers, and start a trip. The limits are physical: one trip "
+               "at a time, and goods trade only where you are docked.")
     out.append("- `BUY <qty> <good> @ <price> AT <station>`")
     out.append("- `SELL <qty> <good> @ <price> AT <station>`")
     out.append("- `MOVE TO <station> WITH <qty> <good>`")
