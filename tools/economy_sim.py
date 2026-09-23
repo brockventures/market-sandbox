@@ -265,9 +265,9 @@ class PeerDesk:
     depot bid at S, or the best bid elsewhere less the per-unit cost of
     flying them there. Offer price: the midpoint of that floor and the
     depot ask at S, so a buyer saves against the depot.
-    Buyer: takes it if it will next be at S (docked there, or arriving
-    there) and hauling the goods from S to its best market still pays at
-    the offer price, per its own (possibly fogged) view."""
+    Buyer: any fleet, wherever it is, takes it if flying to S to collect
+    and hauling the goods on to its best market still pays at the offer
+    price, per its own (possibly fogged) view."""
 
     MIN_LOT = 20
 
@@ -332,16 +332,18 @@ class PeerDesk:
                 for buyer in FLEETS:
                     if buyer == seller or have < self.MIN_LOT:
                         continue
+                    # From anywhere: a buyer elsewhere prices in the trip to S
+                    # to collect (Zero's review of #101: the first cut only let
+                    # fleets already at or bound for S agree).
                     loc = ref.get_vessel_location(buyer)
                     at = loc["transit"]["destination"] if loc.get("status") == "in_transit" else loc["station_id"]
-                    if at != st:
-                        continue
                     qty = min(have, 500, max(0, (ref.get_balance(buyer, "CR") - 300) // price))
                     if qty < self.MIN_LOT:
                         continue
                     bv = views[buyer]
+                    reach = 0.0 if at == st else self._unit_trip_cost(bv, at, st, qty, r)
                     others = [d for d in STATIONS if d != st]
-                    gain = max((bv[d][comm]["best_bid"] or 0) - self._unit_trip_cost(bv, st, d, qty, r) for d in others)
+                    gain = max((bv[d][comm]["best_bid"] or 0) - self._unit_trip_cost(bv, st, d, qty, r) for d in others) - reach
                     if gain <= price:
                         continue
                     self._move(f"peer-{seller}-{buyer}-{st}-{comm}-{r}",
@@ -351,7 +353,7 @@ class PeerDesk:
                     self.trades += 1
                     self.units += qty
                     self.cr += qty * price
-                    self.remote += loc.get("status") != "docked"
+                    self.remote += at != st or loc.get("status") != "docked"
                     have -= qty
 
 
