@@ -1192,9 +1192,17 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 self._send_json(200, {'status': 'ok', 'current_seq': ref.current_seq, 'fog': True,
                                       'ticks': fog.filter_ticks(ref, viewer, ref.get_ticks(since_seq=since_seq))})
                 return
-            if path == '/ws/terminal' and viewer != 'admin':
-                # The terminal stream carries every book and trade print exactly.
-                self._fogged('The live terminal stream is off while fog is on.')
+            if path == '/ws/terminal':
+                # Non-admin viewers get the public fog view: all four stations,
+                # stale and jittered, which every fleet can see anyway (Ryan,
+                # #agent-chat 2026-09-22 22:48). Admin gets the exact stream.
+                if self.headers.get('Upgrade', '').lower() == 'websocket':
+                    handle_terminal_websocket(self, ref, self.galnet_engine, public_fog=(viewer != 'admin'))
+                    return
+                self._send_json(200, {'status': 'ok', 'endpoint': '/ws/terminal', 'protocol': 'websocket',
+                                      'fog': 'public' if viewer != 'admin' else None,
+                                      'frames': ['snapshot', 'ticks', 'depth_diff', 'depots', 'leaderboard',
+                                                 'circuit_state', 'equity']})
                 return
 
         if path == '/ws/terminal':
