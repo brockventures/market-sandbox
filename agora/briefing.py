@@ -172,11 +172,13 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
                    "Rival shares count toward your net worth at the board price. Stocks trade on one exchange, "
                    "from anywhere, even in transit, and are never fogged.")
         if getattr(ref, 'exchange_shares', 0):
-            out.append("The exchange itself always quotes every stock, a few shares a side each round, around a "
-                       "price that follows the fleet's recent NAV but swings on its own. You can always buy or "
-                       "sell some stock; for size, trade with other fleets.")
+            from agora import exchange as X
+            out.append(f"The exchange itself always quotes every stock, {X.MIN_DEPTH} to {X.MAX_DEPTH} shares a side "
+                       f"each round (deeper the more that stock has traded over the last {X.VOLUME_ROUNDS} rounds), "
+                       "around a price that follows the fleet's recent NAV but swings on its own. It never holds "
+                       f"more than {X.MAX_SHARES} shares of any fleet. You can always buy or sell some stock; for "
+                       "size, trade with other fleets.")
             if getattr(ref, 'events_enabled', False):
-                from agora import exchange as X
                 pc = lambda v: f"{v * 100:+g}%"
                 out.append("News moves that price once, then it drifts back toward NAV: an upgrade "
                            f"{pc(X.SHOCKS['upgrade'][1])}, an escort or a raid fought off {pc(X.SHOCKS['escort'][1])}, "

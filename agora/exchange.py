@@ -20,6 +20,29 @@ Each round it quotes every stock two-sided around a reference price:
            + IMPACT * ref * (shares the exchange sold - bought last round) / DEPTH
     bid    = ref * (1 - SPREAD), ask = ref * (1 + SPREAD), DEPTH shares a side
 
+Depth follows the stock's traded volume (#187 track 1). The stock trader
+lane is meant to scale with capital, and a flat 20 shares a side capped
+what capital could deploy. Each stock's depth is
+
+    DEPTH = clamp(MIN_DEPTH + VOLUME_K * trailing volume a round, MIN_DEPTH, MAX_DEPTH)
+
+where trailing volume is every share of that stock traded on the exchange
+book (the exchange's own fills and fleet-to-fleet trades alike) over the
+last VOLUME_ROUNDS rounds, averaged over the whole window. A quiet stock
+quotes MIN_DEPTH (the old flat 20); a busy one up to MAX_DEPTH. At
+VOLUME_K = 1 the exchange quotes its base plus what the stock actually
+trades a round, so a trader who takes a full side every round deepens it
+round over round until MAX_DEPTH holds it. Swept on the `styles` scenario
+(seeds 1-40): VOLUME_K 0.5 / 1 / 2 lifted the stock trader's median about
++6k / +10k / +23k over flat depth; at 1, no other style moved more than 2k.
+Price impact is measured against the depth that was quoted when the
+shares traded, so a full side still moves the price IMPACT.
+
+Hard cap on holdings: the exchange never bids for more shares of a stock
+than would take it to MAX_SHARES. Deeper quotes must not turn it into a
+warehouse a raider can buy a takeover stake out of (takeover is 51%; see
+the takeover math below).
+
 The anchor is smoothed because raw NAV drops whenever a hauler's cargo is
 in flight (escrowed, marked at zero) and recovers when it docks; quoting
 raw NAV would pay anyone who times other fleets' trips. VOL is the dial for
@@ -59,6 +82,11 @@ REVERSION = 0.1
 DEFAULT_VOL = 0.12
 DEFAULT_SPREAD = 0.03
 DEFAULT_DEPTH = 20
+# Volume-scaled depth (#187 track 1): see the module docstring.
+MIN_DEPTH = DEFAULT_DEPTH
+MAX_DEPTH = 80
+VOLUME_ROUNDS = 20
+VOLUME_K = 1.0
 # Periodic liquidity replenishment from SYSTEM to prevent cash depletion (#179)
 REPLENISH_ROUNDS = 100
 REPLENISH_FLOOR = 25_000
@@ -121,6 +149,12 @@ class EquityExchange:
         self.navs: Dict[str, List[float]] = {}
         self.price: Dict[str, float] = {}
         self.held: Dict[str, int] = {}
+        # Shares of each stock traded on the exchange book: this round so
+        # far, and the last VOLUME_ROUNDS closed rounds (#187).
+        self.volume_now: Dict[str, int] = {}
+        self.volumes: Dict[str, List[int]] = {}
+        # Depth quoted at the last refresh, per stock.
+        self.depths: Dict[str, int] = {}
         self.shocks: List[Dict[str, Any]] = []
 
     # ------------------------------------------------------------ genesis
@@ -128,6 +162,24 @@ class EquityExchange:
     @staticmethod
     def genesis_cr_legs() -> List[tuple]:
         return [(EXCHANGE_ID, 'CR', SEED_CR), ('SYSTEM', 'CR', -SEED_CR)]
+
+    # ------------------------------------------------------------ volume
+
+    def note_trade(self, station_id: str, instrument: str, qty: int) -> None:
+        """Every executed trade reports here (CircuitBreakerEngine.record_trade,
+        the one call both continuous matching and auction uncrosses make).
+        Only fleet stocks on the exchange book count."""
+        if str(station_id).lower() != EXCHANGE_STATION or not str(instrument).upper().startswith('EQ_'):
+            return
+        sym = str(instrument).upper()
+        self.volume_now[sym] = self.volume_now.get(sym, 0) + max(0, int(qty))
+
+    def depth_for(self, sym: str) -> int:
+        """Shares a side to quote for sym from its trailing traded volume."""
+        hist = self.volumes.get(sym, [])
+        avg = sum(hist) / VOLUME_ROUNDS
+        lo = max(1, min(self.depth, MAX_DEPTH))
+        return max(lo, min(MAX_DEPTH, int(round(lo + VOLUME_K * avg))))
 
     # ------------------------------------------------------------ quoting
 
@@ -186,19 +238,29 @@ class EquityExchange:
             now_held = ref.get_balance(EXCHANGE_ID, sym)
             net_sold = self.held.get(sym, now_held) - now_held
             self.held[sym] = now_held
+            quoted = self.depths.get(sym, self.depth)
             p = (p + REVERSION * (anchor - p) + self.vol * p * self.rng.gauss(0.0, 1.0)
-                 + IMPACT * p * net_sold / self.depth)
+                 + IMPACT * p * net_sold / quoted)
             p = max(1.0, p)
             self.price[sym] = p
 
             self._clear_locked(sym)
             ask = max(2, int(math.ceil(p * (1 + self.spread))))
             bid = max(1, min(ask - 1, int(math.floor(p * (1 - self.spread)))))
-            ask_qty = min(self.depth, max(0, ref.get_balance(EXCHANGE_ID, sym)))
+            vh = self.volumes.setdefault(sym, [])
+            vh.append(self.volume_now.pop(sym, 0))
+            del vh[:-VOLUME_ROUNDS]
+            depth = self.depth_for(sym)
+            self.depths[sym] = depth
+            ask_qty = min(depth, max(0, now_held))
             # Allocate remaining budget evenly among remaining symbols (#179)
             syms_left = len(sym_list) - i
             alloc = cr_budget // syms_left
-            bid_qty = min(self.depth, alloc // bid)
+            # Never bid past MAX_SHARES held (#187): the bid is the only way
+            # shares reach the exchange, and a resting order fills at most
+            # its qty, so holdings stay <= MAX_SHARES at every fill.
+            room = max(0, MAX_SHARES - now_held)
+            bid_qty = min(depth, alloc // bid, room)
             cr_budget -= bid_qty * bid
             book = ref.books[EXCHANGE_STATION][sym]
             seq = ref.current_seq
@@ -242,6 +304,7 @@ class EquityExchange:
     def summary(self) -> Dict[str, Any]:
         ref = self.ref
         return {'account': EXCHANGE_ID, 'vol': self.vol, 'spread': self.spread, 'depth': self.depth,
+                'max_depth': MAX_DEPTH, 'depths': dict(sorted(self.depths.items())),
                 'cr': ref.get_balance(EXCHANGE_ID, 'CR'),
                 'reference_prices': {s: round(p, 2) for s, p in sorted(self.price.items())},
                 'recent_shocks': self.shocks[-10:]}

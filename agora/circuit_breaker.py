@@ -123,6 +123,10 @@ class CircuitBreakerEngine:
         # Retain last 50 trades in memory
         if len(self.recent_trades[key]) > 50:
             self.recent_trades[key] = self.recent_trades[key][-50:]
+        # The stock exchange sizes its quotes from traded volume (#187).
+        exchange = getattr(self.referee, 'exchange', None)
+        if exchange is not None:
+            exchange.note_trade(station_id, instrument, qty)
 
     def has_prior_trades(self, station_id: str, instrument: str) -> bool:
         """Returns True if at least one trade has been executed and recorded for this station/instrument."""
