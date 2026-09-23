@@ -6,46 +6,75 @@ Runs scripted fleets against an in-process referee (no HTTP, no Discord,
 no production server) for hundreds of rounds and reports whether the
 design produces sustained trading.
 
+It plays the live game (#155; Ryan, #agent-chat 2026-09-23: "the simulator
+should simulate the same game as our live game"). The referee comes from
+agora.server.build_referee_from_env, the live server's own factory, with
+every AGORA_* environment variable ignored, so every feature the server
+turns on is on here with the same constants: reactive depots, the 25%
+band, fog, peer trades, idle fee, rival shares, the stock exchange (with
+event shocks), contracts, corporate debt and takeovers, upgrades, hazards,
+piracy, and corp-event secrecy and exposure.
+The game starts as a bare POST /referee/admin/new_game does. Fleets act
+only through the referee and desk methods the HTTP routes call; this file
+holds no game rules, only bot strategies, scenarios and reporting.
+tests/test_sim_live_parity.py fails if the two drift.
+
 Strategies:
-  hauler   buys where a good is cheap, flies it, sells where it is dear
-  maker    quotes both sides at its home station, joining the depot touch
-  idler    does nothing
-  (--fog LAG NOISE: stale, jittered remote quotes; --owned-contracts: tradable contracts)
-  novice   a zero-context LLM player reading /referee/briefing: sees the
-           whole board, but picks routes loosely (softmax, not argmax),
-           sends malformed or misplaced orders, often prices inside the
-           spread instead of hitting the depot, forgets to cancel stale
-           orders, and sometimes forgets to buy FUEL before a MOVE
+  hauler        buys where a good is cheap, flies it, sells where it is dear;
+                claims, trades and delivers contracts, buys upgrades, escorts
+                high-value belt trips, pays cheap ransoms and fights the rest,
+                takes peer offers and flies to collect them (#126)
+  privateer     a hauler that also hires privateers against the leader
+  maker         quotes both sides at its home station, joining the depot touch
+  idler         does nothing (and pays the live idle fee for it)
+  novice        a zero-context LLM player reading /referee/briefing: sees the
+                whole board, but picks routes loosely (softmax, not argmax),
+                sends malformed or misplaced orders, often prices inside the
+                spread instead of hitting the depot, forgets to cancel stale
+                orders, sometimes forgets to buy FUEL before a MOVE, overvalues
+                contracts, never escorts, and often ignores a pirate demand
+  stock_trader  trades rival stocks on the exchange only
+  daytrader     never flies; trades its station's goods from price history
 
 Scoring uses cash plus inventory at a FIXED reference price (the mean
 BASE_PRICES across stations), not the leaderboard: the leaderboard marks
 FUEL at zero, all FRAG at the Ceres mark, and cargo in transit (escrowed
-to SYSTEM) at zero. Leaderboard net worth is reported alongside.
+to SYSTEM) at zero. Contract deposits and peer escrow count for their
+owner, and fitted upgrades at the live book value (UpgradeDesk.book_value,
+half their price). Leaderboard net worth is reported alongside.
 
+Knobs change the live game, never add a rule of their own. Default = live.
 Usage:
   python3 tools/economy_sim.py                      # default scenario set
-  python3 tools/economy_sim.py --depot-model reactive --band-pct 0.25 --drip 25 5
-  python3 tools/economy_sim.py --rounds 500 --seeds 3
+  python3 tools/economy_sim.py --rounds 500 --seeds 3 --table
   python3 tools/economy_sim.py --scenario haulers4 --genesis planet
+  python3 tools/economy_sim.py --off piracy corporate --band-pct 0.1
+  python3 tools/economy_sim.py --set hazards=0.3,0.1 --const piracy.RANSOM_PCT=0.2
 """
 
 import argparse
-import copy
+import contextlib
 import faulthandler
+import importlib
+import inspect
 import json
-import random
 import math
+import os
+import random
 import statistics
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import agora.referee as referee_mod  # noqa: E402
+from agora import contracts as contracts_mod  # noqa: E402
+from agora import piracy as piracy_mod  # noqa: E402
 from agora.referee import AgoraReferee  # noqa: E402
+from agora.server import build_referee_from_env  # noqa: E402
 from agora.spatial import STATIONS, BASE_PRICES, get_route  # noqa: E402
+from agora.upgrades import CATALOG as UPGRADES  # noqa: E402
 
 FLEETS = ["zero", "amos", "marvin", "aerial"]
 TRADED = ["FRAG", "FUEL", "FOOD", "ORE"]
@@ -66,7 +95,7 @@ SCENARIOS = {
     "novice4": {f: "novice" for f in FLEETS},
     "novice_vs_haulers": {"zero": "hauler", "amos": "hauler", "marvin": "novice", "aerial": "novice"},
     # #119: one fleet trades rival stocks only, against growing haulers or
-    # erratic novices. Needs --equity-mm for anyone to trade with.
+    # erratic novices, on the live exchange.
     "stocks": {"zero": "hauler", "amos": "hauler", "marvin": "stock_trader", "aerial": "hauler"},
     # #145: one hauler that also funds privateers against the leader.
     "privateer_vs_haulers": {"zero": "hauler", "amos": "hauler", "marvin": "privateer", "aerial": "hauler"},
@@ -75,16 +104,27 @@ SCENARIOS = {
     "daytrade_vs_haulers": {"zero": "hauler", "amos": "hauler", "marvin": "daytrader", "aerial": "daytrader"},
 }
 
-
-# Strategies that fly goods into contracts (Hauler and Novice call
-# ContractBoard.deliver). Only these claim or buy contracts: an idler or a
-# market maker never delivers, so a claim by one is a guaranteed penalty.
+# Strategies that fly goods, so the only ones that claim, buy or deliver
+# contracts and trade on the peer desk: an idler or a market maker never
+# delivers, so a claim by one is a guaranteed penalty.
 CONTRACTORS = {"hauler", "novice", "privateer"}
+
+# Bot thresholds for the live-only mechanics. Behaviour, not rules.
+UPGRADE_ORDER = ("armor", "hold", "shielding", "engines")
+UPGRADE_CASH_MULT = 5      # a hauler buys an upgrade tier once it has 5x its price in cash
+NOVICE_UPGRADE_CASH_MULT = 2
+DEADLINE_SLACK = 1         # rounds a hauler leaves for a flight delay when it values a contract
+CLAIM_MIN_VALUE = 1_000    # a hauler claims a contract only if it expects this much from it
+FUEL_KEEP = 150            # FUEL a fleet never delivers or sells: it needs it to fly
+RAID_LOSS = 0.2            # expected share of cargo value a raid costs (ransom 15%, a fight 25% on average)
+RANSOM_CASH_SHARE = 0.2    # pay a ransom up to this share of available CR, otherwise fight
+NOVICE_IGNORES_DEMAND = 0.5
 
 
 # ------------------------------------------------------------------ helpers
 
 def order(ref: AgoraReferee, agent: str, side: str, qty: int, price: int, comm: str, st: str, tag: str):
+    """POST /referee/orders."""
     return ref.submit_envelope({"v": 1, "kind": "order", "payload": {
         "order_id": f"sim-{agent}-{tag}-{ref.current_round}-{ref.current_seq}",
         "agent_id": agent, "side": side, "qty": int(qty), "limit_price": int(price),
@@ -92,6 +132,9 @@ def order(ref: AgoraReferee, agent: str, side: str, qty: int, price: int, comm: 
 
 
 def cancel_all(ref: AgoraReferee, agent: str) -> None:
+    """POST /referee/orders/cancel per resting order. Not ref.cancel_all:
+    that marks the fleet active even with nothing to cancel, which would
+    dodge the idle fee for free."""
     for st_books in ref.books.values():
         for b in st_books.values():
             for o in list(b.bids) + list(b.asks):
@@ -116,250 +159,270 @@ def inventory(ref: AgoraReferee, agent: str) -> Dict[str, int]:
     return {c: ref.get_balance(agent, c) for c in ["CR"] + TRADED}
 
 
-# ------------------------------------------------------------ contracts (#74 prototype)
+def available(ref: AgoraReferee, agent: str, inst: str) -> int:
+    """Balance less what resting orders commit, as every desk checks it."""
+    return ref.peer._available(agent, inst)
 
-class ContractBoard:
-    """Station procurement contracts, simulator-only (issue #74 prototype).
 
-    Every EVERY rounds a random station posts a contract for a good it does
-    not produce cheaply: QTY units by DEADLINE rounds from now, paid at
-    PREMIUM x the station's base price. A fleet docked there holding the good
-    delivers into it (partial delivery allowed, first come first served);
-    goods go to SYSTEM and SYSTEM pays, through balanced ledger entries.
-    """
+def debt(ref: AgoraReferee, agent: str) -> int:
+    """GET /referee/corporate."""
+    if not ref.corporate_enabled:
+        return 0
+    return ref.corporate.summary()["corps"].get(agent, {}).get("debt", 0)
 
-    EVERY = 4
-    QTY = (300, 800)
-    DEADLINE = (6, 10)
-    PREMIUM = (1.3, 1.6)
+
+def my_contracts(ref: AgoraReferee, agent: str) -> List[dict]:
+    """GET /referee/contracts, the ones this fleet owns."""
+    if not ref.contracts_enabled:
+        return []
+    return [c for c in ref.contract_desk.list() if c["owner"] == agent]
+
+
+def contract_for(ref: AgoraReferee, agent: str, dest: str, comm: str, arrival: int) -> Optional[dict]:
+    live = [c for c in my_contracts(ref, agent) if c["station_id"] == dest and c["instrument"] == comm
+            and c["qty_remaining"] > 0 and c["deadline"] >= arrival]
+    return max(live, key=lambda c: c["price"]) if live else None
+
+
+def deliver_contracts(ref: AgoraReferee, agent: str, st: str, stats) -> None:
+    """POST /referee/contracts/{id}/deliver for each owned contract here."""
+    for c in sorted(my_contracts(ref, agent), key=lambda c: -c["price"]):
+        have = available(ref, agent, c["instrument"]) - (FUEL_KEEP if c["instrument"] == "FUEL" else 0)
+        if c["station_id"] != st or have <= 0:
+            continue
+        res = ref.contract_desk.deliver(agent, c["contract_id"], have)
+        if res.get("kind") == "contract_deliver_ok":
+            stats["contract_deliveries"] += 1
+
+
+def pickups(ref: AgoraReferee, agent: str) -> List[dict]:
+    """Peer trades this fleet bought and has yet to collect (#126)."""
+    if not ref.peer_trades:
+        return []
+    return [e for e in ref.peer.list(status="accepted") if e["buyer"] == agent]
+
+
+def buy_upgrades(ref: AgoraReferee, agent: str, cash_mult: float, stats) -> None:
+    """POST /referee/upgrades/buy: the next tier of the first upgrade in
+    UPGRADE_ORDER not yet maxed, once available CR is cash_mult x its price.
+    At most one a round, never in debt. The board counts an upgrade at half
+    its price, so the threshold keeps a fleet's working capital intact."""
+    if not ref.upgrades_enabled or location(ref, agent) is None or debt(ref, agent) > 0:
+        return
+    for kind in UPGRADE_ORDER:
+        t = ref.upgrades.tier(agent, kind)
+        prices = UPGRADES[kind]["prices"]
+        if t >= len(prices):
+            continue
+        if available(ref, agent, "CR") >= prices[t] * cash_mult:
+            if ref.upgrades.buy(agent, kind).get("kind") == "upgrade_ok":
+                stats["upgrades_bought"] = stats.get("upgrades_bought", 0) + 1
+        return
+
+
+def want_escort(ref: AgoraReferee, agent: str, st: str, dest: str, comm: str, qty: int) -> bool:
+    """Escort a belt trip when the raid loss it saves beats the fee."""
+    if not ref.piracy.enabled or qty <= 0:
+        return False
+    r = ref.current_round
+    route = get_route(st, dest, r)
+    toll = route.get("toll", 0) if route else 0
+    if not toll:
+        return False
+    bare = ref.piracy.chance(agent, st, dest, True, comm, qty, False, r)
+    guarded = ref.piracy.chance(agent, st, dest, True, comm, qty, True, r)
+    fee = ref.piracy.escort_fee(comm, qty)
+    saving = (bare["odds"] - guarded["odds"]) * bare["value"] * RAID_LOSS
+    return saving > fee and available(ref, agent, "CR") >= fee + toll
+
+
+def answer_demand(ref: AgoraReferee, agent: str, res: dict, stats, novice_rng: Optional[random.Random] = None) -> None:
+    """POST /referee/piracy/{transit_id}/respond. Pay a ransom that is cheap
+    against the fleet's cash, fight otherwise. A novice often never answers
+    (the referee then fights for it at the next tick)."""
+    pir = (res.get("payload") or {}).get("piracy") or {}
+    d = pir.get("demand")
+    if not d or d.get("status") != "pending":
+        return
+    if novice_rng is not None and novice_rng.random() < NOVICE_IGNORES_DEMAND:
+        stats["demands_ignored"] = stats.get("demands_ignored", 0) + 1
+        return
+    cash = available(ref, agent, "CR")
+    limit = cash if novice_rng is not None else cash * RANSOM_CASH_SHARE
+    choice = "pay" if d["ransom"] <= limit else "fight"
+    out = ref.piracy.respond(agent, d["transit_id"], choice)
+    if out.get("kind") == "reject" and choice == "pay":
+        ref.piracy.respond(agent, d["transit_id"], "fight")
+
+
+def move(ref: AgoraReferee, agent: str, dest: str, comm: str, qty: int, stats, escort: bool = False,
+         novice_rng: Optional[random.Random] = None) -> dict:
+    """POST /stations/transit, then answer any pirate demand at once."""
+    res = ref.initiate_transit(agent_id=agent, destination=dest, commodity=comm, cargo_qty=qty, escort=escort)
+    if res.get("status") == "in_transit":
+        stats["transits"] += 1
+        answer_demand(ref, agent, res, stats, novice_rng)
+    return res
+
+
+@contextlib.contextmanager
+def _live_defaults():
+    """Hide AGORA_* from the environment: the simulator plays the live
+    defaults, not whatever the caller's shell or CI happens to export."""
+    saved = {k: os.environ.pop(k) for k in [k for k in os.environ if k.startswith("AGORA_")]}
+    try:
+        yield
+    finally:
+        os.environ.update(saved)
+
+
+def start_game(seed: int, overrides: Optional[Dict[str, Any]] = None) -> AgoraReferee:
+    """The live server's referee (build_referee_from_env) with a bare new game:
+    what POST /referee/admin/new_game {"confirm": true, "seed": seed} gives.
+    warmup_rounds is fixed so a seeded run repeats (left unset, new_game
+    draws it from SystemRandom)."""
+    with _live_defaults():
+        ref = build_referee_from_env(":memory:", **(overrides or {}))
+    ref.new_game(seed=seed, warmup_rounds=5)
+    return ref
+
+
+def fleet_views(ref: AgoraReferee) -> Dict[str, dict]:
+    """GET /referee/depots as each fleet sees it (fogged when fog is on)."""
+    if ref.fog:
+        return {a: ref.fog.depot_view(ref, a)["stations"] for a in FLEETS}
+    q = ref.get_depot_summary()["stations"]
+    return {a: q for a in FLEETS}
+
+
+# ------------------------------------------------------------ contract market (bots)
+
+def contract_value(ref: AgoraReferee, agent: str, c: dict, view, one_hop: bool = False) -> int:
+    """What contract c is worth to `agent`, from where it is and what it can
+    see: buy the good at the cheapest station it knows of, fly it in, get
+    paid, less the live lapse penalty on whatever part of it one hold cannot
+    carry. Zero if it cannot make the deadline. one_hop: only goods bought
+    where the fleet is (or will dock), which is all a Hauler plans. Uses the
+    agent's own (possibly fogged) quotes, so two corps can honestly disagree."""
+    loc = ref.get_vessel_location(agent)
+    r = ref.current_round
+    if loc.get("status") == "in_transit" and loc.get("transit"):
+        st, r = loc["transit"]["destination"], max(r, loc["transit"]["arrival_round"])
+    else:
+        st = loc["station_id"]
+    best = 0
+    rem, comm = c["qty_remaining"], c["instrument"]
+    cash = available(ref, agent, "CR") - (0 if c.get("owner") == agent else c.get("bond") or
+                                           ref.contract_desk.bond_for(c["price"], rem))
+    held = ref.get_balance(agent, comm) - (FUEL_KEEP if comm == "FUEL" else 0)
+    # A Hauler never hauls FUEL as cargo (it burns it to fly), so to one it
+    # a FUEL contract is worth only the FUEL it already holds at the station.
+    for src in ([] if one_hop and comm == "FUEL" else [st] if one_hop else STATIONS):
+        if src == c["station_id"]:
+            continue
+        ask = view[src][comm]["best_ask"]
+        if not ask:
+            continue
+        leg1 = get_route(st, src, r) if st != src else {"rounds": 0, "fuel": 0, "toll": 0}
+        leg2 = get_route(src, c["station_id"], r)
+        slack = DEADLINE_SLACK if one_hop else 0
+        if not leg1 or not leg2 or r + leg1["rounds"] + leg2["rounds"] + slack > c["deadline"]:
+            continue
+        qty = min(rem, 500, max(0, cash // ask))
+        fuel_px = view[st]["FUEL"]["best_ask"] or 20
+        cost = (leg1["fuel"] + leg2["fuel"]) * fuel_px + leg1.get("toll", 0) + leg2.get("toll", 0)
+        short = contracts_mod.PENALTY * c["price"] * (rem - qty)
+        best = max(best, (c["price"] - ask) * qty - cost - short)
+    if st == c["station_id"] and held > 0:
+        qty = min(rem, held)
+        best = max(best, (c["price"] - (view[st][comm]["best_bid"] or 0)) * qty
+                   - contracts_mod.PENALTY * c["price"] * (rem - qty))
+    return int(best)
+
+
+class ContractMarket:
+    """How the contractor bots use the live contract desk each round:
+    claim (first come, first served; the claim order rotates each round),
+    list a contract they own for MIN_GAIN once they can no longer deliver
+    it, and buy a listed contract they value MIN_GAIN above its price.
+    Novices value contracts at 1.0-2.5x their worth, the overconfidence
+    #112 sized."""
+
+    MIN_GAIN = 200
     HOLD = 3  # rounds a buyer keeps a contract before it will resell
 
-    def __init__(self, ref: AgoraReferee, seed: int, owned: bool = False, claim: bool = False):
-        self.ref = ref
-        # claim: contracts start unowned and undeliverable; a corp must claim
-        # one (Corporate.claim) before it can deliver. on_expire is called
-        # with each contract that lapses undelivered.
-        self.claim_mode = claim
-        self.on_expire = None
-        self.rng = random.Random(seed * 7919)
-        # owned: each contract is awarded to one corp, only the owner can
-        # deliver into it, and owners can sell contracts to other corps.
-        self.owned = owned
-        # fleets allowed to buy contracts in trade(); None means every fleet
-        self.contractors: Optional[set] = None
-        # Claim deposit (Ryan, #agent-chat 2026-09-23 08:37): the owner of a
-        # claimed contract has BOND_PCT of its face value locked with SYSTEM.
-        # Refunded pro rata on delivery, carried over (buyer pays it to the
-        # seller) on resale, forfeited to the contract's station on lapse.
-        self.bond_pct = 0.0
-        self.transfers = 0
-        self.transfer_cr = 0
-        self.open: List[dict] = []
-        self.delivered = 0
-        self.paid = 0
-        self.expired = 0
-        self.posted = 0
+    def __init__(self, ref: AgoraReferee, kinds: Dict[str, str], seed: int):
+        self.ref, self.kinds = ref, kinds
+        self.rng = random.Random(seed * 31337)
+        self.bought: Dict[str, int] = {}
 
-    def step(self) -> None:
-        r = self.ref.current_round
-        for c in self.open:
-            if c["deadline"] < r and c["remaining"] > 0:
-                self.expired += 1
-                if self.on_expire:
-                    self.on_expire(c)
-        self.open = [c for c in self.open if c["deadline"] >= r and c["remaining"] > 0]
-        if r % self.EVERY == 0:
-            comm = self.rng.choice(["FRAG", "FOOD", "ORE", "FUEL"])
-            cheap = min(STATIONS, key=lambda st: BASE_PRICES[st][comm])
-            st = self.rng.choice([x for x in STATIONS if x != cheap])
-            self.open.append({"id": f"c{r}-{st}-{comm}", "station": st, "comm": comm,
-                              "remaining": self.rng.randint(*self.QTY),
-                              "deadline": r + self.rng.randint(*self.DEADLINE),
-                              "price": int(round(BASE_PRICES[st][comm] * self.rng.uniform(*self.PREMIUM))),
-                              "owner": (self.rng.choice(FLEETS) if self.owned and not self.claim_mode else None)})
-            self.posted += 1
+    def _value(self, a: str, c: dict, views) -> int:
+        v = contract_value(self.ref, a, c, views[a], one_hop=self.kinds.get(a) != "novice")
+        if self.kinds.get(a) == "novice":
+            v = int(max(v, c["price"] * min(c["qty_remaining"], 500) * 0.1) * self.rng.uniform(1.0, 2.5))
+        return v
 
-    def _mine(self, c: dict, agent: Optional[str]) -> bool:
-        if self.claim_mode:
-            return c["owner"] is not None and c["owner"] == agent
-        return c["owner"] is None or c["owner"] == agent
-
-    def best_for(self, st: str, comm: str, arrival: int, agent: Optional[str] = None) -> Optional[dict]:
-        live = [c for c in self.open if c["station"] == st and c["comm"] == comm
-                and c["remaining"] > 0 and c["deadline"] >= arrival and self._mine(c, agent)]
-        return max(live, key=lambda c: c["price"]) if live else None
-
-    def _cr(self, txn: str, legs) -> None:
+    def step(self, views: Dict[str, dict], active: List[str]) -> None:
         ref = self.ref
-        with ref.lock, ref.conn:
-            for acct, d in legs:
-                if not d:
+        if not ref.contracts_enabled:
+            return
+        desk = ref.contract_desk
+        bidders = [a for a in active if self.kinds.get(a) in CONTRACTORS and debt(ref, a) <= 0]
+        k = ref.current_round % max(1, len(bidders))
+        for a in bidders[k:] + bidders[:k]:
+            if len(my_contracts(ref, a)) >= contracts_mod.MAX_OPEN:
+                continue
+            best = None
+            for c in desk.list():
+                if c["owner"] or c["deadline"] < ref.current_round:
                     continue
-                ref.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, 'CR', 0)", (acct,))
-                ref.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = 'CR'", (d, acct))
-                ref.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, 'CR', ?)",
-                                 (txn, ref.current_seq, acct, d))
-
-    def bond_for(self, c: dict) -> int:
-        return int(c["price"] * c["remaining"] * self.bond_pct)
-
-    def deliver(self, agent: str, st: str) -> int:
-        ref, got = self.ref, 0
-        for c in sorted(self.open, key=lambda c: -c["price"]):
-            if c["station"] != st or c["remaining"] <= 0 or not self._mine(c, agent):
+                v = self._value(a, c, views)
+                floor = 0 if self.kinds.get(a) == "novice" else CLAIM_MIN_VALUE
+                if v > floor and (best is None or v > best[0]):
+                    best = (v, c["contract_id"])
+            if best:
+                desk.claim(a, best[1])
+        for c in desk.list():
+            owner = c["owner"]
+            if not owner or owner not in active or ref.current_round - self.bought.get(c["contract_id"], -99) < self.HOLD:
                 continue
-            qty = min(c["remaining"], ref.get_balance(agent, c["comm"]))
-            if qty <= 0:
+            own = contract_value(ref, owner, c, views[owner], one_hop=self.kinds.get(owner) != "novice")
+            if own > 0:
+                if c["list_price"]:
+                    desk.list_for_sale(owner, c["contract_id"], None)  # back on track: keep it
                 continue
-            with ref.lock, ref.conn:
-                txn = f"contract-{c['id']}-{agent}-{ref.current_round}"
-                for acct, inst, d in ((agent, c["comm"], -qty), ("SYSTEM", c["comm"], qty),
-                                      (agent, "CR", qty * c["price"]), ("SYSTEM", "CR", -qty * c["price"])):
-                    ref.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, ?, 0)", (acct, inst))
-                    ref.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?", (d, acct, inst))
-                    ref.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)",
-                                     (txn, ref.current_seq, acct, inst, d))
-            if c.get("bond"):
-                refund = c["bond"] * qty // c["remaining"]
-                self._cr(f"bond-refund-{c['id']}-{ref.current_round}", ((agent, refund), ("SYSTEM", -refund)))
-                c["bond"] -= refund
-            c["remaining"] -= qty
-            self.delivered += qty
-            self.paid += qty * c["price"]
-            got += qty
-        return got
+            # It can no longer make this one: sell it before it lapses, cheap.
+            ask = self.MIN_GAIN
+            if c["list_price"] != ask:
+                desk.list_for_sale(owner, c["contract_id"], ask)
+            bids = sorted(((self._value(a, c, views), a) for a in bidders if a != owner), reverse=True)
+            for v, a in bids:
+                if v - ask < self.MIN_GAIN:
+                    break
+                if desk.buy(a, c["contract_id"]).get("kind") == "contract_buy_ok":
+                    self.bought[c["contract_id"]] = ref.current_round
+                    break
 
 
-    # -------------------------------------------------- contract trading
+# ------------------------------------------------------------ peer trades at a distance (bots)
 
-    def value_to(self, agent: str, c: dict, view) -> int:
-        """What contract c is worth to `agent`, from where it is and what it can
-        see: buy the good at the cheapest station it knows of, fly it in, get
-        paid. Zero if it cannot make the deadline. Uses the agent's own
-        (possibly fogged) quotes, so two corps can honestly disagree."""
-        # A corp in transit plans from where and when it will arrive.
-        loc = self.ref.get_vessel_location(agent)
-        r = self.ref.current_round
-        if loc.get("status") == "in_transit" and loc.get("transit"):
-            st, r = loc["transit"]["destination"], max(r, loc["transit"]["arrival_round"])
-        else:
-            st = loc["station_id"]
-        best = 0
-        qty = min(c["remaining"], 500)
-        held = self.ref.get_balance(agent, c["comm"])
-        for src in STATIONS:
-            if src == c["station"]:
-                continue
-            ask = view[src][c["comm"]]["best_ask"]
-            if not ask:
-                continue
-            leg1 = get_route(st, src, r) if st != src else {"rounds": 0, "fuel": 0, "toll": 0}
-            leg2 = get_route(src, c["station"], r)
-            if not leg1 or not leg2 or r + leg1["rounds"] + leg2["rounds"] > c["deadline"]:
-                continue
-            fuel_px = view[st]["FUEL"]["best_ask"] or 20
-            cost = (leg1["fuel"] + leg2["fuel"]) * fuel_px + leg1.get("toll", 0) + leg2.get("toll", 0)
-            v = (c["price"] - ask) * qty - cost
-            best = max(best, v)
-        if st == c["station"] and held > 0:
-            best = max(best, (c["price"] - (view[st][c["comm"]]["best_bid"] or 0)) * min(qty, held))
-        return int(best)
+class PeerMarket:
+    """How the flying bots use the live peer desk (agora/peer.py) each round.
 
-    def trade(self, views: Dict[str, dict], min_gain: int = 200) -> None:
-        """Owners sell a contract to whichever corp values it most, at the
-        midpoint of the two valuations, when the gap is worth the bother.
-        CR moves buyer -> owner through balanced ledger entries."""
-        ref = self.ref
-        for c in self.open:
-            if not c["owner"] or c["remaining"] <= 0:
-                continue
-            # Contracts trade at a distance: neither corp needs to be docked, or
-            # at the contract's station (Ryan, #agent-chat 2026-09-22 22:2x).
-            # A corp keeps a contract it just bought for HOLD rounds.
-            if ref.current_round - c.get("bought", -99) < self.HOLD:
-                continue
-            own_v = self.value_to(c["owner"], c, views[c["owner"]])
-            bids = [(self.value_to(a, c, views[a]), a) for a in FLEETS
-                    if a != c["owner"] and (self.contractors is None or a in self.contractors)]
-            if not bids:
-                continue
-            v, buyer = max(bids)
-            if v - own_v < min_gain:
-                continue
-            price = (v + max(0, own_v)) // 2
-            bond = c.get("bond", 0)
-            if ref.get_balance(buyer, "CR") < price + bond:
-                continue
-            if bond:
-                self._cr(f"bond-carry-{c['id']}-{ref.current_round}", ((buyer, -bond), (c["owner"], bond)))
-            with ref.lock, ref.conn:
-                txn = f"ctrade-{c['id']}-{ref.current_round}"
-                for acct, d in ((buyer, -price), (c["owner"], price)):
-                    ref.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = 'CR'", (d, acct))
-                    ref.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, 'CR', ?)",
-                                     (txn, ref.current_seq, acct, d))
-            c["owner"] = buyer
-            c["bought"] = ref.current_round
-            self.transfers += 1
-            self.transfer_cr += price
+    Seller: docked at S with goods, offers a lot at the midpoint of its
+    floor (what the goods are worth to it otherwise: the depot bid at S, or
+    the best bid elsewhere less the trip) and the depot ask at S, so a buyer
+    saves against the depot. Buyer: any flying fleet, wherever it is, accepts
+    if flying to S to collect and hauling on to its best market still pays at
+    the offer price, per its own (possibly fogged) view; it then flies to S to
+    collect (#126). Offers nobody took are cancelled at once, so the goods are
+    back before the seller plans its own trip."""
 
+    MIN_LOT, MAX_LOT, CR_RESERVE, FUEL_RESERVE = 20, 500, 300, 100
 
-# ------------------------------------------------------------ peer trades at a distance
-
-class PeerDesk:
-    """Fleet-to-fleet goods trades agreed from anywhere (Ryan, #agent-chat
-    2026-09-22 22:18). A fleet docked at station S offers goods it holds
-    there; any fleet, wherever it is, may take the offer. The buyer pays
-    now, the goods are held at S in the buyer's name (escrowed to SYSTEM),
-    and the buyer collects them the next time it is docked at S.
-
-    Seller's floor: what the goods are worth to it otherwise, i.e. the
-    depot bid at S, or the best bid elsewhere less the per-unit cost of
-    flying them there. Offer price: the midpoint of that floor and the
-    depot ask at S, so a buyer saves against the depot.
-    Buyer: any fleet, wherever it is, takes it if flying to S to collect
-    and hauling the goods on to its best market still pays at the offer
-    price, per its own (possibly fogged) view."""
-
-    MIN_LOT = 20
-
-    def __init__(self, ref: AgoraReferee):
-        self.ref = ref
-        self.pickups: Dict[tuple, int] = {}  # (station, buyer, comm) -> qty
-        self.trades = 0
-        self.units = 0
-        self.cr = 0
-        self.remote = 0  # buyer was not docked at S when it agreed
-
-    def _move(self, txn: str, legs) -> None:
-        ref = self.ref
-        with ref.lock, ref.conn:
-            for acct, inst, d in legs:
-                ref.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, ?, 0)", (acct, inst))
-                ref.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?", (d, acct, inst))
-                ref.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)",
-                                 (txn, ref.current_seq, acct, inst, d))
-
-    def _available(self, agent: str, inst: str) -> int:
-        """Balance less what resting orders commit, as agora/peer.py checks
-        it. Using the raw balance let the desk sell goods a resting ask (a
-        distress sale, say) had already committed; the ask then filled and
-        the seller went negative (seed 5, novice_vs_haulers, all features)."""
-        committed = 0
-        for books in self.ref.books.values():
-            for comm, book in books.items():
-                if inst == "CR":
-                    committed += sum(o.remaining_qty * o.limit_price for o in book.bids if o.agent_id == agent)
-                elif comm == inst:
-                    committed += sum(o.remaining_qty for o in book.asks if o.agent_id == agent)
-        return self.ref.get_balance(agent, inst) - committed
-
-    def collect(self) -> None:
-        for (st, buyer, comm), qty in list(self.pickups.items()):
-            if location(self.ref, buyer) == st:
-                self._move(f"pickup-{buyer}-{st}-{comm}-{self.ref.current_round}",
-                           ((buyer, comm, qty), ("SYSTEM", comm, -qty)))
-                del self.pickups[(st, buyer, comm)]
+    def __init__(self, ref: AgoraReferee, kinds: Dict[str, str]):
+        self.ref, self.kinds = ref, kinds
+        self.remote = 0
 
     @staticmethod
     def _unit_trip_cost(view, st: str, dest: str, qty: int, r: int) -> float:
@@ -369,464 +432,70 @@ class PeerDesk:
         return (route["fuel"] * (view[st]["FUEL"]["best_ask"] or 20) + route.get("toll", 0)) / qty
 
     def _best_haul(self, view, st: str, comm: str, qty: int, r: int) -> float:
-        """Best per-unit value of `comm` held at st: sell here, or fly it."""
         here = view[st][comm]["best_bid"] or 0
         away = max(((view[d][comm]["best_bid"] or 0) - self._unit_trip_cost(view, st, d, qty, r)
                     for d in STATIONS if d != st), default=0)
         return max(here, away)
 
-    def match(self, views: Dict[str, dict]) -> None:
+    def step(self, views: Dict[str, dict], active: List[str]) -> None:
         ref, r = self.ref, self.ref.current_round
-        for seller in FLEETS:
+        if not ref.peer_trades:
+            return
+        traders = [a for a in active if self.kinds.get(a) in CONTRACTORS]
+        mine = []
+        for seller in traders:
             st = location(ref, seller)
             if st is None:
                 continue
             sv = views[seller]
+            owed = {}
+            for c in my_contracts(ref, seller):  # goods it holds for its own contracts are not for sale
+                owed[c["instrument"]] = owed.get(c["instrument"], 0) + c["qty_remaining"]
             for comm in ("FRAG", "FOOD", "ORE", "FUEL"):
-                have = self._available(seller, comm) - (100 if comm == "FUEL" else 0)
+                have = min(self.MAX_LOT, available(ref, seller, comm) - owed.get(comm, 0)
+                           - (self.FUEL_RESERVE if comm == "FUEL" else 0))
                 ask = sv[st][comm]["best_ask"]
                 if have < self.MIN_LOT or not ask:
                     continue
                 floor = self._best_haul(sv, st, comm, have, r)
-                if floor >= ask - 1:
-                    continue
-                price = int((floor + ask) // 2)
-                if price <= floor:
-                    price = int(floor) + 1
+                price = max(int((floor + ask) // 2), int(floor) + 1)
                 if price >= ask:
                     continue
-                for buyer in FLEETS:
-                    if buyer == seller or have < self.MIN_LOT:
-                        continue
-                    # From anywhere: a buyer elsewhere prices in the trip to S
-                    # to collect (Zero's review of #101: the first cut only let
-                    # fleets already at or bound for S agree).
-                    loc = ref.get_vessel_location(buyer)
-                    at = loc["transit"]["destination"] if loc.get("status") == "in_transit" else loc["station_id"]
-                    qty = min(have, 500, max(0, (self._available(buyer, "CR") - 300) // price))
-                    if qty < self.MIN_LOT:
-                        continue
-                    bv = views[buyer]
-                    reach = 0.0 if at == st else self._unit_trip_cost(bv, at, st, qty, r)
-                    others = [d for d in STATIONS if d != st]
-                    gain = max((bv[d][comm]["best_bid"] or 0) - self._unit_trip_cost(bv, st, d, qty, r) for d in others) - reach
-                    if gain <= price:
-                        continue
-                    self._move(f"peer-{seller}-{buyer}-{st}-{comm}-{r}",
-                               ((buyer, "CR", -qty * price), (seller, "CR", qty * price),
-                                (seller, comm, -qty), ("SYSTEM", comm, qty)))
-                    self.pickups[(st, buyer, comm)] = self.pickups.get((st, buyer, comm), 0) + qty
-                    self.trades += 1
-                    self.units += qty
-                    self.cr += qty * price
-                    self.remote += at != st or loc.get("status") != "docked"
-                    have -= qty
-
-
-# ------------------------------------------------------------ corporate risk (debt, distress, takeovers)
-
-class Corporate:
-    """Ryan, #agent-chat 2026-09-22 23:02: real risk for the corps.
-
-    - Claims: contracts start unowned. Each round the corp that values an
-      open contract most (value_to, from its own position and view) claims
-      it, at most MAX_CLAIMS open per corp. Novices are overconfident:
-      they value contracts at 1.0-2.5x their true worth.
-    - Penalty: a contract that lapses undelivered costs its current owner
-      PENALTY x the undelivered value.
-    - Debt: what a corp owes beyond its CR. Distress settles it each round:
-      sell goods to the local depot at its bid, then auction the corp's own
-      treasury shares at DISCOUNT x NAV to the richest rival that can pay.
-    - Takeover: a rival holding TAKEOVER_SHARES of a corp's stock absorbs it
-      (all balances and contracts pass to the acquirer, which also takes on
-      its debt). A corp that absorbs every rival wins outright.
-    """
-
-    MAX_CLAIMS = 2
-    PENALTY = 0.5  # tuned 2026-09-22: at 0.5 the corps that go bust are the overconfident claimers
-    DISCOUNT = 0.7
-    TAKEOVER_SHARES = 510
-    AUCTION_CAP = 100   # treasury shares a distressed corp sells per round
-    PRICE_FLOOR = 10    # CR/share floor under the auction price, before DISCOUNT
-    BANKRUPT_ROUNDS = 10  # rounds in debt with no treasury shares left before a corp is out
-
-    def __init__(self, ref: AgoraReferee, board: "ContractBoard", kinds: Dict[str, str], seed: int):
-        self.ref, self.board, self.kinds = ref, board, kinds
-        self.rng = random.Random(seed * 31337)
-        self.debt = {a: 0 for a in FLEETS}
-        self.out: Dict[str, str] = {}  # absorbed corp -> acquirer, or "bankrupt"
-        self._since_debt: Dict[str, int] = {}
-        self.stats = {"claims": 0, "penalties": 0, "penalty_cr": 0, "goods_sold_cr": 0,
-                      "share_auctions": 0, "shares_auctioned": 0, "takeovers": [], "bankruptcies": [], "winner": None,
-                      "max_debt": 0, "rounds_in_debt": 0}
-        board.on_expire = self._expired
-
-    def active(self) -> List[str]:
-        return [a for a in FLEETS if a not in self.out]
-
-    def _move(self, txn: str, legs) -> None:
-        ref = self.ref
-        with ref.lock, ref.conn:
-            for acct, inst, d in legs:
-                if not d:
+                res = ref.peer.offer(seller, st, comm, have, price)
+                if res.get("kind") == "peer_offer_ok":
+                    mine.append(res["payload"]["escrow_id"])
+        # Never rely on list order: escrow ids are random (uuid4).
+        offers = sorted((o for o in ref.peer.list(status="offered") if o["escrow_id"] in mine),
+                        key=lambda o: (o["station_id"], o["instrument"], o["seller"], -o["qty"], o["price"]))
+        for o in offers:
+            st, comm, qty, price = o["station_id"], o["instrument"], o["qty"], o["price"]
+            best = None
+            for buyer in traders:
+                if buyer == o["seller"] or available(ref, buyer, "CR") - self.CR_RESERVE < qty * price:
                     continue
-                ref.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, ?, 0)", (acct, inst))
-                ref.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?", (d, acct, inst))
-                ref.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)",
-                                 (txn, ref.current_seq, acct, inst, d))
-
-    def _sym(self, a: str) -> str:
-        return {"amos": "EQ_AMOS", "marvin": "EQ_MARV", "zero": "EQ_ZERO", "aerial": "EQ_AERL"}[a]
-
-    # ------------------------------------------------------------ claims and penalties
-
-    def claim(self, views: Dict[str, dict]) -> None:
-        held = {a: sum(1 for c in self.board.open if c["owner"] == a) for a in FLEETS}
-        for c in self.board.open:
-            if c["owner"] is not None or c["remaining"] <= 0:
-                continue
-            bids = []
-            for a in self.active():
-                if held[a] >= self.MAX_CLAIMS or self.kinds.get(a) not in CONTRACTORS:
-                    continue
-                v = self.board.value_to(a, c, views[a])
-                if self.kinds.get(a) == "novice":
-                    v = int(max(v, c["price"] * min(c["remaining"], 500) * 0.1) * self.rng.uniform(1.0, 2.5))
-                if v > 0 and self.ref.get_balance(a, "CR") >= self.board.bond_for(c):
-                    bids.append((v, a))
-            if bids:
-                _, a = max(bids)
-                bond = self.board.bond_for(c)
-                if bond:
-                    self.board._cr(f"bond-{c['id']}", ((a, -bond), ("SYSTEM", bond)))
-                    self.stats["bonds_cr"] = self.stats.get("bonds_cr", 0) + bond
-                c["bond"] = bond
-                c["owner"] = a
-                held[a] += 1
-                self.stats["claims"] += 1
-
-    def _expired(self, c: dict) -> None:
-        owner = c.get("owner")
-        if not owner:
-            return
-        if c.get("bond"):
-            self.board._cr(f"bond-forfeit-{c['id']}", (("SYSTEM", -c["bond"]), (f"depot_{c['station']}", c["bond"])))
-            self.stats["bonds_forfeited_cr"] = self.stats.get("bonds_forfeited_cr", 0) + c["bond"]
-            c["bond"] = 0
-        pen = int(c["price"] * c["remaining"] * self.PENALTY)
-        self.stats["penalties"] += 1
-        self.stats["penalty_cr"] += pen
-        self.debt[owner] += pen
-
-    # ------------------------------------------------------------ distress
-
-    def _pay_down(self, a: str) -> None:
-        pay = min(self.debt[a], self.ref.get_balance(a, "CR"))
-        if pay > 0:
-            self._move(f"debt-{a}-{self.ref.current_round}-{pay}", ((a, "CR", -pay), ("SYSTEM", "CR", pay)))
-            self.debt[a] -= pay
-
-    def settle(self) -> None:
-        ref = self.ref
-        any_debt = False
-        for a in self.active():
-            self._pay_down(a)
-            if self.debt[a] <= 0:
-                continue
-            # 1. goods to the local depot at its bid
-            st = location(ref, a)
-            if st:
-                q = ref.get_depot_summary()["stations"][st]
-                for comm in ("FRAG", "FOOD", "ORE"):
-                    have, bid = ref.get_balance(a, comm), q[comm]["best_bid"]
-                    if have > 0 and bid and self.debt[a] > 0:
-                        before = ref.get_balance(a, "CR")
-                        order(ref, a, "ask", min(have, self.debt[a] // bid + 1), bid, comm, st, "distress")
-                        self.stats["goods_sold_cr"] += ref.get_balance(a, "CR") - before
-                self._pay_down(a)
-            # 2. auction own treasury shares at a discount: at most
-            #    AUCTION_CAP shares a round, split between rivals in
-            #    proportion to their cash, priced off the better of NAV and
-            #    the board mark (a bust corp's NAV alone collapses to 1).
-            if self.debt[a] > 0:
-                sym = self._sym(a)
-                base = {e["agent_id"]: e["net_worth"] - e.get("stocks_value", 0) for e in ref.get_leaderboard()}
-                m = ref.stock_marks(base)[sym]
-                px = max(1, int(max(m["nav"], m["mark"], self.PRICE_FLOOR) * self.DISCOUNT))
-                n = min(ref.get_balance(a, sym), -(-self.debt[a] // px), self.AUCTION_CAP)
-                rivals = [(ref.get_balance(b, "CR"), b) for b in self.active() if b != a]
-                total = sum(c for c, _ in rivals) or 1
-                for cash, b in sorted(rivals, reverse=True):
-                    if n <= 0:
-                        break
-                    k = min(n, cash // px, max(1, round(self.AUCTION_CAP * cash / total)))
-                    if k <= 0:
-                        continue
-                    self._move(f"auction-{sym}-{b}-{ref.current_round}",
-                               ((a, sym, -k), (b, sym, k), (b, "CR", -k * px), (a, "CR", k * px)))
-                    self.stats["share_auctions"] += 1
-                    self.stats["shares_auctioned"] += k
-                    n -= k
-                self._pay_down(a)
-            if self.debt[a] > 0:
-                any_debt = True
-                self.stats["max_debt"] = max(self.stats["max_debt"], self.debt[a])
-                self._since_debt[a] = self._since_debt.get(a, 0) + 1
-                # Bankrupt: still in debt with no treasury shares left to sell
-                # after BANKRUPT_ROUNDS rounds. The corp is out; its remaining
-                # assets go to its creditors (SYSTEM).
-                if ref.get_balance(a, self._sym(a)) <= 0 and self._since_debt[a] >= self.BANKRUPT_ROUNDS:
-                    cancel_all(ref, a)
-                    legs = []
-                    for r in ref.conn.execute("SELECT instrument, balance FROM accounts WHERE agent_id = ? "
-                                              "AND balance != 0", (a,)).fetchall():
-                        legs += [(a, r["instrument"], -r["balance"]), ("SYSTEM", r["instrument"], r["balance"])]
-                    self._move(f"bankrupt-{a}-{ref.current_round}", legs)
-                    for c in self.board.open:
-                        if c["owner"] == a:
-                            c["owner"] = None
-                    self.out[a] = "bankrupt"
-                    self.stats["bankruptcies"].append({"round": ref.current_round, "fleet": a, "debt": self.debt[a]})
-            else:
-                self._since_debt[a] = 0
-        if any_debt:
-            self.stats["rounds_in_debt"] += 1
-
-    # ------------------------------------------------------------ takeovers
-
-    def takeovers(self) -> None:
-        ref = self.ref
-        for target in self.active():
-            sym = self._sym(target)
-            for raider in self.active():
-                if raider == target or target in self.out:
-                    continue
-                if ref.get_balance(raider, sym) < self.TAKEOVER_SHARES:
-                    continue
-                cancel_all(ref, target)
-                legs = []
-                for r in ref.conn.execute("SELECT instrument, balance FROM accounts WHERE agent_id = ? AND balance != 0",
-                                          (target,)).fetchall():
-                    legs += [(target, r["instrument"], -r["balance"]), (raider, r["instrument"], r["balance"])]
-                self._move(f"takeover-{raider}-{target}-{ref.current_round}", legs)
-                for c in self.board.open:
-                    if c["owner"] == target:
-                        c["owner"] = raider
-                self.debt[raider] += self.debt[target]
-                self.debt[target] = 0
-                self.out[target] = raider
-                self.stats["takeovers"].append({"round": ref.current_round, "raider": raider, "target": target})
-        alive = self.active()
-        if len(alive) == 1 and self.stats["winner"] is None:
-            self.stats["winner"] = {"fleet": alive[0], "round": ref.current_round}
-
-
-# ------------------------------------------------------------ fog of war
-
-class Fog:
-    """Each fleet sees exact depot quotes only where it is docked. Every other
-    station shows quotes LAG rounds old, each price jittered by up to NOISE,
-    drawn per fleet, so two fleets misread the same station differently."""
-
-    def __init__(self, lag: int, noise: float, seed: int):
-        self.lag, self.noise = lag, noise
-        self.history: List[dict] = []
-        self.rng = random.Random(seed * 104729)
-
-    def record(self, quotes) -> None:
-        self.history.append(copy.deepcopy(quotes))
-        self.history = self.history[-(self.lag + 1):]
-
-    def view(self, ref: AgoraReferee, agent: str, quotes):
-        here = location(ref, agent)
-        old = self.history[0]
-        out = {}
-        for st in STATIONS:
-            if st == here:
-                out[st] = quotes[st]
-                continue
-            out[st] = {}
-            for comm, q in old[st].items():
-                j = dict(q)
-                for side in ("best_bid", "best_ask"):
-                    if j.get(side):
-                        j[side] = max(1, int(round(j[side] * (1 + self.rng.uniform(-self.noise, self.noise)))))
-                if j.get("best_bid") and j.get("best_ask") and j["best_bid"] >= j["best_ask"]:
-                    j["best_ask"] = j["best_bid"] + 1
-                out[st][comm] = j
-        return out
-
-
-class Hazards:
-    """Bad-luck events on the way (Ryan, #agent-chat 2026-09-23 08:37: "there
-    needs to be pressure and bad luck events"). Each trip that leaves this
-    round has, independently:
-      P_DELAY  a flight delay of 1-3 rounds (a storm, an engine fault), which
-               can blow a contract deadline;
-      P_LOSS   a cargo loss of 30-70% (spoilage, a hull breach). The lost
-               goods stay with SYSTEM, so the ledger still balances.
-    Seeded from the game seed, so runs repeat."""
-
-    def __init__(self, p_delay: float, p_loss: float, seed: int):
-        self.p_delay, self.p_loss = p_delay, p_loss
-        self.rng = random.Random(seed * 104729)
-        self.stats = {"trips": 0, "delays": 0, "delay_rounds": 0, "losses": 0, "units_lost": 0}
-
-    def step(self, ref: AgoraReferee) -> None:
-        rows = ref.conn.execute("SELECT transit_id, cargo_qty, arrival_round FROM transits "
-                                "WHERE status = 'in_transit' AND departure_round = ?", (ref.current_round,)).fetchall()
-        for t in rows:
-            self.stats["trips"] += 1
-            with ref.lock, ref.conn:
-                if self.rng.random() < self.p_delay:
-                    d = self.rng.randint(1, 3)
-                    ref.conn.execute("UPDATE transits SET arrival_round = arrival_round + ? WHERE transit_id = ?",
-                                     (d, t["transit_id"]))
-                    self.stats["delays"] += 1
-                    self.stats["delay_rounds"] += d
-                if t["cargo_qty"] and self.rng.random() < self.p_loss:
-                    lost = int(t["cargo_qty"] * self.rng.uniform(0.3, 0.7))
-                    ref.conn.execute("UPDATE transits SET cargo_qty = cargo_qty - ? WHERE transit_id = ?",
-                                     (lost, t["transit_id"]))
-                    self.stats["losses"] += 1
-                    self.stats["units_lost"] += lost
-
-
-class Piracy:
-    """#145 (Ryan approved 2026-09-23 09:13, privateers included). Raids
-    players can see coming and steer around, unlike Hazards' flat odds.
-
-    - Route risk: P_BELT on asteroid-belt trips (the tolled routes), P_INNER
-      elsewhere. Every HOT_EVERY rounds GalNet names one "hot" station;
-      trips to or from it carry HOT_MULT x the risk. Public knowledge.
-    - Value draws raiders: the chance scales with cargo value, x0.5 for a
-      small load up to x2 for a big one (VALUE_REF CR = x1).
-    - A raid takes 20-50% of the cargo.
-    - Escort: a fleet may pay ESCORT_PCT of the cargo's value at departure
-      to cut the chance by ESCORT_CUT. `escorts` fleets (haulers) do so
-      whenever the expected loss beats the fee; novices never do.
-    - Privateers: a `privateer` fleet funds raiders against the richest
-      rival for PRIV_ROUNDS rounds at PRIV_COST CR, adding PRIV_ADD to that
-      rival's raid chance. It gets PRIV_SHARE of anything they steal
-      (goods, from SYSTEM), and each raid it sponsors is traced with
-      PRIV_TRACE, costing it a fine of PRIV_FINE x its fee.
-    Seeded; stolen goods stay with SYSTEM unless paid to a privateer."""
-
-    HOT_EVERY, HOT_MULT = 20, 2.0
-    VALUE_REF = 10_000
-    ESCORT_PCT, ESCORT_CUT = 0.04, 0.75
-    PRIV_ROUNDS, PRIV_COST, PRIV_ADD, PRIV_SHARE, PRIV_TRACE, PRIV_FINE = 20, 3_000, 0.15, 0.5, 0.25, 3
-
-    def __init__(self, p_belt: float, p_inner: float, seed: int, kinds: Dict[str, str]):
-        self.p_belt, self.p_inner = p_belt, p_inner
-        self.rng = random.Random(seed * 15485863)
-        self.kinds = kinds
-        self.hot: Optional[str] = None
-        self.contracts: Dict[str, tuple] = {}  # target -> (sponsor, until_round)
-        self.stats = {"trips": 0, "raids": 0, "units_stolen": 0, "cr_stolen": 0, "escorts": 0, "escort_cr": 0,
-                      "privateer_contracts": 0, "privateer_raids": 0, "privateers_traced": 0, "fines_cr": 0}
-
-    def _cr(self, ref, txn, legs):
-        with ref.lock, ref.conn:
-            for acct, inst, d in legs:
-                if not d:
-                    continue
-                ref.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, ?, 0)", (acct, inst))
-                ref.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?", (d, acct, inst))
-                ref.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)",
-                                 (txn, ref.current_seq, acct, inst, d))
-
-    def _hire(self, ref, active) -> None:
-        r = ref.current_round
-        for a in active:
-            if self.kinds.get(a) != "privateer" or any(sp == a and until >= r for sp, until in self.contracts.values()):
-                continue
-            if ref.get_balance(a, "CR") < self.PRIV_COST * 3:
-                continue
-            nw = {e["agent_id"]: e["net_worth"] for e in ref.get_leaderboard()}
-            rivals = [b for b in active if b != a]
-            if not rivals:
-                continue
-            target = max(rivals, key=lambda b: nw.get(b, 0))
-            self._cr(ref, f"privateer-{a}-{target}-{r}", ((a, "CR", -self.PRIV_COST), ("SYSTEM", "CR", self.PRIV_COST)))
-            self.contracts[target] = (a, r + self.PRIV_ROUNDS)
-            self.stats["privateer_contracts"] += 1
-
-    def step(self, ref: AgoraReferee, active: List[str]) -> None:
-        r = ref.current_round
-        if r % self.HOT_EVERY == 0 or self.hot is None:
-            self.hot = self.rng.choice(STATIONS)
-        self._hire(ref, active)
-        rows = ref.conn.execute("SELECT transit_id, agent_id, origin, destination, commodity, cargo_qty, toll_paid "
-                                "FROM transits WHERE status = 'in_transit' AND departure_round = ?", (r,)).fetchall()
-        for t in rows:
-            self.stats["trips"] += 1
-            a, qty = t["agent_id"], t["cargo_qty"] or 0
-            roll, share_roll, trace_roll = self.rng.random(), self.rng.uniform(0.2, 0.5), self.rng.random()
-            if qty <= 0:
-                continue
-            value = qty * REF_PRICE.get(t["commodity"], 0)
-            p = self.p_belt if (t["toll_paid"] or 0) > 0 else self.p_inner
-            if self.hot in (t["origin"], t["destination"]):
-                p *= self.HOT_MULT
-            p *= min(2.0, max(0.5, value / self.VALUE_REF))
-            sponsor = None
-            c = self.contracts.get(a)
-            if c and c[1] >= r:
-                sponsor = c[0]
-                p += self.PRIV_ADD
-            if self.kinds.get(a) in ("hauler", "privateer"):
-                fee = int(value * self.ESCORT_PCT)
-                if p * value * 0.35 > fee and ref.get_balance(a, "CR") > fee:
-                    self._cr(ref, f"escort-{t['transit_id']}", ((a, "CR", -fee), ("SYSTEM", "CR", fee)))
-                    p *= 1 - self.ESCORT_CUT
-                    self.stats["escorts"] += 1
-                    self.stats["escort_cr"] += fee
-            if roll >= min(0.95, p):
-                continue
-            stolen = int(qty * share_roll)
-            with ref.lock, ref.conn:
-                ref.conn.execute("UPDATE transits SET cargo_qty = cargo_qty - ? WHERE transit_id = ?", (stolen, t["transit_id"]))
-            self.stats["raids"] += 1
-            self.stats["units_stolen"] += stolen
-            self.stats["cr_stolen"] += int(stolen * REF_PRICE.get(t["commodity"], 0))
-            if sponsor:
-                self.stats["privateer_raids"] += 1
-                cut = int(stolen * self.PRIV_SHARE)
-                self._cr(ref, f"privateer-cut-{t['transit_id']}", ((sponsor, t["commodity"], cut), ("SYSTEM", t["commodity"], -cut)))
-                if trace_roll < self.PRIV_TRACE:
-                    fine = min(self.PRIV_COST * self.PRIV_FINE, max(0, ref.get_balance(sponsor, "CR")))
-                    self._cr(ref, f"privateer-fine-{t['transit_id']}", ((sponsor, "CR", -fine), ("SYSTEM", "CR", fine)))
-                    self.stats["privateers_traced"] += 1
-                    self.stats["fines_cr"] += fine
-
-
-def charge_docking_fees(ref: AgoraReferee, fee: int) -> int:
-    """Issue #73 prototype: every docked fleet pays `fee` CR per round to
-    SYSTEM (balanced ledger entries). A fleet that cannot pay is charged what
-    it has. Returns the total collected."""
-    total = 0
-    with ref.lock, ref.conn:
-        for agent in FLEETS:
-            if location(ref, agent) is None:
-                continue
-            due = min(fee, max(0, ref.get_balance(agent, "CR")))
-            if due <= 0:
-                continue
-            txn = f"dockfee-{agent}-{ref.current_round}"
-            for acct, d in ((agent, -due), ("SYSTEM", due)):
-                ref.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = 'CR'", (d, acct))
-                ref.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, 'CR', ?)",
-                                 (txn, ref.current_seq, acct, d))
-            total += due
-    return total
+                loc = ref.get_vessel_location(buyer)
+                at = loc["transit"]["destination"] if loc.get("status") == "in_transit" else loc["station_id"]
+                bv = views[buyer]
+                reach = 0.0 if at == st else self._unit_trip_cost(bv, at, st, qty, r)
+                gain = max((bv[d][comm]["best_bid"] or 0) - self._unit_trip_cost(bv, st, d, qty, r)
+                           for d in STATIONS if d != st) - reach
+                if gain > price and (best is None or (gain, buyer) > best[:2]):
+                    best = (gain, buyer, at != st or loc.get("status") != "docked")
+            if best and ref.peer.accept(best[1], o["escrow_id"]).get("kind") == "peer_accept_ok":
+                self.remote += best[2]
+        for o in ref.peer.list(status="offered"):
+            if o["escrow_id"] in mine:
+                ref.peer.cancel(o["seller"], o["escrow_id"])
 
 
 # ------------------------------------------------------------ strategies
 
 class Hauler:
     """Greedy one-hop arbitrage: sell cargo on arrival, then buy the single
-    best (commodity, destination) margin net of fuel and toll, and fly."""
+    best (commodity, destination) margin net of fuel and toll, and fly. A
+    hauler with a peer pickup waiting elsewhere flies there next (#126)."""
+
+    UPGRADE_CASH_MULT = UPGRADE_CASH_MULT
 
     def __init__(self, agent: str, tolerate_halts: bool = False):
         self.agent = agent
@@ -860,28 +529,32 @@ class Hauler:
             return
         self.plan = None
 
-        board = getattr(ref, "_sim_contracts", None)
-        if board is not None and board.deliver(self.agent, st):
-            stats["contract_deliveries"] += 1
-            inv = inventory(ref, self.agent)
+        deliver_contracts(ref, self.agent, st, stats)
+        inv = inventory(ref, self.agent)
 
         # 1. Sell cargo here only if this is the best market for it; otherwise
         #    it is cargo to haul (e.g. a per-planet genesis export).
         for comm in ("FRAG", "FOOD", "ORE"):
-            qty = inv[comm]
+            qty = available(ref, self.agent, comm)
             bid = quotes[st][comm]["best_bid"]
             if qty > 0 and bid and bid >= self._hauling_value(quotes, st, comm) and band_ok(ref, st, comm, bid):
                 order(ref, self.agent, "ask", min(qty, quotes[st][comm]["bid_depth"] or qty), bid, comm, st, "sell")
+        buy_upgrades(ref, self.agent, self.UPGRADE_CASH_MULT, stats)
         inv = inventory(ref, self.agent)
         for comm in ("FRAG", "FOOD", "ORE"):
             if inv[comm] > 0:
                 dest = max((d for d in STATIONS if d != st), key=lambda d: quotes[d][comm]["best_bid"] or 0)
-                self._fly(ref, st, dest, comm, inv, stats)
+                c = self._contract_run(ref, st, comm)
+                self._fly(ref, st, c["station_id"] if c else dest, comm, inv, stats)
                 return
 
-        # 2. Pick the best margin from here.
+        # 2. Pick the best margin from here: a contract it owns first, then
+        #    toward a peer pickup if one waits, then anywhere.
+        waiting = sorted({p["station_id"] for p in pickups(ref, self.agent)} - {st})
+        owned = [c["station_id"] for c in sorted(my_contracts(ref, self.agent), key=lambda c: -c["price"])
+                 if c["station_id"] != st and self._contract_run(ref, st, c["instrument"], c["station_id"])]
         best = None
-        for dest in STATIONS:
+        for dest in (owned[:1] or waiting[:1] or STATIONS):
             if dest == st:
                 continue
             route = get_route(st, dest, ref.current_round)
@@ -891,10 +564,9 @@ class Hauler:
                 ask = quotes[st][comm]["best_ask"]
                 bid = quotes[dest][comm]["best_bid"] or 0
                 cap = 500
-                if board is not None:
-                    c = board.best_for(dest, comm, ref.current_round + route["rounds"], self.agent)
-                    if c and c["price"] > bid:
-                        bid, cap = c["price"], min(500, c["remaining"])
+                c = contract_for(ref, self.agent, dest, comm, ref.current_round + route["rounds"])
+                if c and c["price"] > bid:
+                    bid, cap = c["price"], min(500, c["qty_remaining"])
                 if not ask or not bid:
                     continue
                 if not band_ok(ref, st, comm, ask) and not self.tolerate_halts:
@@ -909,8 +581,13 @@ class Hauler:
                 if profit > 0 and (best is None or per_round > best[0]):
                     best = (per_round, dest, comm, qty, ask, route)
         if best is None:
+            if waiting:
+                stats["pickup_trips"] = stats.get("pickup_trips", 0) + 1
+                self._fly(ref, st, waiting[0], "FRAG", inv, stats, empty=True)
             return
         _, dest, comm, qty, ask, route = best
+        if waiting:
+            stats["pickup_trips"] = stats.get("pickup_trips", 0) + 1
 
         # 3. Buy; fly now, or wait for the auction if the buy tripped a halt.
         res = order(ref, self.agent, "bid", qty, ask, comm, st, "buy")
@@ -920,7 +597,17 @@ class Hauler:
             return
         self._fly(ref, st, dest, comm, inventory(ref, self.agent), stats)
 
-    def _fly(self, ref: AgoraReferee, st: str, dest: str, comm: str, inv, stats) -> None:
+    def _contract_run(self, ref: AgoraReferee, st: str, comm: str, dest: Optional[str] = None) -> Optional[dict]:
+        """An owned contract for `comm` it can still reach in time from here."""
+        for c in sorted(my_contracts(ref, self.agent), key=lambda c: -c["price"]):
+            if c["instrument"] != comm or c["station_id"] == st or (dest and c["station_id"] != dest):
+                continue
+            route = get_route(st, c["station_id"], ref.current_round)
+            if route and ref.current_round + route["rounds"] <= c["deadline"]:
+                return c
+        return None
+
+    def _fly(self, ref: AgoraReferee, st: str, dest: str, comm: str, inv, stats, empty: bool = False) -> None:
         route = get_route(st, dest, ref.current_round)
         need = route["fuel"] - inv["FUEL"]
         if need > 0:
@@ -941,12 +628,34 @@ class Hauler:
                 stats["stranded_events"] += 1
                 return
         self.stranded = False
-        held = ref.get_balance(self.agent, comm)
-        if held > 0:
+        held = 0 if empty else ref.get_balance(self.agent, comm)
+        if held > 0 or empty:
             cancel_all(ref, self.agent)
-            t = ref.initiate_transit(agent_id=self.agent, destination=dest, commodity=comm, cargo_qty=held)
-            if t.get("status") == "in_transit":
-                stats["transits"] += 1
+            escort = want_escort(ref, self.agent, st, dest, comm, held)
+            move(ref, self.agent, dest, comm, held, stats, escort=escort)
+
+
+class Privateer(Hauler):
+    """A hauler that also keeps privateers (POST /referee/privateers) on the
+    richest rival whenever it has 3x their fee in cash and none under contract."""
+
+    def act(self, ref: AgoraReferee, quotes, stats) -> None:
+        self._hire(ref, stats)
+        super().act(ref, quotes, stats)
+
+    def _hire(self, ref: AgoraReferee, stats) -> None:
+        if not ref.piracy.enabled or debt(ref, self.agent) > 0:
+            return
+        if available(ref, self.agent, "CR") < piracy_mod.PRIV_COST * 3:
+            return
+        # GET /referee/piracy as this fleet sees it: its own contracts show their sponsor.
+        if any(c["sponsor"] == self.agent for c in ref.piracy.active_contracts(viewer=self.agent)):
+            return
+        nw = {e["agent_id"]: e["net_worth"] for e in ref.get_leaderboard()}
+        for target in sorted((b for b in FLEETS if b != self.agent and not ref.fleet_out(b)),
+                             key=lambda b: -nw.get(b, 0)):
+            if ref.piracy.hire(self.agent, target).get("kind") == "privateer_hire_ok":
+                return
 
 
 class Maker:
@@ -997,6 +706,8 @@ class Novice:
       p_keep        leaves last round's resting orders up instead of cancelling
       p_no_fuel     issues MOVE without topping up FUEL first
       temperature   softmax over route margins instead of the single best
+    It buys upgrades on impulse (a small cash reserve), never escorts, and
+    ignores half the pirate demands it gets.
     """
 
     def __init__(self, agent: str, seed: int = 0, p_bad: float = 0.12, p_inside: float = 0.4,
@@ -1034,11 +745,10 @@ class Novice:
         if self.rng.random() < self.p_bad:
             self._bad_order(ref, st, stats)
             return
-        board = getattr(ref, "_sim_contracts", None)
-        if board is not None and board.deliver(self.agent, st):
-            stats["contract_deliveries"] += 1
+        deliver_contracts(ref, self.agent, st, stats)
         if self.rng.random() >= self.p_keep:
             cancel_all(ref, self.agent)
+        buy_upgrades(ref, self.agent, NOVICE_UPGRADE_CASH_MULT, stats)
         inv = inventory(ref, self.agent)
 
         # Holding cargo: sell it here if this station pays the most, else fly.
@@ -1050,16 +760,20 @@ class Novice:
             if st == target or st == best_dest:
                 q = quotes[st][comm]
                 px = self._price("ask", q["best_bid"], q["best_ask"])
-                if px and band_ok(ref, st, comm, px):
-                    order(ref, self.agent, "ask", inv[comm], px, comm, st, "sell")
+                have = available(ref, self.agent, comm)
+                if px and have > 0 and band_ok(ref, st, comm, px):
+                    order(ref, self.agent, "ask", have, px, comm, st, "sell")
                 self.dest = None
                 return
             self._fly(ref, st, target, comm, inv, quotes, stats)
             return
 
+        # A peer pickup waiting elsewhere: go and get it (#126).
+        waiting = sorted({p["station_id"] for p in pickups(ref, self.agent)} - {st})
+
         # Empty hold: choose a route by softmax over profit per round.
         options = []
-        for dest in STATIONS:
+        for dest in (waiting[:1] or STATIONS):
             route = get_route(st, dest, ref.current_round) if dest != st else None
             if not route:
                 continue
@@ -1075,7 +789,12 @@ class Novice:
                 if profit > 0:
                     options.append((profit / route["rounds"], dest, comm, qty))
         if not options:
+            if waiting:
+                stats["pickup_trips"] = stats.get("pickup_trips", 0) + 1
+                self._fly(ref, st, waiting[0], "FRAG", inv, quotes, stats, empty=True)
             return
+        if waiting:
+            stats["pickup_trips"] = stats.get("pickup_trips", 0) + 1
         top = max(o[0] for o in options)
         weights = [math.exp((o[0] - top) / (self.temperature * top)) for o in options]
         _, dest, comm, qty = self.rng.choices(options, weights=weights)[0]
@@ -1091,19 +810,17 @@ class Novice:
             self._fly(ref, st, dest, comm, inventory(ref, self.agent), quotes, stats)
         # else: the bid rests inside the spread; next round it flies whatever filled
 
-    def _fly(self, ref: AgoraReferee, st: str, dest: str, comm: str, inv, quotes, stats) -> None:
+    def _fly(self, ref: AgoraReferee, st: str, dest: str, comm: str, inv, quotes, stats, empty: bool = False) -> None:
         route = get_route(st, dest, ref.current_round)
         need = route["fuel"] - inv["FUEL"]
         if need > 0 and self.rng.random() >= self.p_no_fuel:
             fa = quotes[st]["FUEL"]["best_ask"]
             if fa and inv["CR"] >= need * fa and band_ok(ref, st, "FUEL", fa):
                 order(ref, self.agent, "bid", need, fa, "FUEL", st, "fuel")
-        held = ref.get_balance(self.agent, comm)
+        held = 0 if empty else ref.get_balance(self.agent, comm)
         cancel_all(ref, self.agent)
-        t = ref.initiate_transit(agent_id=self.agent, destination=dest, commodity=comm, cargo_qty=held)
-        if t.get("status") == "in_transit":
-            stats["transits"] += 1
-        else:
+        t = move(ref, self.agent, dest, comm, held, stats, novice_rng=self.rng)
+        if t.get("status") != "in_transit":
             stats["rejected_moves"] = stats.get("rejected_moves", 0) + 1
 
 
@@ -1131,13 +848,11 @@ def cancel_stock_orders(ref: AgoraReferee, agent: str) -> None:
 
 
 class EquityLiquidity:
-    """STAND-IN for other players on the stock exchange. The live referee
-    has no depot on equity books: a stock order fills only against another
-    fleet's resting order. Here every fleet that is not a stock trader
-    quotes the rivals' shares it holds at NAV x (1 +/- SPREAD), DEPTH shares
-    a side a round, from its own CR and shares, so nothing is minted. This
-    is an assumption about how LLM players will behave, not something the
-    live game provides; stock-trader results scale with it."""
+    """STAND-IN for other players on the stock exchange, on top of the live
+    exchange's own quotes: every fleet that is not a stock trader quotes the
+    rivals' shares it holds at NAV x (1 +/- SPREAD), DEPTH shares a side a
+    round, from its own CR and shares, through ordinary orders. Off unless
+    --equity-mm; an assumption about how LLM players will behave."""
 
     def __init__(self, spread: float, depth: int):
         self.spread, self.depth = spread, depth
@@ -1152,10 +867,10 @@ class EquityLiquidity:
                 nav = marks[sym]["nav"]
                 ask = max(2, int(round(nav * (1 + self.spread))))
                 bid = max(1, min(ask - 1, int(nav * (1 - self.spread))))
-                held = ref.get_balance(a, sym)
+                held = available(ref, a, sym)
                 if held > 0:
                     order(ref, a, "ask", min(self.depth, held), ask, sym, "ceres", "eqmm")
-                if ref.get_balance(a, "CR") > 2000 + bid * self.depth:
+                if available(ref, a, "CR") > 2000 + bid * self.depth:
                     order(ref, a, "bid", self.depth, bid, sym, "ceres", "eqmm")
 
 
@@ -1198,11 +913,11 @@ class StockTrader:
             book = ref.books["ceres"][sym]
             ask, bid = book.best_ask(), book.best_bid()
             if ask is not None and ask < fair * (1 - self.EDGE):
-                qty = int(ref.get_balance(self.agent, "CR") * self.STAKE) // ask
+                qty = int(available(ref, self.agent, "CR") * self.STAKE) // ask
                 if qty > 0:
                     order(ref, self.agent, "bid", qty, ask, sym, "ceres", "stk")
             elif bid is not None and bid > fair * (1 + self.EDGE):
-                qty = ref.get_balance(self.agent, sym)
+                qty = available(ref, self.agent, sym)
                 if qty > 0:
                     order(ref, self.agent, "ask", qty, bid, sym, "ceres", "stk")
             cancel_stock_orders(ref, self.agent)
@@ -1240,6 +955,7 @@ class DayTrader:
                 continue
             avg = sum(hist) / len(hist)
             qty, held = self.pos.get(comm, [0, 0])
+            qty = min(qty, available(ref, self.agent, comm))  # a distress sale may have taken some
             if qty > 0:
                 held += 1
                 if (bid >= avg or held >= self.MAX_HOLD) and band_ok(ref, st, comm, bid):
@@ -1250,7 +966,7 @@ class DayTrader:
                     stats["day_trades"] = stats.get("day_trades", 0) + (1 if sold else 0)
                 self.pos[comm] = [qty, held if qty else 0]
             elif ask <= avg * (1 - self.DIP) and band_ok(ref, st, comm, ask):
-                n = min(q["ask_depth"] or 0, self.LOT_CR // ask, max(0, (ref.get_balance(self.agent, "CR") - 500) // ask))
+                n = min(q["ask_depth"] or 0, self.LOT_CR // ask, max(0, (available(ref, self.agent, "CR") - 500) // ask))
                 if n > 0:
                     before = ref.get_balance(self.agent, comm)
                     order(ref, self.agent, "bid", n, ask, comm, st, "dtbuy")
@@ -1259,15 +975,24 @@ class DayTrader:
                         self.pos[comm] = [got, 0]
 
 
-STRATEGY = {"hauler": Hauler, "maker": Maker, "idler": Idler, "stock_trader": StockTrader,
-            "inside_maker": lambda a: Maker(a, clip=100, inside=True), "daytrader": DayTrader}
+def build_fleet(agent: str, kind: str, seed: int, mode: str):
+    if kind == "hauler":
+        return Hauler(agent, tolerate_halts=(mode == "tolerant"))
+    if kind == "privateer":
+        return Privateer(agent, tolerate_halts=(mode == "tolerant"))
+    if kind == "novice":
+        return Novice(agent, seed=seed)
+    if kind == "inside_maker":
+        return Maker(agent, clip=100, inside=True)
+    return {"maker": Maker, "idler": Idler, "stock_trader": StockTrader, "daytrader": DayTrader}[kind](agent)
 
 
 # ------------------------------------------------------------ genesis
 
 def apply_planet_genesis(ref: AgoraReferee) -> None:
-    """Swap each fleet's FRAG for its home export at equal reference value,
-    through SYSTEM with balanced ledger entries."""
+    """Scenario, not a live rule: swap each fleet's FRAG for its home export
+    at equal reference value, through SYSTEM with balanced ledger entries.
+    The live game has no such genesis; there is no API for it."""
     with ref.lock, ref.conn:
         for agent in FLEETS:
             home = ref.get_vessel_location(agent)["station_id"]
@@ -1313,6 +1038,11 @@ def score(ref: AgoraReferee, agent: str) -> float:
     inv = inventory(ref, agent)
     escrow = sum(r["cargo_qty"] * REF_PRICE.get(r["commodity"], 0) for r in ref.conn.execute(
         "SELECT commodity, cargo_qty FROM transits WHERE agent_id = ? AND status = 'in_transit'", (agent,)))
+    held = ref.peer.holdings_adjustment().get(agent, {})
+    escrow += held.get("CR", 0) + sum(held.get(c, 0) * REF_PRICE[c] for c in TRADED)
+    escrow += ref.contract_desk.holdings_adjustment().get(agent, 0)
+    if ref.upgrades_enabled and not ref.fleet_out(agent):
+        escrow += ref.upgrades.book_value(agent)
     return inv["CR"] + sum(inv[c] * REF_PRICE[c] for c in TRADED) + escrow
 
 
@@ -1321,19 +1051,150 @@ def depot_floor(ref: AgoraReferee) -> int:
         "SELECT balance FROM accounts WHERE agent_id LIKE 'depot_%'"))
 
 
+def _q(ref: AgoraReferee, sql: str, args=()) -> Any:
+    v = ref.conn.execute(sql, args).fetchone()[0]
+    return v or 0
+
+
+def _txns(ref: AgoraReferee, prefix: str) -> int:
+    return _q(ref, "SELECT COUNT(DISTINCT txn_id) FROM ledger_entries WHERE txn_id LIKE ?", (prefix + "%",))
+
+
+def features(ref: AgoraReferee) -> Dict[str, Any]:
+    """The live feature set this referee runs, for the report."""
+    return {"depots": ref.depots_enabled, "depot_model": ref.depot_model, "band_pct": ref.circuit_breaker.band_pct,
+            "peer_trades": ref.peer_trades, "fog": [ref.fog.lag, ref.fog.noise] if ref.fog else None,
+            "idle_fee": ref.idle_fee, "rival_shares": ref.rival_shares, "exchange_shares": ref.exchange_shares,
+            "exchange_vol": ref.exchange.vol, "contracts": ref.contracts_enabled, "corporate": ref.corporate_enabled,
+            "upgrades": ref.upgrades_enabled, "hazards": list(ref.hazards.odds) if ref.hazards.odds else None,
+            "piracy": list(ref.piracy.odds) if ref.piracy.odds else None,
+            "events": getattr(ref, "events_enabled", None)}
+
+
+def contract_report(ref: AgoraReferee) -> Optional[dict]:
+    if not ref.contracts_enabled:
+        return None
+    rows = [dict(r) for r in ref.conn.execute("SELECT * FROM station_contracts")]
+    return {"posted": len(rows),
+            "claims": _txns(ref, "contract-claim-"),
+            "units_delivered": sum(r["qty_total"] - r["qty_remaining"] for r in rows),
+            "paid": sum((r["qty_total"] - r["qty_remaining"]) * r["price"] for r in rows),
+            "fulfilled": sum(r["status"] == "fulfilled" for r in rows),
+            "expired": sum(r["status"] == "lapsed" and r["qty_remaining"] > 0 for r in rows),
+            "penalties": sum(r["penalty"] > 0 for r in rows), "penalty_cr": sum(r["penalty"] for r in rows),
+            "shortfall_cr": sum(r["shortfall"] for r in rows),
+            "bonds_cr": _q(ref, "SELECT SUM(delta) FROM ledger_entries WHERE txn_id LIKE 'contract-claim-%' AND agent_id = 'SYSTEM'"),
+            "bonds_forfeited_cr": _q(ref, "SELECT SUM(delta) FROM ledger_entries WHERE txn_id LIKE 'contract-lapse-%' "
+                                          "AND agent_id LIKE 'depot_%'"),
+            "transfers": _txns(ref, "contract-buy-"),
+            # price plus the deposit the buyer takes over
+            "transfer_cr": _q(ref, "SELECT SUM(delta) FROM ledger_entries WHERE txn_id LIKE 'contract-buy-%' AND delta > 0")}
+
+
+def corporate_report(ref: AgoraReferee, track: dict) -> Optional[dict]:
+    if not ref.corporate_enabled:
+        return None
+    ev = [dict(e) for e in ref.conn.execute("SELECT round, kind, agent_id, detail FROM corp_events ORDER BY id")]
+    status = {r["agent_id"]: dict(r) for r in ref.conn.execute("SELECT * FROM corp_status")}
+    return {"claims": _txns(ref, "contract-claim-"),
+            "penalties": _q(ref, "SELECT COUNT(*) FROM station_contracts WHERE penalty > 0"),
+            "penalty_cr": _q(ref, "SELECT SUM(penalty) FROM station_contracts"),
+            "goods_sold_cr": _q(ref, "SELECT SUM(delta) FROM ledger_entries WHERE txn_id LIKE 'distress-goods-%' "
+                                     "AND instrument = 'CR' AND delta > 0 AND agent_id NOT LIKE 'depot_%'"),
+            "share_auctions": sum(e["kind"] == "share_auction" for e in ev),
+            "shares_auctioned": _q(ref, "SELECT SUM(delta) FROM ledger_entries WHERE txn_id LIKE 'distress-auction-%' "
+                                        "AND instrument LIKE 'EQ_%' AND delta > 0"),
+            "takeovers": [{"round": e["round"], "raider": e["agent_id"], "detail": e["detail"]} for e in ev if e["kind"] == "takeover"],
+            "bankruptcies": [{"round": e["round"], "fleet": e["agent_id"]} for e in ev if e["kind"] == "bankrupt"],
+            "winner": next(({"fleet": e["agent_id"], "round": e["round"]} for e in ev if e["kind"] == "winner"), None),
+            "max_debt": track["max_debt"], "rounds_in_debt": track["rounds_in_debt"],
+            "bonds_cr": _q(ref, "SELECT SUM(delta) FROM ledger_entries WHERE txn_id LIKE 'contract-claim-%' AND agent_id = 'SYSTEM'"),
+            "debt_end": {a: s["debt"] for a, s in status.items() if s["debt"]},
+            "absorbed": {a: (s["absorbed_by"] or s["status"]) for a, s in status.items() if s["status"] != "active"}}
+
+
+def events_report(ref: AgoraReferee) -> Optional[dict]:
+    """Corp events (agora/events.py) and the stock shocks they caused."""
+    if not getattr(ref, "events_enabled", False):
+        return None
+    kinds = {r[0]: r[1] for r in ref.conn.execute("SELECT kind, COUNT(*) FROM corp_events GROUP BY kind")}
+    vis = {r[0]: r[1] for r in ref.conn.execute("SELECT visibility, COUNT(*) FROM corp_events GROUP BY visibility")}
+    return {"by_kind": kinds, "by_visibility": vis,
+            "exposed": _q(ref, "SELECT COUNT(*) FROM corp_events WHERE exposed_round IS NOT NULL"),
+            "stock_shocks": len(ref.exchange.shocks)}
+
+
+def hazard_report(ref: AgoraReferee) -> Optional[dict]:
+    if not ref.hazards.odds:
+        return None
+    return {"trips": _q(ref, "SELECT COUNT(*) FROM transits"),
+            "delays": _q(ref, "SELECT COUNT(*) FROM transit_hazards WHERE delay > 0"),
+            "delay_rounds": _q(ref, "SELECT SUM(delay) FROM transit_hazards"),
+            "losses": _q(ref, "SELECT COUNT(*) FROM transit_hazards WHERE lost_qty > 0"),
+            "units_lost": _q(ref, "SELECT SUM(lost_qty) FROM transit_hazards")}
+
+
+def piracy_report(ref: AgoraReferee) -> Optional[dict]:
+    if not ref.piracy.enabled:
+        return None
+    by = {r[0]: r[1] for r in ref.conn.execute("SELECT status, COUNT(*) FROM piracy_raids GROUP BY status")}
+    return {"trips": _q(ref, "SELECT COUNT(*) FROM transits WHERE cargo_qty > 0"),
+            "raids": sum(by.values()), "outcomes": by,
+            "timed_out": _q(ref, "SELECT COUNT(*) FROM piracy_raids WHERE timed_out = 1"),
+            "units_stolen": _q(ref, "SELECT SUM(qty_taken) FROM piracy_raids"),
+            "cr_stolen": int(sum((r[1] or 0) * REF_PRICE.get(r[0], 0) for r in ref.conn.execute(
+                "SELECT commodity, qty_taken FROM piracy_raids"))),
+            "ransom_cr": _q(ref, "SELECT SUM(cr_taken) FROM piracy_raids"),
+            "escorts": _txns(ref, "piracy-escort-"),
+            "escort_cr": _q(ref, "SELECT SUM(delta) FROM ledger_entries WHERE txn_id LIKE 'piracy-escort-%' AND agent_id = 'SYSTEM'"),
+            "privateer_contracts": _q(ref, "SELECT COUNT(*) FROM piracy_privateers"),
+            "privateer_raids": _q(ref, "SELECT SUM(raids) FROM piracy_privateers"),
+            "privateers_traced": _q(ref, "SELECT COUNT(*) FROM piracy_raids WHERE traced = 1"),
+            "fines_cr": _q(ref, "SELECT SUM(fines) FROM piracy_privateers")}
+
+
+def peer_report(ref: AgoraReferee, pm: PeerMarket) -> Optional[dict]:
+    if not ref.peer_trades:
+        return None
+    rows = [dict(r) for r in ref.conn.execute("SELECT * FROM station_escrow WHERE accepted_round IS NOT NULL")]
+    exp = sum(r["qty"] for r in rows if r["status"] == "expired")
+    pending = sum(r["qty"] for r in rows if r["status"] == "accepted")
+    return {"trades": len(rows), "units": sum(r["qty"] for r in rows), "cr": sum(r["qty"] * r["price"] for r in rows),
+            "remote": pm.remote, "collected": sum(r["qty"] for r in rows if r["status"] == "collected"),
+            "expired_units": exp, "pending_units": pending,
+            # never picked up (refunded at the deadline) plus still waiting at the end (#126)
+            "uncollected": exp + pending}
+
+
 # ------------------------------------------------------------ run
 
-def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict", check_every: int = 25,
-        depot_model: str = "static", band_pct: Optional[float] = None, reactive_bands: bool = True,
-        contracts: bool = False, dock_fee: int = 0, owned_contracts: bool = False,
-        fog: Optional[tuple] = None, peer: bool = False, corporate: bool = False,
-        equity_mm: Optional[tuple] = None, exchange: Optional[tuple] = None, vol: Optional[float] = None,
-        bond: float = 0.0, hazards: Optional[tuple] = None, piracy: Optional[tuple] = None,
-        theta: Optional[float] = None, spread_scale: Optional[float] = None) -> dict:
-    """spread_scale compresses each good's base price toward its four-station
-    mean (1.0 = live, 0.5 = half the gap). It edits agora.spatial.BASE_PRICES
-    in place for the run and restores it; the static depot model hardcodes
-    some Earth/Ceres quotes, so use it with depot_model='reactive'."""
+def _set_constants(constants: Optional[Dict[str, Any]]) -> Dict[tuple, Any]:
+    """Override live module constants, e.g. {"contracts.PENALTY": 0.6}.
+    Returns what to restore."""
+    saved = {}
+    for key, value in (constants or {}).items():
+        mod_name, _, name = key.rpartition(".")
+        mod = importlib.import_module(mod_name if mod_name.startswith("agora.") else f"agora.{mod_name}")
+        if not hasattr(mod, name):
+            raise ValueError(f"no live constant {key}")
+        saved[(mod, name)] = getattr(mod, name)
+        setattr(mod, name, value)
+    return saved
+
+
+def run(scenario: str, genesis: str = "flat", seed: int = 1, rounds: int = 300, mode: str = "strict",
+        check_every: int = 25, overrides: Optional[Dict[str, Any]] = None,
+        constants: Optional[Dict[str, Any]] = None, equity_mm: Optional[tuple] = None,
+        vol: Optional[float] = None, theta: Optional[float] = None,
+        spread_scale: Optional[float] = None) -> dict:
+    """One seeded game of the live referee.
+
+    overrides: build_referee_from_env keyword overrides (e.g. {"piracy": "0.3,0.1"},
+    {"corporate": False}). constants: live module constants to change for the
+    run (e.g. {"contracts.PENALTY": 0.6}). vol, theta: the price engine's
+    per-round sigma and mean reversion. spread_scale compresses each good's
+    base price toward its four-station mean (1.0 = live) by editing
+    agora.spatial.BASE_PRICES in place for the run. All are restored after."""
     import agora.spatial as spatial_mod
     saved = {st: dict(v) for st, v in spatial_mod.BASE_PRICES.items()}
     if spread_scale is not None:
@@ -1341,69 +1202,41 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
             m = sum(saved[st][c] for st in STATIONS) / len(STATIONS)
             for st in STATIONS:
                 spatial_mod.BASE_PRICES[st][c] = round(m + spread_scale * (saved[st][c] - m), 1)
+    restore = {}
     try:
-        return _run(scenario, genesis, seed, rounds, mode, check_every, depot_model, band_pct, reactive_bands,
-                    contracts, dock_fee, owned_contracts, fog, peer, corporate, equity_mm, exchange, vol, theta,
-                    bond, hazards, piracy)
+        restore = _set_constants(constants)
+        return _run(scenario, genesis, seed, rounds, mode, check_every, overrides, equity_mm, vol, theta,
+                    constants, spread_scale)
     finally:
+        for (mod, name), v in restore.items():
+            setattr(mod, name, v)
         for st, v in saved.items():
             spatial_mod.BASE_PRICES[st].update(v)
 
 
-def _run(scenario, genesis, seed, rounds, mode, check_every, depot_model, band_pct, reactive_bands,
-         contracts, dock_fee, owned_contracts, fog, peer, corporate, equity_mm, exchange, vol, theta,
-         bond=0.0, hazards=None, piracy=None) -> dict:
-    # Reactive depots are the referee's own implementation (agora/referee.py,
-    # AGORA_DEPOT_MODEL), so these numbers describe what would ship.
-    # corporate: claimed contracts with penalties, debt, distress share
-    # auctions and 51% takeovers (Corporate); implies owned contracts and
-    # the live 100-share rival cross-holdings.
-    ref = AgoraReferee(depots=True, asymmetric=True, depot_model=depot_model,
-                       band_pct=band_pct, reactive_bands=reactive_bands,
-                       rival_shares=100 if corporate else 0)
-    # exchange: (SHARES, VOL) for the referee's own stock market maker
-    # (agora/exchange.py), as the live server runs it.
-    xkw = {"exchange_shares": int(exchange[0]), "exchange_vol": float(exchange[1])} if exchange else {}
-    # warmup_rounds is fixed: left unset, new_game draws it from SystemRandom
-    # and identical runs diverge (found 2026-09-22; runs before this were not
-    # reproducible run to run, only statistically comparable).
-    ref.new_game(seed=seed, warmup_rounds=5, depots=True, asymmetric=True, depot_model=depot_model,
-                 rival_shares=100 if corporate else 0, **xkw)
+def _run(scenario, genesis, seed, rounds, mode, check_every, overrides, equity_mm, vol, theta,
+         constants, spread_scale) -> dict:
+    ref = start_game(seed, overrides)
     if genesis == "planet":
         apply_planet_genesis(ref)
-    # Price engine knobs (agora/spatial.py StationPriceEngine: vol is the
-    # per-round Gaussian sigma in CR, theta the pull back to base).
     if vol is not None:
         ref.spatial.vol = vol
     if theta is not None:
         ref.spatial.theta = theta
-    def build(a: str, kind: str):
-        if kind in ("hauler", "privateer"):
-            return Hauler(a, tolerate_halts=(mode == "tolerant"))
-        if kind == "novice":
-            return Novice(a, seed=seed)
-        return STRATEGY[kind](a)
-    fleets = {a: build(a, kind) for a, kind in SCENARIOS[scenario].items()}
+    kinds = SCENARIOS[scenario]
+    fleets = {a: build_fleet(a, kind, seed, mode) for a, kind in kinds.items()}
     start = {a: score(ref, a) for a in FLEETS}
     eq_liq = EquityLiquidity(*equity_mm) if equity_mm else None
-    traders = [a for a, k in SCENARIOS[scenario].items() if k == "stock_trader"]
-    track_stocks = bool(eq_liq or traders or exchange)
+    traders = [a for a, k in kinds.items() if k == "stock_trader"]
+    track_stocks = bool(eq_liq or traders)
     stocks_start = {}
     if track_stocks:
         m0 = stock_navs(ref)
         stocks_start = {a: stock_value(ref, a, m0) for a in FLEETS}
     stats = {"transits": 0, "halts_caused": 0, "band_blocked": 0, "stranded_events": 0, "contract_deliveries": 0}
-    cboard = (ContractBoard(ref, seed, owned=owned_contracts or corporate, claim=corporate)
-              if (contracts or owned_contracts or corporate) else None)
-    if cboard is not None:
-        cboard.contractors = {a for a, k in SCENARIOS[scenario].items() if k in CONTRACTORS}
-        cboard.bond_pct = bond
-    hz = Hazards(hazards[0], hazards[1], seed) if hazards else None
-    pir = Piracy(piracy[0], piracy[1], seed, SCENARIOS[scenario]) if piracy else None
-    corp = Corporate(ref, cboard, SCENARIOS[scenario], seed) if corporate else None
-    fogger = Fog(fog[0], fog[1], seed) if fog else None
-    desk = PeerDesk(ref) if peer else None
-    ref._sim_contracts = cboard
+    cmarket = ContractMarket(ref, kinds, seed)
+    pmarket = PeerMarket(ref, kinds)
+    corp_track = {"max_debt": 0, "rounds_in_debt": 0}
     first_negative_depot = None
     first_invariant_failure = None
     spread = []  # Earth ORE bid - Ceres ORE ask over time
@@ -1412,21 +1245,11 @@ def _run(scenario, genesis, seed, rounds, mode, check_every, depot_model, band_p
     for _ in range(rounds):
         quotes = ref.get_depot_summary()["stations"]
         spread.append((quotes["earth"]["ORE"]["best_bid"] or 0) - (quotes["ceres"]["ORE"]["best_ask"] or 0))
-        if cboard is not None:
-            cboard.step()
-        if fogger is not None:
-            fogger.record(quotes)
-        views = {a: (fogger.view(ref, a, quotes) if fogger else quotes) for a in FLEETS}
-        if corp is not None:
-            corp.claim(views)
-        if cboard is not None and cboard.owned:
-            cboard.trade(views)
-        if desk is not None:
-            desk.collect()
-            desk.match(views)
-        # Stock traders act last, after the stand-in players have quoted;
-        # with none in the scenario the order is unchanged.
-        live = [a for a in fleets if not (corp is not None and a in corp.out)]
+        views = fleet_views(ref)
+        live = [a for a in fleets if not ref.fleet_out(a)]
+        cmarket.step(views, live)
+        pmarket.step(views, live)
+        # Stock traders act last, after the stand-in players have quoted.
         for a in live:
             if a not in traders:
                 fleets[a].act(ref, views[a], stats)
@@ -1435,16 +1258,12 @@ def _run(scenario, genesis, seed, rounds, mode, check_every, depot_model, band_p
         for a in live:
             if a in traders:
                 fleets[a].act(ref, views[a], stats)
-        if hz is not None:
-            hz.step(ref)
-        if pir is not None:
-            pir.step(ref, live)
         ref.step_round()
-        if corp is not None:
-            corp.settle()
-            corp.takeovers()
-        if dock_fee:
-            stats["dock_fees"] = stats.get("dock_fees", 0) + charge_docking_fees(ref, dock_fee)
+        if ref.corporate_enabled:
+            debts = [r[0] for r in ref.conn.execute("SELECT debt FROM corp_status WHERE debt > 0")]
+            if debts:
+                corp_track["rounds_in_debt"] += 1
+                corp_track["max_debt"] = max(corp_track["max_debt"], max(debts))
         if first_negative_depot is None and depot_floor(ref) < 0:
             first_negative_depot = ref.current_round
         if first_invariant_failure is None and ref.current_round % check_every == 0:
@@ -1452,17 +1271,23 @@ def _run(scenario, genesis, seed, rounds, mode, check_every, depot_model, band_p
             if not ok:
                 first_invariant_failure = (ref.current_round, errs[:2])
     elapsed = time.time() - t0
+    if first_invariant_failure is None:
+        ok, errs = ref.verify_ledger_invariants()
+        if not ok:
+            first_invariant_failure = (ref.current_round, errs[:2])
 
     board = {e["agent_id"]: e["net_worth"] for e in ref.get_leaderboard()}
     end = {a: score(ref, a) for a in FLEETS}
     halts = ref.conn.execute("SELECT COUNT(*) FROM circuit_breaker_halts").fetchone()[0]
     q = max(1, len(spread) // 4)
+    idle = {r[0]: -r[1] for r in ref.conn.execute(
+        "SELECT agent_id, SUM(delta) FROM ledger_entries WHERE txn_id LIKE 'idle-fee-%' AND agent_id != 'SYSTEM' "
+        "GROUP BY agent_id")}
     extra = {}
     if track_stocks:
         m1 = stock_navs(ref)
         extra["stocks"] = {
             "equity_mm": list(equity_mm) if equity_mm else None,
-            "exchange": (None if not exchange else dict(ref.exchange.summary(), shares=int(exchange[0]))),
             "fleets": {a: {"value_start": round(stocks_start[a]), "value_end": round(stock_value(ref, a, m1)),
                            "stock_cash": fleets[a].stock_cash if a in traders else None,
                            "stock_pnl": (round(fleets[a].stock_cash + stock_value(ref, a, m1) - stocks_start[a])
@@ -1473,44 +1298,88 @@ def _run(scenario, genesis, seed, rounds, mode, check_every, depot_model, band_p
                        for a in FLEETS},
             "nav_end": {sym: m1[sym]["nav"] for sym in EQ_SYM.values()},
         }
-    if hz is not None:
-        extra["hazards"] = hz.stats
-    if pir is not None:
-        extra["piracy"] = pir.stats
-    if bond:
-        extra["bond_pct"] = bond
     return {**extra,
         "scenario": scenario, "genesis": genesis, "mode": mode, "seed": seed, "rounds": rounds,
-        "depot_model": depot_model, "band_pct": ref.circuit_breaker.band_pct,
-        "reactive_bands": reactive_bands,
-        "dock_fee": dock_fee, "dock_fees_collected": stats.get("dock_fees", 0),
-        "contracts": None if cboard is None else {"posted": cboard.posted, "units_delivered": cboard.delivered,
-                                                  "paid": cboard.paid, "expired": cboard.expired,
-                                                  "owned": cboard.owned, "transfers": cboard.transfers,
-                                                  "transfer_cr": cboard.transfer_cr},
-        "fog": list(fog) if fog else None,
-        "corporate": None if corp is None else dict(corp.stats, debt_end={a: d for a, d in corp.debt.items() if d},
-                                                    absorbed=corp.out),
-        "peer": None if desk is None else {"trades": desk.trades, "units": desk.units, "cr": desk.cr,
-                                           "remote": desk.remote,
-                                           "uncollected": sum(desk.pickups.values())},
+        "features": features(ref), "overrides": overrides or {}, "constants": constants or {},
+        "spread_scale": spread_scale,
+        "depot_model": ref.depot_model, "band_pct": ref.circuit_breaker.band_pct,
+        "reactive_bands": ref.reactive_bands,
+        "idle_fees": idle, "idle_fees_collected": sum(idle.values()),
+        "exchange": dict(ref.exchange.summary(), shares=ref.exchange_shares) if ref.exchange_shares else None,
+        "contracts": contract_report(ref),
+        "corporate": corporate_report(ref, corp_track),
+        "hazards": hazard_report(ref),
+        "events": events_report(ref),
+        "piracy": piracy_report(ref),
+        "upgrades": {a: ref.upgrades.holdings(a) for a in FLEETS} if ref.upgrades_enabled else None,
+        "upgrade_cr": _q(ref, "SELECT SUM(delta) FROM ledger_entries WHERE txn_id LIKE 'upgrade-%' AND agent_id = 'SYSTEM'"),
+        "fog": [ref.fog.lag, ref.fog.noise] if ref.fog else None,
+        "peer": peer_report(ref, pmarket),
         "depot_cr_end": {st: ref.get_balance(f"depot_{st}", "CR") for st in STATIONS},
         "seconds": round(elapsed, 2),
-        "fleets": {a: {"strategy": SCENARIOS[scenario][a], "start": round(start[a]), "end": round(end[a]),
-                       "pnl": round(end[a] - start[a]), "leaderboard_nw": board.get(a)} for a in FLEETS},
+        "fleets": {a: {"strategy": kinds[a], "start": round(start[a]), "end": round(end[a]),
+                       "pnl": round(end[a] - start[a]), "leaderboard_nw": board.get(a),
+                       "out": ref.fleet_out(a) is not None} for a in FLEETS},
         "fills": classify_fills(ref),
         "transits": stats["transits"],
+        "contract_deliveries": stats["contract_deliveries"],
+        "pickup_trips": stats.get("pickup_trips", 0),
         "halts_total": halts,
         "band_blocked_checks": stats["band_blocked"],
         "stranded_events": stats["stranded_events"],
         "bad_orders": stats.get("bad_orders", 0),
         "day_trades": stats.get("day_trades", 0),
+        "demands_ignored": stats.get("demands_ignored", 0),
         "vol": ref.spatial.vol, "theta": ref.spatial.theta,
         "rejected_moves": stats.get("rejected_moves", 0),
         "ore_spread_by_quarter": [round(statistics.mean(spread[i:i + q]), 1) for i in range(0, len(spread), q)][:4],
         "first_negative_depot_round": first_negative_depot,
         "first_invariant_failure": first_invariant_failure,
     }
+
+
+# ------------------------------------------------------------ CLI
+
+def _parse_value(s: str) -> Any:
+    try:
+        return json.loads(s)
+    except ValueError:
+        return s
+
+
+def _referee_params() -> List[str]:
+    return [p for p in inspect.signature(AgoraReferee.__init__).parameters if p not in ("self", "db_path")]
+
+
+def table(results: List[dict]) -> str:
+    """Markdown headline table: one row per scenario / genesis / mode, seeds averaged."""
+    groups: Dict[tuple, List[dict]] = {}
+    for r in results:
+        groups.setdefault((r["scenario"], r["genesis"], r["mode"]), []).append(r)
+
+    def mean(rs, f):
+        return round(statistics.mean(f(r) for r in rs))
+
+    header = (["scenario", "genesis", "mode", "seeds"] + [f"{a} P&L" for a in FLEETS]
+              + ["transits", "halts", "contract units", "raids", "escorts", "upgrades",
+                 "peer trades (uncollected)", "out", "invariants"])
+    lines = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
+    for (scen, gen, mode), rs in groups.items():
+        pnl = []
+        for a in FLEETS:
+            pnl.append(f"{mean(rs, lambda r: r['fleets'][a]['pnl']):+} ({rs[0]['fleets'][a]['strategy']})")
+        out = sum(sum(f["out"] for f in r["fleets"].values()) for r in rs)
+        ups = sum(sum(sum(v.values()) for v in (r["upgrades"] or {}).values()) for r in rs)
+        peer = (f"{mean(rs, lambda r: r['peer']['trades'])} ({mean(rs, lambda r: r['peer']['uncollected'])})"
+                if rs[0]["peer"] else "off")
+        inv = "ok" if all(r["first_invariant_failure"] is None for r in rs) else "FAIL"
+        lines.append(f"| {scen} | {gen} | {mode} | {len(rs)} | " + " | ".join(pnl)
+                     + f" | {mean(rs, lambda r: r['transits'])} | {mean(rs, lambda r: r['halts_total'])}"
+                     + f" | {mean(rs, lambda r: (r['contracts'] or {}).get('units_delivered', 0))}"
+                     + f" | {mean(rs, lambda r: (r['piracy'] or {}).get('raids', 0))}"
+                     + f" | {mean(rs, lambda r: (r['piracy'] or {}).get('escorts', 0))}"
+                     + f" | {ups / len(rs):.1f} | {peer} | {out} | {inv} |")
+    return "\n".join(lines)
 
 
 def main() -> int:
@@ -1521,80 +1390,119 @@ def main() -> int:
     ap.add_argument("--genesis", choices=["flat", "planet"], action="append")
     ap.add_argument("--mode", choices=["strict", "tolerant"], action="append",
                     help="hauler behaviour at the circuit-breaker band (default: both)")
-    ap.add_argument("--depot-model", choices=["static", "reactive"], default="static",
-                    help="static: today's refill-to-spot depots; reactive: finite shelves, drip restock, inventory-skewed prices")
-    ap.add_argument("--band-pct", type=float, default=None, help="override the circuit-breaker band (default 0.10)")
-    ap.add_argument("--drip", type=int, nargs=2, metavar=("MAIN", "SIDE"), default=None,
-                    help="reactive depots: per-round restock/consumption at the main and other stations (default 100 20)")
-    ap.add_argument("--contracts", action="store_true", help="enable the #74 station contract prototype")
-    ap.add_argument("--owned-contracts", action="store_true",
-                    help="contracts are awarded to one corp, only it can deliver, and corps can sell them to each other")
-    ap.add_argument("--corporate", action="store_true",
-                    help="claimed contracts with penalties, debt, distress share auctions, 51%% takeovers")
-    ap.add_argument("--vol", type=float, default=None, help="price engine per-round sigma in CR (live default 0.8)")
-    ap.add_argument("--spread-scale", type=float, default=None,
-                    help="compress station price gaps toward each good's mean (1.0 = live); use with reactive depots")
-    ap.add_argument("--theta", type=float, default=None, help="price engine mean reversion (live default 0.15)")
-    ap.add_argument("--peer", action="store_true",
-                    help="fleet-to-fleet goods trades agreed at a distance, collected at the seller's station")
-    ap.add_argument("--fog", type=float, nargs=2, metavar=("LAG", "NOISE"), default=None,
-                    help="remote stations show quotes LAG rounds old, jittered by +/-NOISE (e.g. 3 0.15)")
-    ap.add_argument("--dock-fee", type=int, default=0, help="#73 prototype: CR charged per round to each docked fleet")
-    ap.add_argument("--free-quotes", action="store_true",
-                    help="reactive depots: do not hold quotes inside the circuit-breaker band")
+    g = ap.add_argument_group("live game overrides (default: exactly what the live server runs)")
+    g.add_argument("--depot-model", choices=["static", "reactive"], default=None, help="live: reactive")
+    g.add_argument("--band-pct", type=float, default=None, help="circuit-breaker band (live 0.25)")
+    g.add_argument("--fog", type=float, nargs=2, metavar=("LAG", "NOISE"), default=None,
+                   help="fog of war (live 3 0.15); 0 0 turns it off")
+    g.add_argument("--hazards", type=float, nargs=2, metavar=("P_DELAY", "P_LOSS"), default=None,
+                   help="per-trip delay and cargo-loss odds (live 0.2 0.1); 0 0 turns them off")
+    g.add_argument("--piracy", type=float, nargs=2, metavar=("P_BELT", "P_INNER"), default=None,
+                   help="raid odds on belt and inner routes (live 0.15 0.04); 0 0 turns piracy off")
+    g.add_argument("--exchange", type=float, nargs=2, metavar=("SHARES", "VOL"), default=None,
+                   help="the exchange market maker's shares of each fleet and per-round vol (live 100 0.03)")
+    g.add_argument("--idle-fee", type=int, default=None, help="CR per round for a docked fleet that did nothing (live 10)")
+    g.add_argument("--free-quotes", action="store_true",
+                   help="reactive depots: do not hold quotes inside the circuit-breaker band")
+    g.add_argument("--off", nargs="+", default=[], metavar="FEATURE",
+                   help=f"turn live features off, e.g. contracts corporate upgrades piracy; any of {_referee_params()}")
+    g.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
+                   help="any build_referee_from_env override, e.g. hazards=0.3,0.1 or rival_shares=0")
+    g.add_argument("--const", action="append", default=[], metavar="MODULE.NAME=VALUE",
+                   help="override a live module constant, e.g. contracts.PENALTY=0.6, piracy.RANSOM_PCT=0.2")
+    g.add_argument("--drip", type=int, nargs=2, metavar=("MAIN", "SIDE"), default=None,
+                   help="reactive depots' per-round restock/consumption (live 100 20)")
+    g.add_argument("--penalty", type=float, default=None, help="contract lapse penalty (live contracts.PENALTY 0.5)")
+    g.add_argument("--bond", type=float, default=None, help="contract claim deposit (live contracts.BOND_PCT 0.25)")
+    g.add_argument("--vol", type=float, default=None, help="price engine per-round sigma in CR (live default 0.8)")
+    g.add_argument("--theta", type=float, default=None, help="price engine mean reversion (live default 0.15)")
+    g.add_argument("--spread-scale", type=float, default=None,
+                   help="compress station price gaps toward each good's mean (1.0 = live)")
     ap.add_argument("--equity-mm", type=float, nargs=2, metavar=("SPREAD", "DEPTH"), default=None,
-                    help="stand-in stock liquidity: non-trader fleets quote rival shares at NAV +/- SPREAD, "
-                         "DEPTH shares a side a round (e.g. 0.05 20); the live game has no equity depot")
-    ap.add_argument("--exchange", type=float, nargs=2, metavar=("SHARES", "VOL"), default=None,
-                    help="the referee's own stock market maker: SHARES of each fleet (max 200), per-round VOL "
-                         "(live default 100 0.03)")
-    ap.add_argument("--bond", type=float, default=0.0,
-                    help="claim deposit as a fraction of contract face value (e.g. 0.25), with --corporate")
-    ap.add_argument("--hazards", type=float, nargs=2, metavar=("P_DELAY", "P_LOSS"), default=None,
-                    help="per-trip chance of a 1-3 round delay and of losing 30-70%% of the cargo")
-    ap.add_argument("--penalty", type=float, default=None, help="contract lapse penalty (default 0.5)")
-    ap.add_argument("--piracy", type=float, nargs=2, metavar=("P_BELT", "P_INNER"), default=None,
-                    help="#145 raid chance per trip on belt and inner routes, before value/hot-route/escort/privateers")
+                    help="bot behaviour: non-trader fleets also quote rival shares at NAV +/- SPREAD, "
+                         "DEPTH shares a side a round (e.g. 0.05 20)")
     ap.add_argument("--json", action="store_true", help="print raw results as JSON")
-    ap.add_argument("--hang-timeout", type=int, default=300, help="dump stacks and exit if a run hangs")
+    ap.add_argument("--table", action="store_true", help="print only the markdown headline table")
+    ap.add_argument("--hang-timeout", type=int, default=600, help="dump stacks and exit if a run hangs")
     args = ap.parse_args()
 
-    if args.penalty is not None:
-        Corporate.PENALTY = args.penalty
+    params = _referee_params()
+    overrides: Dict[str, Any] = {}
+    for name in args.off:
+        if name not in params:
+            ap.error(f"--off {name}: not a referee feature; one of {params}")
+        overrides[name] = False
+    for kv in args.set:
+        k, _, v = kv.partition("=")
+        if k not in params:
+            ap.error(f"--set {k}: not a referee parameter; one of {params}")
+        overrides[k] = _parse_value(v)
+    if args.depot_model:
+        overrides["depot_model"] = args.depot_model
+    if args.band_pct is not None:
+        overrides["band_pct"] = args.band_pct
+    if args.fog:
+        overrides["fog"] = {"lag": int(args.fog[0]), "noise": args.fog[1]} if args.fog[0] else False
+    if args.hazards:
+        overrides["hazards"] = list(args.hazards) if any(args.hazards) else False
+    if args.piracy:
+        overrides["piracy"] = list(args.piracy) if any(args.piracy) else False
+    if args.exchange:
+        overrides["exchange_shares"], overrides["exchange_vol"] = int(args.exchange[0]), args.exchange[1]
+    if args.idle_fee is not None:
+        overrides["idle_fee"] = args.idle_fee
+    if args.free_quotes:
+        overrides["reactive_bands"] = False
+    constants: Dict[str, Any] = {}
+    for kv in args.const:
+        k, _, v = kv.partition("=")
+        constants[k] = _parse_value(v)
     if args.drip:
-        referee_mod.REACTIVE_MAIN_DRIP, referee_mod.REACTIVE_SIDE_DRIP = args.drip
+        constants["referee.REACTIVE_MAIN_DRIP"], constants["referee.REACTIVE_SIDE_DRIP"] = args.drip
+    if args.penalty is not None:
+        constants["contracts.PENALTY"] = args.penalty
+    if args.bond is not None:
+        constants["contracts.BOND_PCT"] = args.bond
+
     faulthandler.dump_traceback_later(args.hang_timeout, exit=True)
     results = []
     for scen in args.scenario or ["mixed", "haulers4", "idle4"]:
         for gen in args.genesis or ["flat", "planet"]:
             for mode in (args.mode or ["strict", "tolerant"]) if scen != "idle4" else ["strict"]:
                 for seed in range(1, args.seeds + 1):
-                    results.append(run(scen, gen, seed, args.rounds, mode,
-                                       depot_model=args.depot_model, band_pct=args.band_pct,
-                                       reactive_bands=not args.free_quotes, contracts=args.contracts,
-                                       dock_fee=args.dock_fee, owned_contracts=args.owned_contracts,
-                                       fog=(int(args.fog[0]), args.fog[1]) if args.fog else None,
-                                       peer=args.peer, corporate=args.corporate,
+                    faulthandler.dump_traceback_later(args.hang_timeout, exit=True)
+                    results.append(run(scen, gen, seed, args.rounds, mode, overrides=overrides,
+                                       constants=constants,
                                        equity_mm=((args.equity_mm[0], int(args.equity_mm[1]))
                                                   if args.equity_mm else None),
-                                       exchange=tuple(args.exchange) if args.exchange else None,
-                                       vol=args.vol, theta=args.theta, spread_scale=args.spread_scale,
-                                       bond=args.bond, hazards=tuple(args.hazards) if args.hazards else None,
-                                       piracy=tuple(args.piracy) if args.piracy else None))
+                                       vol=args.vol, theta=args.theta, spread_scale=args.spread_scale))
     faulthandler.cancel_dump_traceback_later()
 
     if args.json:
         print(json.dumps(results, indent=2))
         return 0
+    if args.table:
+        print(table(results))
+        return 0
     for r in results:
-        print(f"\n== {r['scenario']} / {r['genesis']} genesis / {r['mode']} / {r['depot_model']} depots, band {r['band_pct']:.0%} "
-              f"/ seed {r['seed']} / {r['rounds']} rounds ({r['seconds']}s)")
+        print(f"\n== {r['scenario']} / {r['genesis']} genesis / {r['mode']} / seed {r['seed']} / {r['rounds']} rounds "
+              f"({r['seconds']}s)")
+        if r["overrides"] or r["constants"]:
+            print(f"  overrides {r['overrides']}  constants {r['constants']}")
         for a, f in r["fleets"].items():
-            print(f"  {a:7} {f['strategy']:7} start {f['start']:>8} end {f['end']:>8} pnl {f['pnl']:>+8}  board {f['leaderboard_nw']}")
+            print(f"  {a:7} {f['strategy']:12} start {f['start']:>8} end {f['end']:>8} pnl {f['pnl']:>+8}  "
+                  f"board {f['leaderboard_nw']}{'  OUT' if f['out'] else ''}")
         print(f"  fills {r['fills']}  transits {r['transits']}  halts {r['halts_total']}  "
               f"band-blocked checks {r['band_blocked_checks']}  stranded events {r['stranded_events']}")
         print(f"  Earth ORE bid - Ceres ORE ask, by quarter: {r['ore_spread_by_quarter']}")
-        print(f"  depot CR at end: {r['depot_cr_end']}  contracts: {r['contracts']}")
+        print(f"  idle fees {r['idle_fees']}  upgrades {r['upgrades']}")
+        print(f"  contracts: {r['contracts']}")
+        print(f"  corporate: {r['corporate']}")
+        print(f"  hazards: {r['hazards']}")
+        print(f"  piracy: {r['piracy']}")
+        print(f"  peer: {r['peer']}")
+        print(f"  events: {r['events']}")
+        print(f"  depot CR at end: {r['depot_cr_end']}")
         print(f"  first negative depot balance: round {r['first_negative_depot_round']}  "
               f"invariant failure: {r['first_invariant_failure']}")
         if r.get("stocks"):
@@ -1602,6 +1510,7 @@ def main() -> int:
                 if f["stock_pnl"] is not None:
                     print(f"  {a} stocks: pnl {f['stock_pnl']:+} (cash {f['stock_cash']:+}, "
                           f"holdings {f['value_start']} -> {f['value_end']} at NAV)")
+    print("\n" + table(results))
     return 0
 
 
