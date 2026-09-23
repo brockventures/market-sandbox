@@ -31,6 +31,7 @@ from agora.equity import (
 )
 from agora.salvage import DerelictSalvageEngine
 from agora.circuit_breaker import CircuitBreakerEngine, DEFAULT_BAND_PCT
+from agora.hazards import HazardEngine, env_hazards, parse_hazards
 from agora.exchange import EquityExchange, EXCHANGE_ID, clamp_shares, DEFAULT_VOL
 
 
@@ -85,10 +86,12 @@ class AgoraReferee:
         exchange_shares: Optional[int] = None,
         exchange_vol: Optional[float] = None,
         contracts: Optional[bool] = None,
+        hazards: Any = None,
     ):
         self.db_path = db_path
         # Owned, tradable station contracts with a claim deposit (agora/contracts.py).
         self.contracts_enabled = env_contracts() if contracts is None else bool(contracts)
+        self._hazard_odds = env_hazards() if hazards is None else parse_hazards(hazards)
         # The stock exchange's market maker (agora/exchange.py): shares of
         # each fleet it takes from treasury at genesis. 0 = no exchange quotes.
         self.exchange_shares = clamp_shares(exchange_shares) if exchange_shares is not None else 0
@@ -133,6 +136,7 @@ class AgoraReferee:
         self._init_db()
         self.peer = PeerDesk(self)
         self.contract_desk = ContractDesk(self)
+        self.hazards = HazardEngine(self.conn, self._hazard_odds)
         self.equity = SyndicateEquityEngine(self.conn, self)
         self.salvage = DerelictSalvageEngine(self.conn, self)
         self.circuit_breaker = CircuitBreakerEngine(self.conn, self, band_pct=self.band_pct)
@@ -453,7 +457,7 @@ class AgoraReferee:
                 'accounts', 'ledger_entries', 'book_events', 'station_prices',
                 'transits', 'vessel_locations', 'equity_loans', 'distress_beacons',
                 'rescue_rfqs', 'rescue_quotes', 'salvage_claims',
-                'circuit_breaker_halts', 'orders', 'station_escrow', 'station_contracts',
+                'circuit_breaker_halts', 'orders', 'station_escrow', 'station_contracts', 'transit_hazards',
             ):
                 self.conn.execute(f"DELETE FROM {table}")
             self.conn.execute(
@@ -493,6 +497,7 @@ class AgoraReferee:
         exchange_shares: Optional[int] = None,
         exchange_vol: Optional[float] = None,
         contracts: Optional[bool] = None,
+        hazards: Any = None,
     ) -> Dict[str, Any]:
         """
         Full clean-slate reset, callable live via POST /referee/admin/reset:
@@ -518,6 +523,8 @@ class AgoraReferee:
             self.exchange.vol = max(0.0, float(exchange_vol))
         if contracts is not None:
             self.contracts_enabled = bool(contracts)
+        if hazards is not None:
+            self.hazards.odds = parse_hazards(hazards)
         self._active_this_round = set()
         self.asymmetric_enabled = asymmetric
         if asymmetric or spawn_map:
@@ -536,6 +543,7 @@ class AgoraReferee:
         self._configure_fog(fog, seed=0)
         self._start_exchange(seed=0)
         self.contract_desk.reset(0)
+        self.hazards.reset(0)
 
         return {'seq': 0, 'floor': self.floor, 'fleets': [r['agent_id'] for r in
                 self.conn.execute("SELECT agent_id FROM fleet_roster").fetchall()]}
@@ -556,6 +564,7 @@ class AgoraReferee:
         exchange_shares: Optional[int] = None,
         exchange_vol: Optional[float] = None,
         contracts: Optional[bool] = None,
+        hazards: Any = None,
     ) -> Dict[str, Any]:
         """
         Wipes the board exactly like reset_to_genesis(), but rolls a genuinely
@@ -582,6 +591,8 @@ class AgoraReferee:
             self.exchange.vol = max(0.0, float(exchange_vol))
         if contracts is not None:
             self.contracts_enabled = bool(contracts)
+        if hazards is not None:
+            self.hazards.odds = parse_hazards(hazards)
         self._active_this_round = set()
         self.asymmetric_enabled = asymmetric
         if asymmetric or spawn_map:
@@ -620,6 +631,7 @@ class AgoraReferee:
         self._configure_fog(fog, seed=roll_seed)
         self._start_exchange(seed=roll_seed)
         self.contract_desk.reset(roll_seed)
+        self.hazards.reset(roll_seed)
 
         return {
             'seq': 0,
@@ -1022,7 +1034,10 @@ class AgoraReferee:
 
             transit_id = f"tx-{agent_id}-{time.time_ns()}"
             dep_round = self.current_round
-            arr_round = dep_round + route['rounds']
+            # Bad luck (agora/hazards.py): rolled once at departure and told
+            # to the fleet now, so it can react. Lost cargo stays with SYSTEM.
+            hz_delay, hz_lost, hz_note = self.hazards.roll(cargo_qty if cargo_qty > 0 else 0)
+            arr_round = dep_round + route['rounds'] + hz_delay
 
             with self.conn:
                 next_seq = self._get_next_seq()
@@ -1050,7 +1065,8 @@ class AgoraReferee:
                 self.conn.execute("""
                     INSERT INTO transits (transit_id, agent_id, origin, destination, departure_round, arrival_round, commodity, cargo_qty, fuel_burned, status, perishable, decay_rate, decayed_qty, toll_paid)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'in_transit', ?, ?, 0, ?)
-                """, (transit_id, agent_id, origin, dest, dep_round, arr_round, comm, cargo_qty, required_fuel, int(is_perishable), decay_rate, toll_required))
+                """, (transit_id, agent_id, origin, dest, dep_round, arr_round, comm, cargo_qty - hz_lost, required_fuel, int(is_perishable), decay_rate, toll_required))
+                self.hazards.record(transit_id, agent_id, dep_round, hz_delay, hz_lost, comm, hz_note)
 
                 # 5. Vessel locations
                 self.conn.execute("""
@@ -1081,6 +1097,7 @@ class AgoraReferee:
                         'toll_paid': toll_required,
                         'perishable': is_perishable,
                         'decay_rate': decay_rate,
+                        'hazard': {'delay': hz_delay, 'lost_qty': hz_lost, 'note': hz_note} if hz_note else None,
                     })
                 ))
 
@@ -1104,6 +1121,7 @@ class AgoraReferee:
                     'toll_paid': toll_required,
                     'perishable': is_perishable,
                     'decay_rate': decay_rate,
+                    'hazard': {'delay': hz_delay, 'lost_qty': hz_lost, 'note': hz_note} if hz_note else None,
                 }
             }
 
