@@ -17,6 +17,13 @@ class TestEquityExchange(unittest.TestCase):
         self.assertEqual(ref.get_balance(EXCHANGE_ID, 'EQ_AMOS'), 0)
         self.assertIsNone(ref.books['ceres']['EQ_AMOS'].best_ask())
 
+    def test_quotes_from_boot_without_new_game(self):
+        # The live server builds the referee and may sit at round 0.
+        ref = AgoraReferee(rival_shares=100, exchange_shares=100)
+        book = ref.books['ceres']['EQ_ZERO']
+        self.assertIsNotNone(book.best_bid())
+        self.assertIsNotNone(book.best_ask())
+
     def test_genesis_takes_shares_from_treasury_not_minted(self):
         ref = game()
         self.assertEqual(ref.get_balance(EXCHANGE_ID, 'EQ_AMOS'), 100)

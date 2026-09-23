@@ -137,6 +137,11 @@ class AgoraReferee:
             self.set_asymmetric_roster()
         if self.fog:
             self.fog.record(self)
+        # Quote stocks from boot. Otherwise a freshly deployed server shows no
+        # stock bid/ask until its first round, and the live ticker can sit at
+        # round 0 (seen on Railway 2026-09-23 after #137 deployed).
+        if self.exchange_shares:
+            self._start_exchange(seed=0)
 
     def set_asymmetric_roster(self, spawn_map: Optional[Dict[str, str]] = None) -> None:
         """Update fleet_roster with asymmetric home stations and sync vessel locations."""
