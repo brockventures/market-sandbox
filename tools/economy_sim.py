@@ -539,7 +539,7 @@ class Hauler:
             bid = quotes[st][comm]["best_bid"]
             if qty > 0 and bid and bid >= self._hauling_value(quotes, st, comm) and band_ok(ref, st, comm, bid):
                 order(ref, self.agent, "ask", min(qty, quotes[st][comm]["bid_depth"] or qty), bid, comm, st, "sell")
-        buy_upgrades(ref, self.agent, self.UPGRADE_CASH_MULT, stats)
+        self._buy_upgrades(ref, stats)
         inv = inventory(ref, self.agent)
         for comm in ("FRAG", "FOOD", "ORE"):
             if inv[comm] > 0:
@@ -597,6 +597,14 @@ class Hauler:
             return
         self._fly(ref, st, dest, comm, inventory(ref, self.agent), stats)
 
+    # Purchase decisions, as methods so tools/dominance.py can swap one
+    # fleet's policy without copying the hauling loop.
+    def _buy_upgrades(self, ref: AgoraReferee, stats) -> None:
+        buy_upgrades(ref, self.agent, self.UPGRADE_CASH_MULT, stats)
+
+    def _want_escort(self, ref: AgoraReferee, st: str, dest: str, comm: str, qty: int) -> bool:
+        return want_escort(ref, self.agent, st, dest, comm, qty)
+
     def _contract_run(self, ref: AgoraReferee, st: str, comm: str, dest: Optional[str] = None) -> Optional[dict]:
         """An owned contract for `comm` it can still reach in time from here."""
         for c in sorted(my_contracts(ref, self.agent), key=lambda c: -c["price"]):
@@ -631,7 +639,7 @@ class Hauler:
         held = 0 if empty else ref.get_balance(self.agent, comm)
         if held > 0 or empty:
             cancel_all(ref, self.agent)
-            escort = want_escort(ref, self.agent, st, dest, comm, held)
+            escort = self._want_escort(ref, st, dest, comm, held)
             move(ref, self.agent, dest, comm, held, stats, escort=escort)
 
 
@@ -1186,7 +1194,8 @@ def run(scenario: str, genesis: str = "flat", seed: int = 1, rounds: int = 300, 
         check_every: int = 25, overrides: Optional[Dict[str, Any]] = None,
         constants: Optional[Dict[str, Any]] = None, equity_mm: Optional[tuple] = None,
         vol: Optional[float] = None, theta: Optional[float] = None,
-        spread_scale: Optional[float] = None) -> dict:
+        spread_scale: Optional[float] = None, fleet_overrides: Optional[Dict[str, Any]] = None,
+        on_round: Optional[Any] = None) -> dict:
     """One seeded game of the live referee.
 
     overrides: build_referee_from_env keyword overrides (e.g. {"piracy": "0.3,0.1"},
@@ -1194,7 +1203,10 @@ def run(scenario: str, genesis: str = "flat", seed: int = 1, rounds: int = 300, 
     run (e.g. {"contracts.PENALTY": 0.6}). vol, theta: the price engine's
     per-round sigma and mean reversion. spread_scale compresses each good's
     base price toward its four-station mean (1.0 = live) by editing
-    agora.spatial.BASE_PRICES in place for the run. All are restored after."""
+    agora.spatial.BASE_PRICES in place for the run. All are restored after.
+    fleet_overrides: {agent: factory(agent, kind, seed, mode)} replaces that
+    fleet's bot (tools/dominance.py). on_round(ref) is called after every
+    step_round. Both default to off and change nothing else."""
     import agora.spatial as spatial_mod
     saved = {st: dict(v) for st, v in spatial_mod.BASE_PRICES.items()}
     if spread_scale is not None:
@@ -1206,7 +1218,7 @@ def run(scenario: str, genesis: str = "flat", seed: int = 1, rounds: int = 300, 
     try:
         restore = _set_constants(constants)
         return _run(scenario, genesis, seed, rounds, mode, check_every, overrides, equity_mm, vol, theta,
-                    constants, spread_scale)
+                    constants, spread_scale, fleet_overrides, on_round)
     finally:
         for (mod, name), v in restore.items():
             setattr(mod, name, v)
@@ -1215,7 +1227,7 @@ def run(scenario: str, genesis: str = "flat", seed: int = 1, rounds: int = 300, 
 
 
 def _run(scenario, genesis, seed, rounds, mode, check_every, overrides, equity_mm, vol, theta,
-         constants, spread_scale) -> dict:
+         constants, spread_scale, fleet_overrides=None, on_round=None) -> dict:
     ref = start_game(seed, overrides)
     if genesis == "planet":
         apply_planet_genesis(ref)
@@ -1224,7 +1236,7 @@ def _run(scenario, genesis, seed, rounds, mode, check_every, overrides, equity_m
     if theta is not None:
         ref.spatial.theta = theta
     kinds = SCENARIOS[scenario]
-    fleets = {a: build_fleet(a, kind, seed, mode) for a, kind in kinds.items()}
+    fleets = {a: (fleet_overrides or {}).get(a, build_fleet)(a, kind, seed, mode) for a, kind in kinds.items()}
     start = {a: score(ref, a) for a in FLEETS}
     eq_liq = EquityLiquidity(*equity_mm) if equity_mm else None
     traders = [a for a, k in kinds.items() if k == "stock_trader"]
@@ -1259,6 +1271,8 @@ def _run(scenario, genesis, seed, rounds, mode, check_every, overrides, equity_m
             if a in traders:
                 fleets[a].act(ref, views[a], stats)
         ref.step_round()
+        if on_round is not None:
+            on_round(ref)
         if ref.corporate_enabled:
             debts = [r[0] for r in ref.conn.execute("SELECT debt FROM corp_status WHERE debt > 0")]
             if debts:
