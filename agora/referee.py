@@ -19,6 +19,7 @@ from agora.galnet import GalNetEngine
 from agora.peer import PeerDesk, env_peer_trades
 from agora.contracts import ContractDesk, env_contracts
 from agora.corporate import CorporateDesk, env_corporate
+from agora.upgrades import UpgradeDesk, env_upgrades
 from agora.fog import FogEngine, env_fog, parse_fog
 
 STOCK_EXCHANGE_STATION = 'ceres'  # the one book every fleet stock trades on
@@ -89,10 +90,13 @@ class AgoraReferee:
         contracts: Optional[bool] = None,
         hazards: Any = None,
         corporate: Optional[bool] = None,
+        upgrades: Optional[bool] = None,
     ):
         self.db_path = db_path
         # Debt, distress sales, bankruptcy and takeovers (agora/corporate.py).
         self.corporate_enabled = env_corporate() if corporate is None else bool(corporate)
+        # Ship upgrades that cut hazard / piracy odds (agora/upgrades.py).
+        self.upgrades_enabled = env_upgrades() if upgrades is None else bool(upgrades)
         # Owned, tradable station contracts with a claim deposit (agora/contracts.py).
         self.contracts_enabled = env_contracts() if contracts is None else bool(contracts)
         self._hazard_odds = env_hazards() if hazards is None else parse_hazards(hazards)
@@ -141,6 +145,7 @@ class AgoraReferee:
         self.peer = PeerDesk(self)
         self.contract_desk = ContractDesk(self)
         self.corporate = CorporateDesk(self)
+        self.upgrades = UpgradeDesk(self)
         self.hazards = HazardEngine(self.conn, self._hazard_odds)
         self.equity = SyndicateEquityEngine(self.conn, self)
         self.salvage = DerelictSalvageEngine(self.conn, self)
@@ -462,7 +467,7 @@ class AgoraReferee:
                 'accounts', 'ledger_entries', 'book_events', 'station_prices',
                 'transits', 'vessel_locations', 'equity_loans', 'distress_beacons',
                 'rescue_rfqs', 'rescue_quotes', 'salvage_claims',
-                'circuit_breaker_halts', 'orders', 'station_escrow', 'station_contracts', 'transit_hazards', 'corp_status', 'corp_events',
+                'circuit_breaker_halts', 'orders', 'station_escrow', 'station_contracts', 'transit_hazards', 'corp_status', 'corp_events', 'fleet_upgrades',
             ):
                 self.conn.execute(f"DELETE FROM {table}")
             self.conn.execute(
@@ -504,6 +509,7 @@ class AgoraReferee:
         contracts: Optional[bool] = None,
         hazards: Any = None,
         corporate: Optional[bool] = None,
+        upgrades: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Full clean-slate reset, callable live via POST /referee/admin/reset:
@@ -533,6 +539,8 @@ class AgoraReferee:
             self.hazards.odds = parse_hazards(hazards)
         if corporate is not None:
             self.corporate_enabled = bool(corporate)
+        if upgrades is not None:
+            self.upgrades_enabled = bool(upgrades)
         self._active_this_round = set()
         self.asymmetric_enabled = asymmetric
         if asymmetric or spawn_map:
@@ -574,6 +582,7 @@ class AgoraReferee:
         contracts: Optional[bool] = None,
         hazards: Any = None,
         corporate: Optional[bool] = None,
+        upgrades: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Wipes the board exactly like reset_to_genesis(), but rolls a genuinely
@@ -604,6 +613,8 @@ class AgoraReferee:
             self.hazards.odds = parse_hazards(hazards)
         if corporate is not None:
             self.corporate_enabled = bool(corporate)
+        if upgrades is not None:
+            self.upgrades_enabled = bool(upgrades)
         self._active_this_round = set()
         self.asymmetric_enabled = asymmetric
         if asymmetric or spawn_map:
@@ -1057,8 +1068,15 @@ class AgoraReferee:
             dep_round = self.current_round
             # Bad luck (agora/hazards.py): rolled once at departure and told
             # to the fleet now, so it can react. Lost cargo stays with SYSTEM.
-            hz_delay, hz_lost, hz_note = self.hazards.roll(cargo_qty if cargo_qty > 0 else 0)
-            arr_round = dep_round + route['rounds'] + hz_delay
+            hz_delay, hz_lost, hz_note = self.hazards.roll(
+                cargo_qty if cargo_qty > 0 else 0,
+                delay_factor=self.upgrades.factor(agent_id, 'shielding'),
+                loss_factor=self.upgrades.factor(agent_id, 'hold'),
+                loss_size_factor=0.7 if self.upgrades.factor(agent_id, 'hold') < 1 else 1.0)
+            # Engines upgrade: trips of 3+ rounds take one round less.
+            base_rounds = route['rounds'] - (1 if route['rounds'] >= 3 and self.upgrades_enabled
+                                              and self.upgrades.tier(agent_id, 'engines') else 0)
+            arr_round = dep_round + base_rounds + hz_delay
 
             with self.conn:
                 next_seq = self._get_next_seq()
@@ -1109,7 +1127,7 @@ class AgoraReferee:
                         'destination': dest,
                         'departure_round': dep_round,
                         'arrival_round': arr_round,
-                        'rounds_duration': route['rounds'],
+                        'rounds_duration': base_rounds,
                         'commodity': comm,
                         'cargo_qty': cargo_qty,
                         'fuel_burned': required_fuel,
@@ -1133,7 +1151,7 @@ class AgoraReferee:
                     'destination': dest,
                     'departure_round': dep_round,
                     'arrival_round': arr_round,
-                    'rounds_duration': route['rounds'],
+                    'rounds_duration': base_rounds,
                     'commodity': comm,
                     'cargo_qty': cargo_qty,
                     'fuel_burned': required_fuel,
