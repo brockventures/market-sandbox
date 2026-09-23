@@ -92,6 +92,13 @@ class TestEconomySim(unittest.TestCase):
         self.assertEqual(r["corporate"]["claims"] > 0, True)
         self.assertNotIn("marvin", r["corporate"]["debt_end"])  # never takes contracts
 
+    def test_stock_trader_against_referee_exchange(self):
+        r = run("stocks", "flat", seed=2, rounds=120, mode="tolerant", check_every=20,
+                depot_model="reactive", band_pct=0.25, corporate=True, exchange=(100, 0.03))
+        self.assertIsNone(r["first_invariant_failure"])
+        self.assertNotEqual(r["stocks"]["fleets"]["marvin"]["stock_cash"], 0)
+        self.assertGreater(r["stocks"]["exchange"]["cr"], 0)
+
     def test_no_stock_trader_leaves_results_unchanged(self):
         r = run("mixed", "flat", seed=1, rounds=30, mode="tolerant")
         self.assertNotIn("stocks", r)

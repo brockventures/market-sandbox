@@ -30,6 +30,7 @@ from agora.equity import (
 )
 from agora.salvage import DerelictSalvageEngine
 from agora.circuit_breaker import CircuitBreakerEngine, DEFAULT_BAND_PCT
+from agora.exchange import EquityExchange, EXCHANGE_ID, clamp_shares, DEFAULT_VOL
 
 
 ASYMMETRIC_SPAWN_LOCATIONS: Dict[str, str] = {
@@ -80,8 +81,14 @@ class AgoraReferee:
         fog: Any = None,
         idle_fee: Optional[int] = None,
         rival_shares: Optional[int] = None,
+        exchange_shares: Optional[int] = None,
+        exchange_vol: Optional[float] = None,
     ):
         self.db_path = db_path
+        # The stock exchange's market maker (agora/exchange.py): shares of
+        # each fleet it takes from treasury at genesis. 0 = no exchange quotes.
+        self.exchange_shares = clamp_shares(exchange_shares) if exchange_shares is not None else 0
+        self.exchange = EquityExchange(self, vol=DEFAULT_VOL if exchange_vol is None else exchange_vol)
         # Shares of each rival's stock every fleet starts with (0 = issuers
         # hold all their own stock, the old behaviour).
         self.rival_shares = max(0, int(rival_shares)) if rival_shares is not None else 0
@@ -403,7 +410,10 @@ class AgoraReferee:
             total_shares = conf["total_shares"]
             rivals = [a for a in FLEET_EQUITIES if a != issuer_id] if self.rival_shares else []
             per = min(self.rival_shares, total_shares // (len(rivals) + 1)) if rivals else 0
-            grants = [(issuer_id, total_shares - per * len(rivals))] + [(a, per) for a in rivals]
+            xs = min(getattr(self, 'exchange_shares', 0), total_shares - per * len(rivals))
+            grants = [(issuer_id, total_shares - per * len(rivals) - xs)] + [(a, per) for a in rivals]
+            if xs:
+                grants.append((EXCHANGE_ID, xs))
             txn = f"genesis-{sym.lower()}"
             self.conn.execute("INSERT INTO accounts (agent_id, instrument, balance) VALUES ('SYSTEM', ?, ?)",
                               (sym, -total_shares))
@@ -414,6 +424,14 @@ class AgoraReferee:
                                   (holder, sym, qty))
                 self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, 0, ?, ?, ?)",
                                   (txn, holder, sym, qty))
+        if getattr(self, 'exchange_shares', 0):
+            for acct, inst, d in self.exchange.genesis_cr_legs():
+                self.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, ?, 0)",
+                                  (acct, inst))
+                self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?",
+                                  (d, acct, inst))
+                self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) "
+                                  "VALUES ('genesis-exchange-cr', 0, ?, ?, ?)", (acct, inst, d))
 
     def _wipe_trading_state(self, note: str) -> None:
         """Shared by reset_to_genesis() and new_game(): clears every trading/
@@ -462,6 +480,8 @@ class AgoraReferee:
         fog: Any = None,
         idle_fee: Optional[int] = None,
         rival_shares: Optional[int] = None,
+        exchange_shares: Optional[int] = None,
+        exchange_vol: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Full clean-slate reset, callable live via POST /referee/admin/reset:
@@ -481,6 +501,10 @@ class AgoraReferee:
             self.idle_fee = max(0, int(idle_fee))
         if rival_shares is not None:
             self.rival_shares = max(0, int(rival_shares))
+        if exchange_shares is not None:
+            self.exchange_shares = clamp_shares(exchange_shares)
+        if exchange_vol is not None:
+            self.exchange.vol = max(0.0, float(exchange_vol))
         self._active_this_round = set()
         self.asymmetric_enabled = asymmetric
         if asymmetric or spawn_map:
@@ -497,6 +521,7 @@ class AgoraReferee:
         if self.depots_enabled:
             self.seed_depots()
         self._configure_fog(fog, seed=0)
+        self._start_exchange(seed=0)
 
         return {'seq': 0, 'floor': self.floor, 'fleets': [r['agent_id'] for r in
                 self.conn.execute("SELECT agent_id FROM fleet_roster").fetchall()]}
@@ -514,6 +539,8 @@ class AgoraReferee:
         fog: Any = None,
         idle_fee: Optional[int] = None,
         rival_shares: Optional[int] = None,
+        exchange_shares: Optional[int] = None,
+        exchange_vol: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Wipes the board exactly like reset_to_genesis(), but rolls a genuinely
@@ -534,6 +561,10 @@ class AgoraReferee:
             self.idle_fee = max(0, int(idle_fee))
         if rival_shares is not None:
             self.rival_shares = max(0, int(rival_shares))
+        if exchange_shares is not None:
+            self.exchange_shares = clamp_shares(exchange_shares)
+        if exchange_vol is not None:
+            self.exchange.vol = max(0.0, float(exchange_vol))
         self._active_this_round = set()
         self.asymmetric_enabled = asymmetric
         if asymmetric or spawn_map:
@@ -570,6 +601,7 @@ class AgoraReferee:
         if self.depots_enabled:
             self.seed_depots()
         self._configure_fog(fog, seed=roll_seed)
+        self._start_exchange(seed=roll_seed)
 
         return {
             'seq': 0,
@@ -659,6 +691,14 @@ class AgoraReferee:
             charged[agent] = fee
         self._active_this_round = set()
         return charged
+
+    def _start_exchange(self, seed: int) -> None:
+        """Reseed the exchange's price noise from the game seed and post its
+        opening quotes."""
+        self.exchange.reset(seed)
+        if self.exchange_shares:
+            with self.lock, self.conn:
+                self.exchange.refresh_locked()
 
     def _configure_fog(self, fog: Any, seed: int) -> None:
         """fog=None keeps the current setting (re-seeded for the new game);
@@ -1068,6 +1108,10 @@ class AgoraReferee:
 
                 if self.depots_enabled:
                     self._refresh_depot_orders_locked()
+                # Not inside _refresh_depot_orders_locked: the reactive model
+                # returns early from it, and reactive is the live default.
+                if self.exchange_shares:
+                    self.exchange.refresh_locked()
 
                 # Settle arriving transits
                 cur = self.conn.cursor()

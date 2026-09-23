@@ -186,6 +186,8 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 fog=payload.get('fog'),
                 idle_fee=payload.get('idle_fee'),
                 rival_shares=payload.get('rival_shares'),
+                exchange_shares=payload.get('exchange_shares'),
+                exchange_vol=payload.get('exchange_vol'),
             )
             self._send_json(200, {'v': 1, 'kind': 'new_game_ok', 'payload': result})
             return
@@ -1580,6 +1582,8 @@ def build_referee_from_env(db_path: str = 'agora.db') -> AgoraReferee:
       AGORA_FOG=3,0.15         fog of war (lag rounds, noise); 0 turns it off
       AGORA_IDLE_FEE=10        CR per round for a docked fleet that did nothing; 0 = off
       AGORA_RIVAL_SHARES=100   shares of each rival's stock every fleet starts with
+      AGORA_EXCHANGE_SHARES=100  shares of each fleet the exchange market maker holds (max 200); 0 = off
+      AGORA_EXCHANGE_VOL=0.03  per-round volatility of the exchange's stock prices
     """
     def _on(name: str) -> bool:
         return os.environ.get(name, '1').strip().lower() not in ('0', 'false', 'off', 'no')
@@ -1591,7 +1595,16 @@ def build_referee_from_env(db_path: str = 'agora.db') -> AgoraReferee:
                         depot_model=os.environ.get('AGORA_DEPOT_MODEL', 'reactive').strip().lower(),
                         band_pct=band_pct, peer_trades=_on('AGORA_PEER_TRADES'),
                         fog=_fog_from_env(), idle_fee=_int_env('AGORA_IDLE_FEE', 10),
-                        rival_shares=_int_env('AGORA_RIVAL_SHARES', 100))
+                        rival_shares=_int_env('AGORA_RIVAL_SHARES', 100),
+                        exchange_shares=_int_env('AGORA_EXCHANGE_SHARES', 100),
+                        exchange_vol=_float_env('AGORA_EXCHANGE_VOL', 0.03))
+
+
+def _float_env(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except ValueError:
+        return default
 
 
 def _int_env(name: str, default: int) -> int:
