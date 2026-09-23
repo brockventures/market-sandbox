@@ -65,6 +65,10 @@ SCENARIOS = {
     # zero-context agent working from the briefing page.
     "novice4": {f: "novice" for f in FLEETS},
     "novice_vs_haulers": {"zero": "hauler", "amos": "hauler", "marvin": "novice", "aerial": "novice"},
+    # #119: one fleet trades rival stocks only, against growing haulers or
+    # erratic novices. Needs --equity-mm for anyone to trade with.
+    "stocks": {"zero": "hauler", "amos": "hauler", "marvin": "stock_trader", "aerial": "hauler"},
+    "stocks_vs_novices": {"zero": "novice", "amos": "hauler", "marvin": "stock_trader", "aerial": "novice"},
 }
 
 
@@ -920,7 +924,109 @@ class Novice:
             stats["rejected_moves"] = stats.get("rejected_moves", 0) + 1
 
 
-STRATEGY = {"hauler": Hauler, "maker": Maker, "idler": Idler,
+# ------------------------------------------------------------ fleet stocks (#119)
+
+EQ_SYM = {"amos": "EQ_AMOS", "marvin": "EQ_MARV", "zero": "EQ_ZERO", "aerial": "EQ_AERL"}
+
+
+def stock_navs(ref: AgoraReferee) -> Dict[str, dict]:
+    base = {e["agent_id"]: e["net_worth"] - e.get("stocks_value", 0) for e in ref.get_leaderboard()}
+    return ref.stock_marks(base)
+
+
+def stock_value(ref: AgoraReferee, agent: str, marks: Dict[str, dict]) -> float:
+    """Rival shares held, at NAV. Own shares count for nothing, as on the leaderboard."""
+    return sum(ref.get_balance(agent, sym) * marks[sym]["nav"] for a, sym in EQ_SYM.items() if a != agent)
+
+
+def cancel_stock_orders(ref: AgoraReferee, agent: str) -> None:
+    for sym in EQ_SYM.values():
+        b = ref.books["ceres"][sym]
+        for o in list(b.bids) + list(b.asks):
+            if o.agent_id == agent:
+                ref.cancel_order(agent, o.order_id)
+
+
+class EquityLiquidity:
+    """STAND-IN for other players on the stock exchange. The live referee
+    has no depot on equity books: a stock order fills only against another
+    fleet's resting order. Here every fleet that is not a stock trader
+    quotes the rivals' shares it holds at NAV x (1 +/- SPREAD), DEPTH shares
+    a side a round, from its own CR and shares, so nothing is minted. This
+    is an assumption about how LLM players will behave, not something the
+    live game provides; stock-trader results scale with it."""
+
+    def __init__(self, spread: float, depth: int):
+        self.spread, self.depth = spread, depth
+
+    def quote(self, ref: AgoraReferee, providers: List[str]) -> None:
+        marks = stock_navs(ref)
+        for a in providers:
+            cancel_stock_orders(ref, a)
+            for issuer, sym in EQ_SYM.items():
+                if issuer == a:
+                    continue
+                nav = marks[sym]["nav"]
+                ask = max(2, int(round(nav * (1 + self.spread))))
+                bid = max(1, min(ask - 1, int(nav * (1 - self.spread))))
+                held = ref.get_balance(a, sym)
+                if held > 0:
+                    order(ref, a, "ask", min(self.depth, held), ask, sym, "ceres", "eqmm")
+                if ref.get_balance(a, "CR") > 2000 + bid * self.depth:
+                    order(ref, a, "bid", self.depth, bid, sym, "ceres", "eqmm")
+
+
+class StockTrader:
+    """Trades rival stocks only, never goods or contracts (#119).
+
+    NAV is noisy: a hauler's cargo in flight is escrowed and drops out of
+    its net worth until it docks, so NAV dips and recovers with every trip.
+    Fair value is therefore NAV's LONG-round average carried forward along
+    its LONG-round growth, not the latest NAV. Buys when the best ask is
+    EDGE below fair, sells when the best bid is EDGE above it, spending at
+    most STAKE of its cash on one order. Only takes liquidity: any rest is
+    cancelled at once, so every stock fill happens inside act() and its
+    cash effect is measured exactly."""
+
+    LONG, EDGE, STAKE = 30, 0.08, 0.3
+
+    def __init__(self, agent: str):
+        self.agent = agent
+        self.hist: Dict[str, List[float]] = {s: [] for s in EQ_SYM.values()}
+        self.stock_cash = 0
+
+    def fair(self, sym: str) -> Optional[float]:
+        h = self.hist[sym]
+        if len(h) <= self.LONG:
+            return None
+        w = h[-self.LONG:]
+        avg = sum(w) / len(w)
+        slope = (sum(w[len(w) // 2:]) - sum(w[:len(w) // 2])) / (len(w) // 2) / (len(w) // 2)
+        return max(1.0, avg + slope * self.LONG / 2)
+
+    def act(self, ref: AgoraReferee, quotes, stats) -> None:
+        marks = stock_navs(ref)
+        before = ref.get_balance(self.agent, "CR")
+        for issuer, sym in EQ_SYM.items():
+            self.hist[sym].append(marks[sym]["nav"])
+            fair = self.fair(sym)
+            if issuer == self.agent or fair is None:
+                continue
+            book = ref.books["ceres"][sym]
+            ask, bid = book.best_ask(), book.best_bid()
+            if ask is not None and ask < fair * (1 - self.EDGE):
+                qty = int(ref.get_balance(self.agent, "CR") * self.STAKE) // ask
+                if qty > 0:
+                    order(ref, self.agent, "bid", qty, ask, sym, "ceres", "stk")
+            elif bid is not None and bid > fair * (1 + self.EDGE):
+                qty = ref.get_balance(self.agent, sym)
+                if qty > 0:
+                    order(ref, self.agent, "ask", qty, bid, sym, "ceres", "stk")
+            cancel_stock_orders(ref, self.agent)
+        self.stock_cash += ref.get_balance(self.agent, "CR") - before
+
+
+STRATEGY = {"hauler": Hauler, "maker": Maker, "idler": Idler, "stock_trader": StockTrader,
             "inside_maker": lambda a: Maker(a, clip=100, inside=True)}
 
 
@@ -987,7 +1093,8 @@ def depot_floor(ref: AgoraReferee) -> int:
 def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict", check_every: int = 25,
         depot_model: str = "static", band_pct: Optional[float] = None, reactive_bands: bool = True,
         contracts: bool = False, dock_fee: int = 0, owned_contracts: bool = False,
-        fog: Optional[tuple] = None, peer: bool = False, corporate: bool = False) -> dict:
+        fog: Optional[tuple] = None, peer: bool = False, corporate: bool = False,
+        equity_mm: Optional[tuple] = None) -> dict:
     # Reactive depots are the referee's own implementation (agora/referee.py,
     # AGORA_DEPOT_MODEL), so these numbers describe what would ship.
     # corporate: claimed contracts with penalties, debt, distress share
@@ -1011,6 +1118,13 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
         return STRATEGY[kind](a)
     fleets = {a: build(a, kind) for a, kind in SCENARIOS[scenario].items()}
     start = {a: score(ref, a) for a in FLEETS}
+    eq_liq = EquityLiquidity(*equity_mm) if equity_mm else None
+    traders = [a for a, k in SCENARIOS[scenario].items() if k == "stock_trader"]
+    track_stocks = bool(eq_liq or traders)
+    stocks_start = {}
+    if track_stocks:
+        m0 = stock_navs(ref)
+        stocks_start = {a: stock_value(ref, a, m0) for a in FLEETS}
     stats = {"transits": 0, "halts_caused": 0, "band_blocked": 0, "stranded_events": 0, "contract_deliveries": 0}
     cboard = (ContractBoard(ref, seed, owned=owned_contracts or corporate, claim=corporate)
               if (contracts or owned_contracts or corporate) else None)
@@ -1040,10 +1154,17 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
         if desk is not None:
             desk.collect()
             desk.match(views)
-        for a, strat in fleets.items():
-            if corp is not None and a in corp.out:
-                continue
-            strat.act(ref, views[a], stats)
+        # Stock traders act last, after the stand-in players have quoted;
+        # with none in the scenario the order is unchanged.
+        live = [a for a in fleets if not (corp is not None and a in corp.out)]
+        for a in live:
+            if a not in traders:
+                fleets[a].act(ref, views[a], stats)
+        if eq_liq is not None:
+            eq_liq.quote(ref, [a for a in live if a not in traders])
+        for a in live:
+            if a in traders:
+                fleets[a].act(ref, views[a], stats)
         ref.step_round()
         if corp is not None:
             corp.settle()
@@ -1062,7 +1183,18 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
     end = {a: score(ref, a) for a in FLEETS}
     halts = ref.conn.execute("SELECT COUNT(*) FROM circuit_breaker_halts").fetchone()[0]
     q = max(1, len(spread) // 4)
-    return {
+    extra = {}
+    if track_stocks:
+        m1 = stock_navs(ref)
+        extra["stocks"] = {
+            "equity_mm": list(equity_mm) if equity_mm else None,
+            "fleets": {a: {"value_start": round(stocks_start[a]), "value_end": round(stock_value(ref, a, m1)),
+                           "stock_cash": fleets[a].stock_cash if a in traders else None,
+                           "stock_pnl": (round(fleets[a].stock_cash + stock_value(ref, a, m1) - stocks_start[a])
+                                         if a in traders else None)} for a in FLEETS},
+            "nav_end": {sym: m1[sym]["nav"] for sym in EQ_SYM.values()},
+        }
+    return {**extra,
         "scenario": scenario, "genesis": genesis, "mode": mode, "seed": seed, "rounds": rounds,
         "depot_model": depot_model, "band_pct": ref.circuit_breaker.band_pct,
         "reactive_bands": reactive_bands,
@@ -1119,6 +1251,9 @@ def main() -> int:
     ap.add_argument("--dock-fee", type=int, default=0, help="#73 prototype: CR charged per round to each docked fleet")
     ap.add_argument("--free-quotes", action="store_true",
                     help="reactive depots: do not hold quotes inside the circuit-breaker band")
+    ap.add_argument("--equity-mm", type=float, nargs=2, metavar=("SPREAD", "DEPTH"), default=None,
+                    help="stand-in stock liquidity: non-trader fleets quote rival shares at NAV +/- SPREAD, "
+                         "DEPTH shares a side a round (e.g. 0.05 20); the live game has no equity depot")
     ap.add_argument("--json", action="store_true", help="print raw results as JSON")
     ap.add_argument("--hang-timeout", type=int, default=300, help="dump stacks and exit if a run hangs")
     args = ap.parse_args()
@@ -1136,7 +1271,9 @@ def main() -> int:
                                        reactive_bands=not args.free_quotes, contracts=args.contracts,
                                        dock_fee=args.dock_fee, owned_contracts=args.owned_contracts,
                                        fog=(int(args.fog[0]), args.fog[1]) if args.fog else None,
-                                       peer=args.peer, corporate=args.corporate))
+                                       peer=args.peer, corporate=args.corporate,
+                                       equity_mm=((args.equity_mm[0], int(args.equity_mm[1]))
+                                                  if args.equity_mm else None)))
     faulthandler.cancel_dump_traceback_later()
 
     if args.json:
@@ -1153,6 +1290,11 @@ def main() -> int:
         print(f"  depot CR at end: {r['depot_cr_end']}  contracts: {r['contracts']}")
         print(f"  first negative depot balance: round {r['first_negative_depot_round']}  "
               f"invariant failure: {r['first_invariant_failure']}")
+        if r.get("stocks"):
+            for a, f in r["stocks"]["fleets"].items():
+                if f["stock_pnl"] is not None:
+                    print(f"  {a} stocks: pnl {f['stock_pnl']:+} (cash {f['stock_cash']:+}, "
+                          f"holdings {f['value_start']} -> {f['value_end']} at NAV)")
     return 0
 
 

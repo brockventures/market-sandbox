@@ -83,6 +83,19 @@ class TestEconomySim(unittest.TestCase):
                 depot_model="reactive", band_pct=0.25, peer=True, fog=(3, 0.15), corporate=True)
         self.assertIsNone(r["first_invariant_failure"])
 
+    def test_stock_trader_trades_against_stand_in_liquidity(self):
+        r = run("stocks", "flat", seed=1, rounds=120, mode="tolerant", check_every=20,
+                depot_model="reactive", band_pct=0.25, corporate=True, equity_mm=(0.05, 20))
+        self.assertIsNone(r["first_invariant_failure"])
+        st = r["stocks"]["fleets"]["marvin"]
+        self.assertNotEqual(st["stock_cash"], 0)  # it traded
+        self.assertEqual(r["corporate"]["claims"] > 0, True)
+        self.assertNotIn("marvin", r["corporate"]["debt_end"])  # never takes contracts
+
+    def test_no_stock_trader_leaves_results_unchanged(self):
+        r = run("mixed", "flat", seed=1, rounds=30, mode="tolerant")
+        self.assertNotIn("stocks", r)
+
     def test_dock_fee_charges_idlers(self):
         r = run("idle4", "flat", seed=1, rounds=20, dock_fee=10)
         for f in r["fleets"].values():
