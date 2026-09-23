@@ -1463,7 +1463,9 @@ def _run(scenario, genesis, seed, rounds, mode, check_every, overrides, equity_m
                        # pnl plus the change in rival shares held, at NAV
                        "pnl_total": round(end[a] - start[a] + stocks_mark_end[a] - stocks_mark_start[a]),
                        "pnl_passive": round(passive[a]),
-                       "pnl_active": round(end[a] - start[a] + stocks_mark_end[a] - stocks_mark_start[a] - passive[a]),
+                       # the rest, so active + passive == total exactly
+                       "pnl_active": (round(end[a] - start[a] + stocks_mark_end[a] - stocks_mark_start[a])
+                                      - round(passive[a])),
                        "leaderboard_nw": board.get(a),
                        "out": ref.fleet_out(a) is not None} for a in FLEETS},
         "order_flow": ({"totals": dict(ref.order_flow.totals), "by_fleet": dict(ref.order_flow.by_fleet)}
