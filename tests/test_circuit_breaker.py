@@ -7,6 +7,7 @@ import unittest
 from agora.order_book import Order, OrderBook
 from agora.circuit_breaker import CircuitBreakerEngine, find_clearing_price
 from agora.referee import AgoraReferee
+from tests.legacy_surface import pre_162_surface
 
 
 
@@ -33,6 +34,7 @@ class TestCircuitBreaker(unittest.TestCase):
         assert clearing_price == 21
 
 
+    @pre_162_surface()
     def test_circuit_breaker_bands_and_vwap(self):
         ref = AgoraReferee()
         cb = ref.circuit_breaker
@@ -88,6 +90,7 @@ class TestCircuitBreaker(unittest.TestCase):
         assert ref.circuit_breaker.get_vwap('ceres', 'FRAG') == 22.0
 
 
+    @pre_162_surface()
     def test_get_vwap_fallback_is_scoped_not_global(self):
         """
         Issue #58: get_vwap()'s fallback used to read the referee's global,

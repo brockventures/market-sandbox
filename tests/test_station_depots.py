@@ -18,6 +18,7 @@ import urllib.request
 from agora.referee import AgoraReferee
 from agora.server import make_handler
 from agora.spatial import STATIONS, COMMODITIES, BASE_PRICES
+from tests.legacy_surface import pre_162_surface
 
 
 class TestStationDepots(unittest.TestCase):
@@ -67,6 +68,7 @@ class TestStationDepots(unittest.TestCase):
         for st in STATIONS:
             self.assertNotIn(f"depot_{st}", loc_agents)
 
+    @pre_162_surface()
     def test_depot_pricing_spec(self):
         """
         Verify fundamental prices matching Issue #71 spec:
@@ -97,6 +99,7 @@ class TestStationDepots(unittest.TestCase):
         self.assertEqual(ceres_fuel['best_ask'], 26)   # Sells FUEL @ 26 CR (~25-26 CR)
         self.assertEqual(ceres_fuel['best_bid'], 25)
 
+    @pre_162_surface()
     def test_cross_system_spatial_arbitrage_trade(self):
         """
         Full lifecycle test:
@@ -213,6 +216,7 @@ class TestStationDepots(unittest.TestCase):
                 self.assertGreater(item['bid_depth'], 0)
                 self.assertGreaterEqual(item['best_ask'], item['best_bid'] + 1)
 
+    @pre_162_surface()
     def test_reset_and_new_game_depots_flags(self):
         """reset_to_genesis(depots=True) and new_game(depots=True) preserve depot depth."""
         ref = AgoraReferee()
@@ -280,7 +284,7 @@ class TestDepotServerEndpoints(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(data['status'], 'ok')
         self.assertTrue(data['depots']['depots_enabled'])
-        self.assertEqual(data['depots']['stations']['earth']['FRAG']['best_ask'], 11)
+        self.assertEqual(data['depots']['stations']['earth']['FRAG']['best_ask'], 12)  # #71's 11, on the #162 surface
 
     def test_post_admin_depots_refresh(self):
         """POST /referee/admin/depots/refresh refreshes quotes."""

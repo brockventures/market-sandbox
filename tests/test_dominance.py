@@ -32,14 +32,22 @@ class TestDominanceHarness(unittest.TestCase):
         self.assertEqual(game()["traj"], self.never["traj"])
 
     def test_arms_identical_until_the_buy(self):
-        for item in ("hold t1", "escorts", "privateers", "stock buy"):
+        # Not "hold t1": hold is locked until round 100 (#162), so it would never buy here.
+        for item in ("shielding t1", "escorts", "privateers", "stock buy"):
             late = game(item, 20)
             self.assertEqual(late["traj"][:18], self.never["traj"][:18], item)
 
     def test_tier_one_buy_goes_through_the_live_desk(self):
-        r = game("hold t1", 1)
+        r = game("shielding t1", 1)
         self.assertEqual(r["bought_round"], 1)
-        self.assertEqual(r["holdings"], {"hold": 1})
+        self.assertEqual(r["holdings"], {"shielding": 1})
+        self.assertIsNone(r["invariant_failure"])
+
+    def test_a_locked_upgrade_is_not_bought_before_it_unlocks(self):
+        # #162: hold tier 1 is not on sale until round 100; the live desk refuses it.
+        r = game("hold t1", 1)
+        self.assertIsNone(r["bought_round"])
+        self.assertEqual(r["holdings"], {})
         self.assertIsNone(r["invariant_failure"])
 
     def test_tier_two_keeps_its_prerequisite_and_buys_nothing_else(self):

@@ -61,6 +61,14 @@ REACTIVE_SIDE_DRIP = 20       # per-round restock / consumption everywhere else
 REACTIVE_SKEW = 0.5           # price elasticity to shelf / hold fill
 
 
+# Static depot model: (bid, ask) offsets from round(base price) for the
+# #71 spec quotes at Earth and Ceres. Every other quote is spot +/- 1.
+STATIC_SPEC_OFFSETS = {
+    ('earth', 'FRAG'): (0, 1), ('earth', 'FUEL'): (0, 1), ('earth', 'FOOD'): (0, 1), ('earth', 'ORE'): (-1, 1),
+    ('ceres', 'FRAG'): (-1, 0), ('ceres', 'FUEL'): (-1, 0), ('ceres', 'FOOD'): (-1, 1), ('ceres', 'ORE'): (0, 1),
+}
+
+
 def _env_depot_model() -> str:
     m = os.environ.get("AGORA_DEPOT_MODEL", "static").strip().lower()
     return m if m in DEPOT_MODELS else "static"
@@ -1350,6 +1358,9 @@ class AgoraReferee:
                 peer_report = self.peer.step_locked(new_round) if self.peer_trades else None
                 contract_report = self.contract_desk.step_locked(new_round) if self.contracts_enabled else None
                 corporate_report = self.corporate.step_locked(new_round) if self.corporate_enabled else None
+                # GalNet story when a locked upgrade goes on sale (agora/upgrades.py).
+                if self.upgrades_enabled:
+                    self.upgrades.step_locked(new_round)
                 # Leak rolls for secrets and 20% stake disclosures (agora/events.py).
                 events_report = self.events.step_locked(new_round) if self.events_enabled else None
 
@@ -2416,25 +2427,15 @@ class AgoraReferee:
                 spot = self.spatial.get_station_price(st, comm) if self.spatial else BASE_PRICES[st][comm]
 
                 # 3. Compute continuous two-sided prices
-                # Base spec:
-                # Earth Depot sells FRAG @ ~10-11 CR and buys FUEL @ ~8-9 CR
-                # Ceres Depot buys FRAG @ ~21-22 CR and sells FUEL @ ~25-26 CR
-                if st == 'earth' and comm == 'FRAG':
-                    bid_1, ask_1 = 10, 11
-                elif st == 'earth' and comm == 'FUEL':
-                    bid_1, ask_1 = 8, 9
-                elif st == 'earth' and comm == 'FOOD':
-                    bid_1, ask_1 = 10, 11
-                elif st == 'earth' and comm == 'ORE':
-                    bid_1, ask_1 = 29, 31
-                elif st == 'ceres' and comm == 'FRAG':
-                    bid_1, ask_1 = 21, 22
-                elif st == 'ceres' and comm == 'FUEL':
-                    bid_1, ask_1 = 25, 26
-                elif st == 'ceres' and comm == 'FOOD':
-                    bid_1, ask_1 = 29, 31
-                elif st == 'ceres' and comm == 'ORE':
-                    bid_1, ask_1 = 10, 11
+                # #71 spec quotes at the two ends of the system, as offsets
+                # from the station's base price (on the pre-#162 surface
+                # exactly: Earth FRAG 10/11, FUEL 8/9, FOOD 10/11, ORE 29/31;
+                # Ceres FRAG 21/22, FUEL 25/26, FOOD 29/31, ORE 10/11), so they
+                # follow BASE_PRICES when it changes.
+                offs = STATIC_SPEC_OFFSETS.get((st, comm))
+                if offs:
+                    b0 = int(round(BASE_PRICES[st][comm]))
+                    bid_1, ask_1 = b0 + offs[0], b0 + offs[1]
                 else:
                     mid = int(round(spot))
                     bid_1 = max(1, mid - 1)

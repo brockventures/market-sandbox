@@ -20,6 +20,8 @@ import uuid
 from http.server import ThreadingHTTPServer, HTTPServer, BaseHTTPRequestHandler
 from typing import Optional, Dict
 from agora.referee import AgoraReferee
+from agora.exchange import DEFAULT_VOL
+from agora import piracy as _piracy
 from agora.galnet import GalNetEngine
 from agora.spatial import STATIONS, COMMODITIES, ROUTES, get_route, get_alignment_windows
 from agora.websocket import handle_terminal_websocket
@@ -1554,7 +1556,8 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                     'piracy': 'GET /referee/piracy (hot station, odds, recent raids, privateer contracts)',
                     'order_flow': 'GET /referee/order-flow (NPC buy/sell flow each station sends to fleet quotes before its depot)',
                     'piracy_respond': 'POST /referee/piracy/{transit_id}/respond {choice: pay|surrender|fight} (before the next round tick)',
-                    'privateers': 'POST /referee/privateers {target} (3,000 CR, +15% raid chance on the target for 20 rounds)',
+                    'privateers': (f'POST /referee/privateers {{target}} ({_piracy.PRIV_COST:,} CR, +{_piracy.PRIV_ADD:.0%} '
+                                   f'raid chance on the target for {_piracy.PRIV_ROUNDS} rounds)'),
                     'transit': 'POST /stations/transit {destination, commodity, cargo_qty, escort: optional bool}',
                     'peer_offer': 'POST /referee/peer/offer {station_id, instrument, qty, price} (docked at station_id)',
                     'peer_accept': 'POST /referee/peer/accept {escrow_id} (from anywhere)',
@@ -1783,8 +1786,8 @@ def build_referee_from_env(db_path: str = 'agora.db', **overrides) -> AgoraRefer
       AGORA_IDLE_FEE=10        CR per round for a docked fleet that did nothing; 0 = off
       AGORA_RIVAL_SHARES=100   shares of each rival's stock every fleet starts with
       AGORA_EXCHANGE_SHARES=100  shares of each fleet the exchange market maker holds (max 200); 0 = off
-      AGORA_EXCHANGE_VOL=0.03  per-round volatility of the exchange's stock prices
-      AGORA_CONTRACTS=1        owned, tradable station contracts (25% deposit, 50% lapse penalty)
+      AGORA_EXCHANGE_VOL=0.12  per-round volatility of the exchange's stock prices
+      AGORA_CONTRACTS=1        owned, tradable station contracts (25% deposit, 50% lapse penalty; 25% for a corp's first)
       AGORA_CORPORATE=1        debt, distress share sales, bankruptcy, 51% takeovers
       AGORA_UPGRADES=1         ship upgrades (shielding, hold, armor, engines) that cut hazard/piracy odds
       AGORA_HAZARDS=0.2,0.1    per-trip chance of a 1-3 round delay, and of losing 30-70% of the cargo; 0 = off
@@ -1810,7 +1813,7 @@ def build_referee_from_env(db_path: str = 'agora.db', **overrides) -> AgoraRefer
                         fog=_fog_from_env(), idle_fee=_int_env('AGORA_IDLE_FEE', 10),
                         rival_shares=_int_env('AGORA_RIVAL_SHARES', 100),
                         exchange_shares=_int_env('AGORA_EXCHANGE_SHARES', 100),
-                        exchange_vol=_float_env('AGORA_EXCHANGE_VOL', 0.03),
+                        exchange_vol=_float_env('AGORA_EXCHANGE_VOL', DEFAULT_VOL),
                         contracts=_on('AGORA_CONTRACTS'),
                         hazards=os.environ.get('AGORA_HAZARDS', '0.2,0.1'),
                         corporate=_on('AGORA_CORPORATE'),

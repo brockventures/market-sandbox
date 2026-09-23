@@ -1,7 +1,10 @@
 import unittest
 
 from agora.referee import AgoraReferee
-from agora.contracts import BOND_PCT, PENALTY, POST_EVERY
+from unittest import mock
+
+from agora import contracts as K
+from agora.contracts import BOND_PCT, PENALTY, FIRST_PENALTY, POST_EVERY
 
 
 def game():
@@ -81,10 +84,43 @@ class TestContracts(unittest.TestCase):
             ref.step_round()
         row = ref.contract_desk.get(c['contract_id'])
         self.assertEqual(row['status'], 'lapsed')
-        penalty = int(c['price'] * c['qty_total'] * PENALTY)
+        penalty = int(c['price'] * c['qty_total'] * FIRST_PENALTY)  # amos's first lapse
         self.assertEqual(row['penalty'], penalty)
         self.assertEqual(ref.get_balance('amos', 'CR'), cr - (penalty - row['shortfall']))
         self.assertTrue(*ok(ref))
+
+    def _lapse(self, ref, agent):
+        c = next(c for c in ref.contract_desk.list() if not c['owner'] and c['deadline'] > ref.current_round)
+        r = ref.contract_desk.claim(agent, c['contract_id'])
+        self.assertEqual(r['kind'], 'contract_claim_ok', r)
+        while ref.current_round <= c['deadline']:
+            ref.step_round()
+        row = ref.contract_desk.get(c['contract_id'])
+        self.assertEqual(row['status'], 'lapsed')
+        return c, row
+
+    @mock.patch.object(K, 'FIRST_PENALTY', 0.25)
+    def test_first_lapse_per_corp_is_discounted(self):
+        # #162: one bad claim teaches rather than kills.
+        ref = game()
+        with ref.conn:  # enough CR for three deposits and penalties
+            for a in ('amos', 'zero'):
+                for acct, d in ((a, 200_000), ('SYSTEM', -200_000)):
+                    ref.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = 'CR'", (d, acct))
+                    ref.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, 0, ?, 'CR', ?)",
+                                     (f"t-cash-{a}", acct, d))
+        self.assertEqual(ref.contract_desk.penalty_rate('amos'), 0.25)
+        c, row = self._lapse(ref, 'amos')
+        self.assertEqual(row['penalty'], int(c['price'] * c['qty_total'] * 0.25))
+        self.assertEqual(ref.contract_desk.penalty_rate('amos'), PENALTY)
+        self.assertEqual(ref.contract_desk.penalty_rate('zero'), 0.25)  # per corp
+        c, row = self._lapse(ref, 'amos')
+        self.assertEqual(row['penalty'], int(c['price'] * c['qty_total'] * PENALTY))
+        c, row = self._lapse(ref, 'zero')
+        self.assertEqual(row['penalty'], int(c['price'] * c['qty_total'] * 0.25))
+        self.assertTrue(*ok(ref))
+        ref.new_game(seed=4, warmup_rounds=2, depots=True, contracts=True)
+        self.assertEqual(ref.contract_desk.penalty_rate('amos'), 0.25)  # a new game starts fresh
 
     def test_resale_moves_price_and_deposit_to_seller(self):
         ref = game()

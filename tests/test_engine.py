@@ -7,6 +7,7 @@ solvency validation, and idempotency dedup.
 import unittest
 from agora.order_book import OrderBook, Order
 from agora.referee import AgoraReferee
+from tests.legacy_surface import pre_162_surface
 
 
 class TestAgoraEngine(unittest.TestCase):
@@ -515,6 +516,7 @@ class TestAgoraEngine(unittest.TestCase):
         self.assertEqual(res['kind'], 'market_tick')
         self.assertEqual(res['payload']['best_ask'], 10)
 
+    @pre_162_surface()
     def test_scoped_last_prices_and_uncontaminated_leaderboard_mark(self):
         referee = AgoraReferee()
         # Initial baseline: all agents flat at 20,000 CR net worth (mark = 10)

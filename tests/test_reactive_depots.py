@@ -59,12 +59,12 @@ class TestReactiveDepots(unittest.TestCase):
         ref = make(band_pct=0.9)  # wide band so the skew is not clamped
         before = depot_quote(ref, "ceres", "ORE", "ask")
         shelf0 = ref._reactive["shelf"][("ceres", "ORE")]
-        res = order(ref, "sweep", "amos", "bid", 600, before.limit_price, "ORE", "ceres")
+        res = order(ref, "sweep", "amos", "bid", 500, before.limit_price, "ORE", "ceres")
         self.assertEqual(res.get("kind"), "market_tick", res)
         with ref.lock, ref.conn:
             ref._refresh_reactive_depots_locked()   # same round: no restock
         # The purchase is read from the ledger and taken off the shelf.
-        self.assertEqual(ref._reactive["shelf"][("ceres", "ORE")], shelf0 - 600)
+        self.assertEqual(ref._reactive["shelf"][("ceres", "ORE")], shelf0 - 500)
         after = depot_quote(ref, "ceres", "ORE", "ask")
         self.assertGreater(after.limit_price, before.limit_price)
 

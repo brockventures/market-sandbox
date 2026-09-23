@@ -50,7 +50,7 @@ class TestUpgrades(unittest.TestCase):
         ref = game()
         _, d = dest_for(ref, 'zero')
         ref.initiate_transit('zero', d)
-        self.assertEqual(ref.upgrades.buy('zero', 'hold')['payload']['reason'], 'vessel_not_docked')
+        self.assertEqual(ref.upgrades.buy('zero', 'shielding')['payload']['reason'], 'vessel_not_docked')
 
     def test_shielding_cuts_delays(self):
         def delays(buy):
@@ -83,6 +83,64 @@ class TestUpgrades(unittest.TestCase):
     def test_briefing_section(self):
         from agora.briefing import build_briefing
         self.assertIn('Ship upgrades', build_briefing(game()))
+
+
+class TestBalance162(unittest.TestCase):
+    """#162, from the #154 dominance harness (PR #167): hold tier 1 bought in
+    round 1 won 75% of seeds and armor tier 1 76%."""
+
+    def test_armor_tier_1_costs_7500(self):
+        self.assertEqual(CATALOG['armor']['prices'][0], 7_500)
+        ref = game()
+        cr = ref.get_balance('amos', 'CR')
+        self.assertEqual(ref.upgrades.buy('amos', 'armor')['kind'], 'upgrade_ok')
+        self.assertEqual(ref.get_balance('amos', 'CR'), cr - 7_500)
+
+    def test_hold_is_locked_until_round_100(self):
+        from agora import upgrades as U
+        self.assertEqual(U.UNLOCKS['hold'], 100)
+        ref = game()
+        r = ref.upgrades.buy('amos', 'hold')
+        self.assertEqual(r['kind'], 'reject')
+        self.assertEqual(r['payload']['reason'], 'upgrade_locked')
+        self.assertIn('round 100', r['payload']['detail'])
+        self.assertEqual(ref.upgrades.tier('amos', 'hold'), 0)
+        hold = next(c for c in ref.upgrades.catalog() if c['kind'] == 'hold')
+        self.assertTrue(hold['locked'])
+        self.assertEqual(hold['unlock_round'], 100)
+        # Other upgrades are on sale from the start.
+        self.assertEqual(ref.upgrades.buy('amos', 'shielding')['kind'], 'upgrade_ok')
+
+    def news(self, ref):
+        import json
+        return [json.loads(r[0]) for r in ref.conn.execute("SELECT payload FROM book_events WHERE kind = 'news'")
+                if 'gn-shipyard-' in r[0]]
+
+    def test_round_100_unlocks_it_with_one_galnet_story(self):
+        ref = game()
+        for _ in range(99):
+            ref.step_round()
+        self.assertEqual(ref.current_round, 99)
+        self.assertEqual(ref.upgrades.buy('amos', 'hold')['payload']['reason'], 'upgrade_locked')
+        self.assertEqual(self.news(ref), [])
+        ref.step_round()
+        stories = self.news(ref)
+        self.assertEqual(len(stories), 1)
+        self.assertIn('SHIPYARD RETOOLING', stories[0]['headline'])
+        self.assertTrue(any(e.id == 'gn-shipyard-hold' for e in ref.galnet.events))
+        self.assertEqual(ref.upgrades.buy('amos', 'hold')['kind'], 'upgrade_ok')
+        self.assertFalse(next(c for c in ref.upgrades.catalog() if c['kind'] == 'hold')['locked'])
+        ref.step_round()
+        self.assertEqual(len(self.news(ref)), 1)  # once a game
+        ok, errs = ref.verify_ledger_invariants()
+        self.assertTrue(ok, errs)
+
+    def test_briefing_shows_the_lock(self):
+        from agora.briefing import build_briefing
+        ref = game()
+        self.assertIn('locked until round 100', build_briefing(ref))
+        ref.step_round(100)
+        self.assertNotIn('locked until round 100', build_briefing(ref))
 
 
 if __name__ == '__main__':

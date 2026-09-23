@@ -87,7 +87,9 @@ SURRENDER_PCT = 0.25
 FIGHT_ESCAPE = 0.5
 FIGHT_LOSS = 0.5
 FIGHT_DELAY = (1, 2)
-PRIV_ROUNDS, PRIV_COST, PRIV_ADD, PRIV_SHARE, PRIV_TRACE, PRIV_FINE = 20, 3_000, 0.15, 0.5, 0.25, 3
+# PRIV_COST 3,000 until #162: at 2,000 a hauler that also hires privateers
+# earns about what a plain hauler does (at 3,000 it earned ~30k less).
+PRIV_ROUNDS, PRIV_COST, PRIV_ADD, PRIV_SHARE, PRIV_TRACE, PRIV_FINE = 20, 2_000, 0.15, 0.5, 0.25, 3
 FENCE_STATION = 'ceres'
 CHOICES = ('pay', 'surrender', 'fight')
 
