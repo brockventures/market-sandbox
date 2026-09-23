@@ -83,6 +83,25 @@ class TestCorporate(unittest.TestCase):
             "instrument": "FUEL", "station_id": "earth", "seq_seen": ref.current_seq}})['payload']['reason'], 'fleet_out')
         clean(self, ref)
 
+    def test_takeover_hands_over_cargo_in_flight(self):
+        ref = game()
+        frag = ref.get_balance('marvin', 'FRAG')
+        self.assertGreater(frag, 0)
+        here = ref.get_vessel_location('marvin')['station_id']
+        dest = 'mars' if here != 'mars' else 'luna'
+        self.assertEqual(ref.initiate_transit('marvin', dest, commodity='FRAG', cargo_qty=frag)['status'], 'in_transit')
+        z_frag, z_loc = ref.get_balance('zero', 'FRAG'), ref.get_vessel_location('zero')
+        need = TAKEOVER_SHARES - ref.get_balance('zero', 'EQ_MARV')
+        move(ref, 'test-buyup2', (('marvin', 'EQ_MARV', -need), ('zero', 'EQ_MARV', need)))
+        ref.step_round()
+        self.assertEqual(ref.corporate.status('marvin'), 'absorbed')
+        self.assertEqual(ref.get_balance('zero', 'FRAG'), z_frag + frag)
+        for _ in range(12):
+            ref.step_round()
+        self.assertEqual(ref.get_balance('marvin', 'FRAG'), 0)
+        self.assertEqual(ref.get_vessel_location('zero').get('station_id'), z_loc.get('station_id'))
+        clean(self, ref)
+
     def test_last_corp_standing_wins(self):
         ref = game()
         for target in ('marvin', 'aerial', 'amos'):

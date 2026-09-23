@@ -106,6 +106,19 @@ class CorporateDesk:
                     if o.agent_id == agent:
                         self.ref._cancel_order_locked(agent, o.order_id)
 
+    def _settle_transits(self, src: str, dst: str) -> None:
+        """Cargo still in flight for a corp that is out. Reassigning the trip
+        would move `dst`'s own ship when it lands, so cancel it instead and
+        hand the escrowed cargo (held by SYSTEM) straight to `dst`: the raider
+        on a takeover, SYSTEM (i.e. nothing moves) on bankruptcy.
+        Zero's review of #148."""
+        for t in self.ref.conn.execute("SELECT transit_id, commodity, cargo_qty FROM transits "
+                                       "WHERE agent_id = ? AND status = 'in_transit'", (src,)).fetchall():
+            if t["cargo_qty"] and dst != "SYSTEM":
+                self._move(f"out-transit-{t['transit_id']}", (("SYSTEM", t["commodity"], -t["cargo_qty"]),
+                                                             (dst, t["commodity"], t["cargo_qty"])))
+            self.ref.conn.execute("UPDATE transits SET status = 'cancelled' WHERE transit_id = ?", (t["transit_id"],))
+
     def _sweep(self, src: str, dst: str, txn: str) -> None:
         legs = []
         for r in self.ref.conn.execute("SELECT instrument, balance FROM accounts WHERE agent_id = ? AND balance != 0",
@@ -219,6 +232,7 @@ class CorporateDesk:
     def _bankrupt(self, agent: str) -> None:
         ref = self.ref
         self._cancel_all(agent)
+        self._settle_transits(agent, "SYSTEM")
         self._sweep(agent, "SYSTEM", f"bankrupt-{agent}-{ref.current_round}")
         ref.conn.execute("UPDATE station_contracts SET owner = NULL, bond = 0, list_price = NULL "
                          "WHERE owner = ? AND status = 'open'", (agent,))
@@ -238,6 +252,7 @@ class CorporateDesk:
                 if ref.get_balance(raider, sym) < TAKEOVER_SHARES:
                     continue
                 self._cancel_all(target)
+                self._settle_transits(target, raider)
                 self._sweep(target, raider, f"takeover-{raider}-{target}-{ref.current_round}")
                 ref.conn.execute("UPDATE station_contracts SET owner = ?, list_price = NULL "
                                  "WHERE owner = ? AND status = 'open'", (raider, target))
