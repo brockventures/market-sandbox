@@ -63,6 +63,26 @@ class TestEconomySim(unittest.TestCase):
         self.assertEqual({k: v["leaderboard_nw"] for k, v in a["fleets"].items()},
                          {k: v["leaderboard_nw"] for k, v in b["fleets"].items()})
 
+    def test_corporate_non_deliverers_never_take_contracts(self):
+        # An idler or maker never delivers, so it must never claim or buy a
+        # contract: before this fix both did, ate the penalties and were
+        # bankrupted or taken over in almost every mixed run.
+        r = run("mixed", "flat", seed=1, rounds=150, mode="tolerant", check_every=50,
+                depot_model="reactive", band_pct=0.25, corporate=True)
+        self.assertIsNone(r["first_invariant_failure"])
+        self.assertGreater(r["corporate"]["claims"], 0)
+        self.assertNotIn("marvin", r["corporate"]["debt_end"])
+        self.assertNotIn("aerial", r["corporate"]["debt_end"])
+        self.assertEqual([b for b in r["corporate"]["bankruptcies"] if b["fleet"] in ("marvin", "aerial")], [])
+        self.assertEqual(r["fleets"]["aerial"]["pnl"], 0)
+
+    def test_peer_desk_respects_goods_committed_to_resting_asks(self):
+        # All features on, seed 5: the peer desk used to sell ORE that a
+        # resting distress ask had committed, and the seller went to -200 ORE.
+        r = run("novice_vs_haulers", "flat", seed=5, rounds=160, mode="tolerant", check_every=4,
+                depot_model="reactive", band_pct=0.25, peer=True, fog=(3, 0.15), corporate=True)
+        self.assertIsNone(r["first_invariant_failure"])
+
     def test_dock_fee_charges_idlers(self):
         r = run("idle4", "flat", seed=1, rounds=20, dock_fee=10)
         for f in r["fleets"].values():

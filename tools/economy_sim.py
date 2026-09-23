@@ -68,6 +68,12 @@ SCENARIOS = {
 }
 
 
+# Strategies that fly goods into contracts (Hauler and Novice call
+# ContractBoard.deliver). Only these claim or buy contracts: an idler or a
+# market maker never delivers, so a claim by one is a guaranteed penalty.
+CONTRACTORS = {"hauler", "novice"}
+
+
 # ------------------------------------------------------------------ helpers
 
 def order(ref: AgoraReferee, agent: str, side: str, qty: int, price: int, comm: str, st: str, tag: str):
@@ -131,6 +137,8 @@ class ContractBoard:
         # owned: each contract is awarded to one corp, only the owner can
         # deliver into it, and owners can sell contracts to other corps.
         self.owned = owned
+        # fleets allowed to buy contracts in trade(); None means every fleet
+        self.contractors: Optional[set] = None
         self.transfers = 0
         self.transfer_cr = 0
         self.open: List[dict] = []
@@ -240,7 +248,8 @@ class ContractBoard:
             if ref.current_round - c.get("bought", -99) < self.HOLD:
                 continue
             own_v = self.value_to(c["owner"], c, views[c["owner"]])
-            bids = [(self.value_to(a, c, views[a]), a) for a in FLEETS if a != c["owner"]]
+            bids = [(self.value_to(a, c, views[a]), a) for a in FLEETS
+                    if a != c["owner"] and (self.contractors is None or a in self.contractors)]
             if not bids:
                 continue
             v, buyer = max(bids)
@@ -297,6 +306,20 @@ class PeerDesk:
                 ref.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)",
                                  (txn, ref.current_seq, acct, inst, d))
 
+    def _available(self, agent: str, inst: str) -> int:
+        """Balance less what resting orders commit, as agora/peer.py checks
+        it. Using the raw balance let the desk sell goods a resting ask (a
+        distress sale, say) had already committed; the ask then filled and
+        the seller went negative (seed 5, novice_vs_haulers, all features)."""
+        committed = 0
+        for books in self.ref.books.values():
+            for comm, book in books.items():
+                if inst == "CR":
+                    committed += sum(o.remaining_qty * o.limit_price for o in book.bids if o.agent_id == agent)
+                elif comm == inst:
+                    committed += sum(o.remaining_qty for o in book.asks if o.agent_id == agent)
+        return self.ref.get_balance(agent, inst) - committed
+
     def collect(self) -> None:
         for (st, buyer, comm), qty in list(self.pickups.items()):
             if location(self.ref, buyer) == st:
@@ -326,7 +349,7 @@ class PeerDesk:
                 continue
             sv = views[seller]
             for comm in ("FRAG", "FOOD", "ORE", "FUEL"):
-                have = ref.get_balance(seller, comm) - (100 if comm == "FUEL" else 0)
+                have = self._available(seller, comm) - (100 if comm == "FUEL" else 0)
                 ask = sv[st][comm]["best_ask"]
                 if have < self.MIN_LOT or not ask:
                     continue
@@ -346,7 +369,7 @@ class PeerDesk:
                     # fleets already at or bound for S agree).
                     loc = ref.get_vessel_location(buyer)
                     at = loc["transit"]["destination"] if loc.get("status") == "in_transit" else loc["station_id"]
-                    qty = min(have, 500, max(0, (ref.get_balance(buyer, "CR") - 300) // price))
+                    qty = min(have, 500, max(0, (self._available(buyer, "CR") - 300) // price))
                     if qty < self.MIN_LOT:
                         continue
                     bv = views[buyer]
@@ -430,7 +453,7 @@ class Corporate:
                 continue
             bids = []
             for a in self.active():
-                if held[a] >= self.MAX_CLAIMS:
+                if held[a] >= self.MAX_CLAIMS or self.kinds.get(a) not in CONTRACTORS:
                     continue
                 v = self.board.value_to(a, c, views[a])
                 if self.kinds.get(a) == "novice":
@@ -991,6 +1014,8 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
     stats = {"transits": 0, "halts_caused": 0, "band_blocked": 0, "stranded_events": 0, "contract_deliveries": 0}
     cboard = (ContractBoard(ref, seed, owned=owned_contracts or corporate, claim=corporate)
               if (contracts or owned_contracts or corporate) else None)
+    if cboard is not None:
+        cboard.contractors = {a for a, k in SCENARIOS[scenario].items() if k in CONTRACTORS}
     corp = Corporate(ref, cboard, SCENARIOS[scenario], seed) if corporate else None
     fogger = Fog(fog[0], fog[1], seed) if fog else None
     desk = PeerDesk(ref) if peer else None
