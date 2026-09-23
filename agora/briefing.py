@@ -210,7 +210,27 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
         if summ['events']:
             out.append("")
             for e in summ['events'][:8]:
+                if e.get('exposed'):
+                    out.append(f"- round {e['round']}: exposed, {e['actor']}: {e['detail']}")
+                    continue
                 out.append(f"- round {e['round']}: {e['detail'] if e['detail'].startswith(e['agent_id']) else e['agent_id'] + ': ' + e['detail']}")
+    if getattr(ref, 'events_enabled', False):
+        from agora import events as E
+        out.append("## Secrets and scandals")
+        out.append(f"Covert moves are secret: only you see a privateer contract you pay for. Its victim sees each raid "
+                   f"it causes but not who paid. Each round a secret has a {E.LEAK_CHANCE:.0%} chance to leak for "
+                   f"{E.LEAK_ROUNDS} rounds, and a traced raid exposes it at once; an exposed secret is public, named "
+                   f"on GalNet as a scandal. A fleet's stake in a rival reaching {E.STAKE_PCT:.0%} is disclosed "
+                   f"publicly. What your token can see: `GET /referee/corporate/events`.")
+        mine = [e for e in ref.events.visible_to(viewer, max(0, rnd - 20), 20)
+                if e['visibility'] != 'public' or e['kind'] == 'stake_20']
+        if mine:
+            out.append("")
+            for e in mine[:8]:
+                who = e['actor'] or 'unknown'
+                tag = 'exposed' if e['exposed'] else e['visibility']
+                out.append(f"- round {e['round']} ({tag}): {who} -> {e['victim'] or '-'}: {e['detail']}")
+        out.append("")
     if getattr(ref, 'upgrades_enabled', False):
         out.append("## Ship upgrades")
         out.append("Fitted while docked at any station, paid in CR, permanent for the game, one tier at a time. "
@@ -267,7 +287,8 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
         out.append(f"- Privateers: `POST /referee/privateers {{\"target\": \"<fleet>\"}}` costs {P.PRIV_COST:,} CR and "
                    f"adds {pct(P.PRIV_ADD)} to that fleet's raid chance for {P.PRIV_ROUNDS} rounds. You get "
                    f"{pct(P.PRIV_SHARE)} of whatever is taken from it. Each raid you sponsor has a {pct(P.PRIV_TRACE)} "
-                   f"chance to be traced: a fine of {P.PRIV_FINE}x your fee and your name in this briefing. One "
+                   f"chance to be traced: a fine of {P.PRIV_FINE}x your fee and your name in this briefing"
+                   + (" and on GalNet" if getattr(ref, 'events_enabled', False) else "") + ". One "
                    f"contract at a time; not against yourself.")
         out.append("- Odds, recent raids and contracts: `GET /referee/piracy`.")
         pending = [r for r in pir.recent_raids(max(0, rnd - 2)) if r['status'] == 'pending']
@@ -277,7 +298,7 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
             for r in pending:
                 out.append(f"- {r['agent_id']} ({r['transit_id']}): pay {r['ransom']} CR or surrender "
                            f"{r['surrender_qty']} {r['commodity']}, answer before round {r['round'] + 1}")
-        recent = [r for r in pir.recent_raids(max(0, rnd - 10)) if r['status'] != 'pending']
+        recent = [r for r in pir.recent_raids(max(0, rnd - 10), viewer=viewer) if r['status'] != 'pending']
         if recent:
             out.append("")
             out.append("Recent raids:")
