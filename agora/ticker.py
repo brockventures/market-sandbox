@@ -34,9 +34,11 @@ class TickerEngine:
         interval_sec: float = DEFAULT_TICK_INTERVAL_SEC,
         inactivity_rounds: int = DEFAULT_INACTIVITY_ROUNDS,
         on_tick: Optional[Any] = None,
+        min_interval_sec: float = 1.0,
     ):
         self.referee = referee
-        self.interval_sec = max(1.0, float(interval_sec))
+        self.min_interval_sec = max(0.001, float(min_interval_sec))
+        self.interval_sec = max(self.min_interval_sec, float(interval_sec))
         self.inactivity_rounds = max(1, int(inactivity_rounds))
         self.on_tick = on_tick  # optional callback(round_result: dict) for broadcast hooks
 
@@ -103,7 +105,7 @@ class TickerEngine:
         """Dynamically update ticker interval or inactivity watchdog threshold."""
         with self._lock:
             if interval_sec is not None:
-                self.interval_sec = max(1.0, float(interval_sec))
+                self.interval_sec = max(self.min_interval_sec, float(interval_sec))
             if inactivity_rounds is not None:
                 self.inactivity_rounds = max(1, int(inactivity_rounds))
         return self.status()

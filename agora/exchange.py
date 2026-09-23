@@ -59,6 +59,9 @@ REVERSION = 0.1
 DEFAULT_VOL = 0.12
 DEFAULT_SPREAD = 0.03
 DEFAULT_DEPTH = 20
+# Periodic liquidity replenishment from SYSTEM to prevent cash depletion (#179)
+REPLENISH_ROUNDS = 100
+REPLENISH_FLOOR = 25_000
 # Price impact (Ryan, #agent-chat 2026-09-23 08:26: "buying the stock should
 # make the price go up"): each share the exchange sold since last round
 # lifts its price by IMPACT / DEPTH, each share it bought lowers it. A full
@@ -135,14 +138,36 @@ class EquityExchange:
         self.ref.conn.execute("DELETE FROM orders WHERE agent_id = ? AND instrument = ? AND status = 'open'",
                               (EXCHANGE_ID, sym))
 
+    def _replenish_locked(self, round_num: int) -> int:
+        """Replenish exchange cash from SYSTEM if below REPLENISH_FLOOR or periodically (#179)."""
+        ref = self.ref
+        cr = max(0, ref.get_balance(EXCHANGE_ID, 'CR'))
+        if round_num <= 0:
+            return 0
+        if cr >= REPLENISH_FLOOR:
+            return 0
+        delta = SEED_CR - cr
+        if delta <= 0:
+            return 0
+        seq = ref._get_next_seq() if hasattr(ref, '_get_next_seq') else ref.current_seq + 1
+        txn_id = f"exchange-replenish-r{round_num}"
+        for acct, d in ((EXCHANGE_ID, delta), ('SYSTEM', -delta)):
+            ref.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, 'CR', 0)", (acct,))
+            ref.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = 'CR'", (d, acct))
+            ref.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, 'CR', ?)",
+                             (txn_id, seq, acct, d))
+        return delta
+
     def refresh_locked(self) -> None:
         """Called under ref.lock inside a transaction, once a round."""
         ref = self.ref
+        round_num = ref.current_round
+        self._replenish_locked(round_num)
         base = {b['agent_id']: b['net_worth'] - b.get('stocks_value', 0) for b in ref.get_leaderboard()}
         marks = ref.stock_marks(base)
         cr_budget = max(0, ref.get_balance(EXCHANGE_ID, 'CR'))
-        round_num = ref.current_round
-        for sym in sorted(marks):
+        sym_list = sorted(marks)
+        for i, sym in enumerate(sym_list):
             nav = float(marks[sym]['nav'])
             hist = self.navs.setdefault(sym, [])
             hist.append(nav)
@@ -170,7 +195,10 @@ class EquityExchange:
             ask = max(2, int(math.ceil(p * (1 + self.spread))))
             bid = max(1, min(ask - 1, int(math.floor(p * (1 - self.spread)))))
             ask_qty = min(self.depth, max(0, ref.get_balance(EXCHANGE_ID, sym)))
-            bid_qty = min(self.depth, cr_budget // bid)
+            # Allocate remaining budget evenly among remaining symbols (#179)
+            syms_left = len(sym_list) - i
+            alloc = cr_budget // syms_left
+            bid_qty = min(self.depth, alloc // bid)
             cr_budget -= bid_qty * bid
             book = ref.books[EXCHANGE_STATION][sym]
             seq = ref.current_seq

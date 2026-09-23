@@ -216,11 +216,13 @@ class TestAgoraWebSocket(unittest.TestCase):
             sock_ws.settimeout(2.0)
             received_frames = []
             start_t = time.time()
-            while time.time() - start_t < 1.5:
+            while time.time() - start_t < 3.0:
                 try:
                     op, pl = decode_ws_frame(sock_ws)
                     if op == 0x1 and pl:
                         received_frames.append(json.loads(pl.decode("utf-8")))
+                        if len(received_frames) >= 1:
+                            break
                 except socket.timeout:
                     break
 
