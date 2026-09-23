@@ -122,6 +122,13 @@ class TestEconomySim(unittest.TestCase):
         self.assertGreater(a["corporate"].get("bonds_cr", 0), 0)
         self.assertEqual({k: v["pnl"] for k, v in a["fleets"].items()}, {k: v["pnl"] for k, v in b["fleets"].items()})
 
+    def test_piracy_and_privateers_keep_ledger_balanced(self):
+        r = run("privateer_vs_haulers", "flat", seed=3, rounds=150, mode="tolerant", check_every=10,
+                depot_model="reactive", band_pct=0.25, corporate=True, bond=0.25, piracy=(0.3, 0.1))
+        self.assertIsNone(r["first_invariant_failure"])
+        self.assertGreater(r["piracy"]["raids"], 0)
+        self.assertGreater(r["piracy"]["privateer_contracts"], 0)
+
     def test_dock_fee_charges_idlers(self):
         r = run("idle4", "flat", seed=1, rounds=20, dock_fee=10)
         for f in r["fleets"].values():

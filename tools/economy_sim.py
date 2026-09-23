@@ -68,6 +68,8 @@ SCENARIOS = {
     # #119: one fleet trades rival stocks only, against growing haulers or
     # erratic novices. Needs --equity-mm for anyone to trade with.
     "stocks": {"zero": "hauler", "amos": "hauler", "marvin": "stock_trader", "aerial": "hauler"},
+    # #145: one hauler that also funds privateers against the leader.
+    "privateer_vs_haulers": {"zero": "hauler", "amos": "hauler", "marvin": "privateer", "aerial": "hauler"},
     "stocks_vs_novices": {"zero": "novice", "amos": "hauler", "marvin": "stock_trader", "aerial": "novice"},
     # Day trading from price history (Ryan, #agent-chat 2026-09-22 22:30).
     "daytrade_vs_haulers": {"zero": "hauler", "amos": "hauler", "marvin": "daytrader", "aerial": "daytrader"},
@@ -77,7 +79,7 @@ SCENARIOS = {
 # Strategies that fly goods into contracts (Hauler and Novice call
 # ContractBoard.deliver). Only these claim or buy contracts: an idler or a
 # market maker never delivers, so a claim by one is a guaranteed penalty.
-CONTRACTORS = {"hauler", "novice"}
+CONTRACTORS = {"hauler", "novice", "privateer"}
 
 
 # ------------------------------------------------------------------ helpers
@@ -690,6 +692,115 @@ class Hazards:
                     self.stats["units_lost"] += lost
 
 
+class Piracy:
+    """#145 (Ryan approved 2026-09-23 09:13, privateers included). Raids
+    players can see coming and steer around, unlike Hazards' flat odds.
+
+    - Route risk: P_BELT on asteroid-belt trips (the tolled routes), P_INNER
+      elsewhere. Every HOT_EVERY rounds GalNet names one "hot" station;
+      trips to or from it carry HOT_MULT x the risk. Public knowledge.
+    - Value draws raiders: the chance scales with cargo value, x0.5 for a
+      small load up to x2 for a big one (VALUE_REF CR = x1).
+    - A raid takes 20-50% of the cargo.
+    - Escort: a fleet may pay ESCORT_PCT of the cargo's value at departure
+      to cut the chance by ESCORT_CUT. `escorts` fleets (haulers) do so
+      whenever the expected loss beats the fee; novices never do.
+    - Privateers: a `privateer` fleet funds raiders against the richest
+      rival for PRIV_ROUNDS rounds at PRIV_COST CR, adding PRIV_ADD to that
+      rival's raid chance. It gets PRIV_SHARE of anything they steal
+      (goods, from SYSTEM), and each raid it sponsors is traced with
+      PRIV_TRACE, costing it a fine of PRIV_FINE x its fee.
+    Seeded; stolen goods stay with SYSTEM unless paid to a privateer."""
+
+    HOT_EVERY, HOT_MULT = 20, 2.0
+    VALUE_REF = 10_000
+    ESCORT_PCT, ESCORT_CUT = 0.04, 0.75
+    PRIV_ROUNDS, PRIV_COST, PRIV_ADD, PRIV_SHARE, PRIV_TRACE, PRIV_FINE = 20, 3_000, 0.15, 0.5, 0.25, 3
+
+    def __init__(self, p_belt: float, p_inner: float, seed: int, kinds: Dict[str, str]):
+        self.p_belt, self.p_inner = p_belt, p_inner
+        self.rng = random.Random(seed * 15485863)
+        self.kinds = kinds
+        self.hot: Optional[str] = None
+        self.contracts: Dict[str, tuple] = {}  # target -> (sponsor, until_round)
+        self.stats = {"trips": 0, "raids": 0, "units_stolen": 0, "cr_stolen": 0, "escorts": 0, "escort_cr": 0,
+                      "privateer_contracts": 0, "privateer_raids": 0, "privateers_traced": 0, "fines_cr": 0}
+
+    def _cr(self, ref, txn, legs):
+        with ref.lock, ref.conn:
+            for acct, inst, d in legs:
+                if not d:
+                    continue
+                ref.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, ?, 0)", (acct, inst))
+                ref.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?", (d, acct, inst))
+                ref.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)",
+                                 (txn, ref.current_seq, acct, inst, d))
+
+    def _hire(self, ref, active) -> None:
+        r = ref.current_round
+        for a in active:
+            if self.kinds.get(a) != "privateer" or any(sp == a and until >= r for sp, until in self.contracts.values()):
+                continue
+            if ref.get_balance(a, "CR") < self.PRIV_COST * 3:
+                continue
+            nw = {e["agent_id"]: e["net_worth"] for e in ref.get_leaderboard()}
+            rivals = [b for b in active if b != a]
+            if not rivals:
+                continue
+            target = max(rivals, key=lambda b: nw.get(b, 0))
+            self._cr(ref, f"privateer-{a}-{target}-{r}", ((a, "CR", -self.PRIV_COST), ("SYSTEM", "CR", self.PRIV_COST)))
+            self.contracts[target] = (a, r + self.PRIV_ROUNDS)
+            self.stats["privateer_contracts"] += 1
+
+    def step(self, ref: AgoraReferee, active: List[str]) -> None:
+        r = ref.current_round
+        if r % self.HOT_EVERY == 0 or self.hot is None:
+            self.hot = self.rng.choice(STATIONS)
+        self._hire(ref, active)
+        rows = ref.conn.execute("SELECT transit_id, agent_id, origin, destination, commodity, cargo_qty, toll_paid "
+                                "FROM transits WHERE status = 'in_transit' AND departure_round = ?", (r,)).fetchall()
+        for t in rows:
+            self.stats["trips"] += 1
+            a, qty = t["agent_id"], t["cargo_qty"] or 0
+            roll, share_roll, trace_roll = self.rng.random(), self.rng.uniform(0.2, 0.5), self.rng.random()
+            if qty <= 0:
+                continue
+            value = qty * REF_PRICE.get(t["commodity"], 0)
+            p = self.p_belt if (t["toll_paid"] or 0) > 0 else self.p_inner
+            if self.hot in (t["origin"], t["destination"]):
+                p *= self.HOT_MULT
+            p *= min(2.0, max(0.5, value / self.VALUE_REF))
+            sponsor = None
+            c = self.contracts.get(a)
+            if c and c[1] >= r:
+                sponsor = c[0]
+                p += self.PRIV_ADD
+            if self.kinds.get(a) in ("hauler", "privateer"):
+                fee = int(value * self.ESCORT_PCT)
+                if p * value * 0.35 > fee and ref.get_balance(a, "CR") > fee:
+                    self._cr(ref, f"escort-{t['transit_id']}", ((a, "CR", -fee), ("SYSTEM", "CR", fee)))
+                    p *= 1 - self.ESCORT_CUT
+                    self.stats["escorts"] += 1
+                    self.stats["escort_cr"] += fee
+            if roll >= min(0.95, p):
+                continue
+            stolen = int(qty * share_roll)
+            with ref.lock, ref.conn:
+                ref.conn.execute("UPDATE transits SET cargo_qty = cargo_qty - ? WHERE transit_id = ?", (stolen, t["transit_id"]))
+            self.stats["raids"] += 1
+            self.stats["units_stolen"] += stolen
+            self.stats["cr_stolen"] += int(stolen * REF_PRICE.get(t["commodity"], 0))
+            if sponsor:
+                self.stats["privateer_raids"] += 1
+                cut = int(stolen * self.PRIV_SHARE)
+                self._cr(ref, f"privateer-cut-{t['transit_id']}", ((sponsor, t["commodity"], cut), ("SYSTEM", t["commodity"], -cut)))
+                if trace_roll < self.PRIV_TRACE:
+                    fine = min(self.PRIV_COST * self.PRIV_FINE, max(0, ref.get_balance(sponsor, "CR")))
+                    self._cr(ref, f"privateer-fine-{t['transit_id']}", ((sponsor, "CR", -fine), ("SYSTEM", "CR", fine)))
+                    self.stats["privateers_traced"] += 1
+                    self.stats["fines_cr"] += fine
+
+
 def charge_docking_fees(ref: AgoraReferee, fee: int) -> int:
     """Issue #73 prototype: every docked fleet pays `fee` CR per round to
     SYSTEM (balanced ledger entries). A fleet that cannot pay is charged what
@@ -1217,7 +1328,7 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
         contracts: bool = False, dock_fee: int = 0, owned_contracts: bool = False,
         fog: Optional[tuple] = None, peer: bool = False, corporate: bool = False,
         equity_mm: Optional[tuple] = None, exchange: Optional[tuple] = None, vol: Optional[float] = None,
-        bond: float = 0.0, hazards: Optional[tuple] = None,
+        bond: float = 0.0, hazards: Optional[tuple] = None, piracy: Optional[tuple] = None,
         theta: Optional[float] = None, spread_scale: Optional[float] = None) -> dict:
     """spread_scale compresses each good's base price toward its four-station
     mean (1.0 = live, 0.5 = half the gap). It edits agora.spatial.BASE_PRICES
@@ -1233,7 +1344,7 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
     try:
         return _run(scenario, genesis, seed, rounds, mode, check_every, depot_model, band_pct, reactive_bands,
                     contracts, dock_fee, owned_contracts, fog, peer, corporate, equity_mm, exchange, vol, theta,
-                    bond, hazards)
+                    bond, hazards, piracy)
     finally:
         for st, v in saved.items():
             spatial_mod.BASE_PRICES[st].update(v)
@@ -1241,7 +1352,7 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
 
 def _run(scenario, genesis, seed, rounds, mode, check_every, depot_model, band_pct, reactive_bands,
          contracts, dock_fee, owned_contracts, fog, peer, corporate, equity_mm, exchange, vol, theta,
-         bond=0.0, hazards=None) -> dict:
+         bond=0.0, hazards=None, piracy=None) -> dict:
     # Reactive depots are the referee's own implementation (agora/referee.py,
     # AGORA_DEPOT_MODEL), so these numbers describe what would ship.
     # corporate: claimed contracts with penalties, debt, distress share
@@ -1267,7 +1378,7 @@ def _run(scenario, genesis, seed, rounds, mode, check_every, depot_model, band_p
     if theta is not None:
         ref.spatial.theta = theta
     def build(a: str, kind: str):
-        if kind == "hauler":
+        if kind in ("hauler", "privateer"):
             return Hauler(a, tolerate_halts=(mode == "tolerant"))
         if kind == "novice":
             return Novice(a, seed=seed)
@@ -1288,6 +1399,7 @@ def _run(scenario, genesis, seed, rounds, mode, check_every, depot_model, band_p
         cboard.contractors = {a for a, k in SCENARIOS[scenario].items() if k in CONTRACTORS}
         cboard.bond_pct = bond
     hz = Hazards(hazards[0], hazards[1], seed) if hazards else None
+    pir = Piracy(piracy[0], piracy[1], seed, SCENARIOS[scenario]) if piracy else None
     corp = Corporate(ref, cboard, SCENARIOS[scenario], seed) if corporate else None
     fogger = Fog(fog[0], fog[1], seed) if fog else None
     desk = PeerDesk(ref) if peer else None
@@ -1325,6 +1437,8 @@ def _run(scenario, genesis, seed, rounds, mode, check_every, depot_model, band_p
                 fleets[a].act(ref, views[a], stats)
         if hz is not None:
             hz.step(ref)
+        if pir is not None:
+            pir.step(ref, live)
         ref.step_round()
         if corp is not None:
             corp.settle()
@@ -1361,6 +1475,8 @@ def _run(scenario, genesis, seed, rounds, mode, check_every, depot_model, band_p
         }
     if hz is not None:
         extra["hazards"] = hz.stats
+    if pir is not None:
+        extra["piracy"] = pir.stats
     if bond:
         extra["bond_pct"] = bond
     return {**extra,
@@ -1437,6 +1553,8 @@ def main() -> int:
     ap.add_argument("--hazards", type=float, nargs=2, metavar=("P_DELAY", "P_LOSS"), default=None,
                     help="per-trip chance of a 1-3 round delay and of losing 30-70%% of the cargo")
     ap.add_argument("--penalty", type=float, default=None, help="contract lapse penalty (default 0.5)")
+    ap.add_argument("--piracy", type=float, nargs=2, metavar=("P_BELT", "P_INNER"), default=None,
+                    help="#145 raid chance per trip on belt and inner routes, before value/hot-route/escort/privateers")
     ap.add_argument("--json", action="store_true", help="print raw results as JSON")
     ap.add_argument("--hang-timeout", type=int, default=300, help="dump stacks and exit if a run hangs")
     args = ap.parse_args()
@@ -1461,7 +1579,8 @@ def main() -> int:
                                                   if args.equity_mm else None),
                                        exchange=tuple(args.exchange) if args.exchange else None,
                                        vol=args.vol, theta=args.theta, spread_scale=args.spread_scale,
-                                       bond=args.bond, hazards=tuple(args.hazards) if args.hazards else None))
+                                       bond=args.bond, hazards=tuple(args.hazards) if args.hazards else None,
+                                       piracy=tuple(args.piracy) if args.piracy else None))
     faulthandler.cancel_dump_traceback_later()
 
     if args.json:
