@@ -18,6 +18,7 @@ to SYSTEM) at zero. Leaderboard net worth is reported alongside.
 
 Usage:
   python3 tools/economy_sim.py                      # default scenario set
+  python3 tools/economy_sim.py --depot-model reactive --band-pct 0.25 --drip 25 5
   python3 tools/economy_sim.py --rounds 500 --seeds 3
   python3 tools/economy_sim.py --scenario haulers4 --genesis planet
 """
@@ -236,6 +237,97 @@ class Idler:
 STRATEGY = {"hauler": Hauler, "maker": Maker, "idler": Idler}
 
 
+# ------------------------------------------------------------ reactive depots
+
+class ReactiveDepots:
+    """Prototype depot model, simulator-only (the referee is untouched):
+
+    * finite shelf: each depot sells from a shelf of at most TARGET units,
+      restocked by a per-round production drip (the cheapest station for a
+      good produces the most);
+    * finite appetite: each depot buys into a hold of at most TARGET units,
+      drained by a per-round consumption drip (the dearest station consumes
+      the most);
+    * inventory-skewed prices: the ask rises as the shelf empties and the
+      bid falls as the hold fills.
+
+    Installed by replacing the referee's _refresh_depot_orders_locked, which
+    step_round() already calls every round.
+    """
+
+    TARGET = 2000
+    MAIN_DRIP = 100
+    SIDE_DRIP = 20
+    SKEW = 0.5
+
+    def __init__(self, ref: AgoraReferee):
+        from agora.order_book import Order  # noqa: F401  (import check)
+        self.ref = ref
+        self.shelf = {}
+        self.hold = {}
+        self.last = {}
+        self.prod = {}
+        self.cons = {}
+        for c in TRADED:
+            cheap = min(STATIONS, key=lambda s: BASE_PRICES[s][c])
+            dear = max(STATIONS, key=lambda s: BASE_PRICES[s][c])
+            for st in STATIONS:
+                self.shelf[(st, c)] = self.TARGET // 2
+                self.hold[(st, c)] = 0
+                self.prod[(st, c)] = self.MAIN_DRIP if st == cheap else self.SIDE_DRIP
+                self.cons[(st, c)] = self.MAIN_DRIP if st == dear else self.SIDE_DRIP
+
+    def install(self) -> None:
+        self.ref._refresh_depot_orders_locked = self.refresh_locked
+        with self.ref.lock, self.ref.conn:
+            self.refresh_locked()
+
+    def refresh_locked(self) -> None:
+        from agora.order_book import Order, OrderBook
+        ref = self.ref
+        for st in STATIONS:
+            depot = f"depot_{st}"
+            cr_budget = max(0, ref.get_balance(depot, "CR"))
+            for c in TRADED:
+                key = (st, c)
+                bal = ref.get_balance(depot, c)
+                if key in self.last:
+                    moved = bal - self.last[key]
+                    if moved < 0:
+                        self.shelf[key] = max(0, self.shelf[key] + moved)
+                    elif moved > 0:
+                        self.hold[key] += moved
+                self.shelf[key] = min(self.TARGET, self.shelf[key] + self.prod[key])
+                self.hold[key] = max(0, self.hold[key] - self.cons[key])
+
+                book = ref.books.setdefault(st, {}).setdefault(c, OrderBook(instrument=c))
+                book.bids = [o for o in book.bids if o.agent_id != depot]
+                book.asks = [o for o in book.asks if o.agent_id != depot]
+                ref.conn.execute("DELETE FROM orders WHERE agent_id = ? AND station_id = ? AND instrument = ? AND status = 'open'",
+                                 (depot, st, c))
+
+                spot = ref.spatial.get_station_price(st, c) if ref.spatial else BASE_PRICES[st][c]
+                shelf_ratio = self.TARGET / max(self.shelf[key], self.TARGET * 0.05)
+                ask = max(2, round(spot * 1.03 * min(3.0, shelf_ratio ** self.SKEW)))
+                bid = max(1, min(ask - 1, round(spot * 0.97 * (self.TARGET / (self.TARGET + self.hold[key])) ** self.SKEW)))
+                ask_qty = min(self.shelf[key], max(0, bal))
+                bid_qty = min(max(0, self.TARGET - self.hold[key]), cr_budget // bid)
+                cr_budget -= bid_qty * bid
+
+                seq = ref.current_seq
+                for side, price, qty in (("bid", bid, bid_qty), ("ask", ask, ask_qty)):
+                    if qty <= 0:
+                        continue
+                    oid = f"{depot}-{c.lower()}-{side}-r{ref.current_round}-rx"
+                    o = Order(order_id=oid, agent_id=depot, instrument=c, side=side,
+                              qty=qty, limit_price=price, seq_seen=seq)
+                    (book._insert_bid if side == "bid" else book._insert_ask)(o)
+                    ref.conn.execute(
+                        "INSERT OR REPLACE INTO orders (order_id, agent_id, instrument, side, qty, limit_price, seq_seen, status, resolved_seq, filled_qty, station_id) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, 'open', NULL, 0, ?)", (oid, depot, c, side, qty, price, seq, st))
+                self.last[key] = bal
+
+
 # ------------------------------------------------------------ genesis
 
 def apply_planet_genesis(ref: AgoraReferee) -> None:
@@ -296,11 +388,16 @@ def depot_floor(ref: AgoraReferee) -> int:
 
 # ------------------------------------------------------------ run
 
-def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict", check_every: int = 25) -> dict:
+def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict", check_every: int = 25,
+        depot_model: str = "static", band_pct: Optional[float] = None) -> dict:
     ref = AgoraReferee(depots=True, asymmetric=True)
     ref.new_game(seed=seed, depots=True, asymmetric=True)
     if genesis == "planet":
         apply_planet_genesis(ref)
+    if band_pct is not None:
+        ref.circuit_breaker.band_pct = band_pct
+    if depot_model == "reactive":
+        ReactiveDepots(ref).install()
     fleets = {a: (Hauler(a, tolerate_halts=(mode == "tolerant")) if kind == "hauler" else STRATEGY[kind](a))
               for a, kind in SCENARIOS[scenario].items()}
     start = {a: score(ref, a) for a in FLEETS}
@@ -330,6 +427,7 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
     q = max(1, len(spread) // 4)
     return {
         "scenario": scenario, "genesis": genesis, "mode": mode, "seed": seed, "rounds": rounds,
+        "depot_model": depot_model, "band_pct": ref.circuit_breaker.band_pct,
         "seconds": round(elapsed, 2),
         "fleets": {a: {"strategy": SCENARIOS[scenario][a], "start": round(start[a]), "end": round(end[a]),
                        "pnl": round(end[a] - start[a]), "leaderboard_nw": board.get(a)} for a in FLEETS},
@@ -352,24 +450,33 @@ def main() -> int:
     ap.add_argument("--genesis", choices=["flat", "planet"], action="append")
     ap.add_argument("--mode", choices=["strict", "tolerant"], action="append",
                     help="hauler behaviour at the circuit-breaker band (default: both)")
+    ap.add_argument("--depot-model", choices=["static", "reactive"], default="static",
+                    help="static: today's refill-to-spot depots; reactive: finite shelves, drip restock, inventory-skewed prices")
+    ap.add_argument("--band-pct", type=float, default=None, help="override the circuit-breaker band (default 0.10)")
+    ap.add_argument("--drip", type=int, nargs=2, metavar=("MAIN", "SIDE"), default=None,
+                    help="reactive depots: per-round restock/consumption at the main and other stations (default 100 20)")
     ap.add_argument("--json", action="store_true", help="print raw results as JSON")
     ap.add_argument("--hang-timeout", type=int, default=300, help="dump stacks and exit if a run hangs")
     args = ap.parse_args()
 
+    if args.drip:
+        ReactiveDepots.MAIN_DRIP, ReactiveDepots.SIDE_DRIP = args.drip
     faulthandler.dump_traceback_later(args.hang_timeout, exit=True)
     results = []
     for scen in args.scenario or ["mixed", "haulers4", "idle4"]:
         for gen in args.genesis or ["flat", "planet"]:
             for mode in (args.mode or ["strict", "tolerant"]) if scen != "idle4" else ["strict"]:
                 for seed in range(1, args.seeds + 1):
-                    results.append(run(scen, gen, seed, args.rounds, mode))
+                    results.append(run(scen, gen, seed, args.rounds, mode,
+                                       depot_model=args.depot_model, band_pct=args.band_pct))
     faulthandler.cancel_dump_traceback_later()
 
     if args.json:
         print(json.dumps(results, indent=2))
         return 0
     for r in results:
-        print(f"\n== {r['scenario']} / {r['genesis']} genesis / {r['mode']} / seed {r['seed']} / {r['rounds']} rounds ({r['seconds']}s)")
+        print(f"\n== {r['scenario']} / {r['genesis']} genesis / {r['mode']} / {r['depot_model']} depots, band {r['band_pct']:.0%} "
+              f"/ seed {r['seed']} / {r['rounds']} rounds ({r['seconds']}s)")
         for a, f in r["fleets"].items():
             print(f"  {a:7} {f['strategy']:7} start {f['start']:>8} end {f['end']:>8} pnl {f['pnl']:>+8}  board {f['leaderboard_nw']}")
         print(f"  fills {r['fills']}  transits {r['transits']}  halts {r['halts_total']}  "

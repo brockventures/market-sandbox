@@ -17,6 +17,14 @@ class TestEconomySim(unittest.TestCase):
         self.assertEqual(r["fleets"]["aerial"]["pnl"], 0)  # idler never trades
         self.assertIsNone(r["first_invariant_failure"])
 
+    def test_reactive_depots_run_clean(self):
+        r = run("haulers4", "flat", seed=1, rounds=40, mode="tolerant", check_every=10,
+                depot_model="reactive", band_pct=0.25)
+        self.assertEqual(r["depot_model"], "reactive")
+        self.assertGreater(r["transits"], 0)
+        self.assertIsNone(r["first_negative_depot_round"])
+        self.assertIsNone(r["first_invariant_failure"])
+
     def test_planet_genesis_preserves_value(self):
         r = run("idle4", "planet", seed=1, rounds=1)
         for f in r["fleets"].values():
