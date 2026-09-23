@@ -239,6 +239,69 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
             for h in recent[:8]:
                 out.append(f"- round {h['round']}: {h['agent_id']}: {h['note']}")
         out.append("")
+    pir = getattr(ref, 'piracy', None)
+    if pir is not None and pir.enabled:
+        from agora import piracy as P
+        belt, inner = pir.odds
+        hot, until = pir.hot_station(rnd), pir.hot_until(rnd)
+        pct = lambda x: f"{x * 100:g}%"
+        out.append("## Piracy")
+        out.append(f"**Hot station now: {hot.capitalize()}**, until round {until}. Trips to or from it carry "
+                   f"{P.HOT_MULT:g}x the raid risk. A new hot station is named every {P.HOT_EVERY} rounds.")
+        out.append("")
+        out.append(f"Every trip with cargo can be raided, rolled once when you leave. Base chance: {pct(belt)} on belt "
+                   f"routes (the tolled ones, to or from Ceres), {pct(inner)} on inner routes. Raiders follow value: "
+                   f"the chance is scaled x{P.VALUE_MULT[0]:g} to x{P.VALUE_MULT[1]:g} by cargo value against "
+                   f"{P.VALUE_REF:,} CR (value = qty x the good's average base price: "
+                   + ", ".join(f"{c} {v:g}" for c, v in P.REF_PRICE.items()) + ").")
+        out.append(f"- Escort: add `\"escort\": true` to your move (`POST /stations/transit`). It costs "
+                   f"{pct(P.ESCORT_PCT)} of the cargo's value in CR and cuts the raid chance by {pct(P.ESCORT_CUT)}.")
+        out.append(f"- If raiders stop you, your move's response has a `piracy.demand`: pay a ransom of "
+                   f"{pct(P.RANSOM_PCT)} of the cargo's value in CR, or surrender {pct(P.SURRENDER_PCT)} of the cargo. "
+                   f"Answer before the next round: `POST /referee/piracy/<transit_id>/respond "
+                   f"{{\"choice\": \"pay|surrender|fight\"}}`. No answer counts as fight.")
+        out.append(f"- Fight: {pct(P.FIGHT_ESCAPE)} chance you escape with nothing lost; otherwise you lose "
+                   f"{pct(P.FIGHT_LOSS)} of the cargo and arrive {P.FIGHT_DELAY[0]}-{P.FIGHT_DELAY[1]} rounds late.")
+        out.append(f"- Black market: stolen goods are fenced at {P.FENCE_STATION.capitalize()}'s depot, "
+                   f"so its supply rises and its price dips for a while.")
+        out.append(f"- Privateers: `POST /referee/privateers {{\"target\": \"<fleet>\"}}` costs {P.PRIV_COST:,} CR and "
+                   f"adds {pct(P.PRIV_ADD)} to that fleet's raid chance for {P.PRIV_ROUNDS} rounds. You get "
+                   f"{pct(P.PRIV_SHARE)} of whatever is taken from it. Each raid you sponsor has a {pct(P.PRIV_TRACE)} "
+                   f"chance to be traced: a fine of {P.PRIV_FINE}x your fee and your name in this briefing. One "
+                   f"contract at a time; not against yourself.")
+        out.append("- Odds, recent raids and contracts: `GET /referee/piracy`.")
+        pending = [r for r in pir.recent_raids(max(0, rnd - 2)) if r['status'] == 'pending']
+        if pending:
+            out.append("")
+            out.append("Demands awaiting an answer:")
+            for r in pending:
+                out.append(f"- {r['agent_id']} ({r['transit_id']}): pay {r['ransom']} CR or surrender "
+                           f"{r['surrender_qty']} {r['commodity']}, answer before round {r['round'] + 1}")
+        recent = [r for r in pir.recent_raids(max(0, rnd - 10)) if r['status'] != 'pending']
+        if recent:
+            out.append("")
+            out.append("Recent raids:")
+            for r in recent[:8]:
+                how = {'paid': f"paid {r['cr_taken']} CR", 'surrendered': f"gave up {r['qty_taken']} {r['commodity']}",
+                       'escaped': "fought and escaped", 'lost': f"fought and lost {r['qty_taken']} {r['commodity']}, "
+                                                                f"{r['delay']} round(s) late",
+                       'void': "trip ended before it was settled"}.get(r['status'], r['status'])
+                tag = " (timed out)" if r['timed_out'] else ""
+                out.append(f"- round {r['round']}: {r['agent_id']}, {r['origin'].capitalize()} to "
+                           f"{r['destination'].capitalize()}: {how}{tag}")
+        contracts = pir.active_contracts(viewer)
+        if contracts:
+            out.append("")
+            out.append("Privateer contracts in force: " + "; ".join(
+                f"against {c['target']}, {c['rounds_left']} rounds left"
+                + (f" (sponsor: {c['sponsor']})" if c['sponsor'] else "") for c in contracts))
+        traced = pir.traced(max(0, rnd - P.PRIV_ROUNDS))
+        if traced:
+            out.append("")
+            for t in traced:
+                out.append(f"- **Traced, round {t['round']}:** {t['sponsor']} sponsored the raid on {t['agent_id']} "
+                           f"and was fined {t['fine']} CR.")
+        out.append("")
     if getattr(ref, 'peer_trades', False):
         out.append("## Trades between fleets")
         out.append("A fleet docked at a station can offer goods it holds there. Any fleet, anywhere, can accept. "
