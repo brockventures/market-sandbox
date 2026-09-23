@@ -32,6 +32,14 @@ class TestEconomySim(unittest.TestCase):
         self.assertGreater(r["contracts"]["units_delivered"], 0)
         self.assertIsNone(r["first_invariant_failure"])
 
+    def test_novices_trade_badly_but_keep_the_ledger_clean(self):
+        r = run("novice4", "flat", seed=1, rounds=60, check_every=20,
+                depot_model="reactive", band_pct=0.25)
+        self.assertIsNone(r["first_invariant_failure"])
+        self.assertGreater(r["bad_orders"], 0)
+        self.assertGreater(r["transits"], 0)
+        self.assertTrue(any(f["pnl"] > 0 for f in r["fleets"].values()))
+
     def test_dock_fee_charges_idlers(self):
         r = run("idle4", "flat", seed=1, rounds=20, dock_fee=10)
         for f in r["fleets"].values():

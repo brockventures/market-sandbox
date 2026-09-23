@@ -10,6 +10,11 @@ Strategies:
   hauler   buys where a good is cheap, flies it, sells where it is dear
   maker    quotes both sides at its home station, joining the depot touch
   idler    does nothing
+  novice   a zero-context LLM player reading /referee/briefing: sees the
+           whole board, but picks routes loosely (softmax, not argmax),
+           sends malformed or misplaced orders, often prices inside the
+           spread instead of hitting the depot, forgets to cancel stale
+           orders, and sometimes forgets to buy FUEL before a MOVE
 
 Scoring uses cash plus inventory at a FIXED reference price (the mean
 BASE_PRICES across stations), not the leaderboard: the leaderboard marks
@@ -26,6 +31,8 @@ Usage:
 import argparse
 import faulthandler
 import json
+import math
+import random
 import statistics
 import sys
 import time
@@ -52,6 +59,10 @@ SCENARIOS = {
     "haulers4": {f: "hauler" for f in FLEETS},
     "idle4": {f: "idler" for f in FLEETS},
     "market": {"zero": "hauler", "amos": "hauler", "marvin": "inside_maker", "aerial": "hauler"},
+    # Raw-LLM players (Ryan, #agent-chat 2026-09-22 20:53): every fleet is a
+    # zero-context agent working from the briefing page.
+    "novice4": {f: "novice" for f in FLEETS},
+    "novice_vs_haulers": {"zero": "hauler", "amos": "hauler", "marvin": "novice", "aerial": "novice"},
 }
 
 
@@ -344,6 +355,125 @@ class Idler:
         return
 
 
+class Novice:
+    """A zero-context LLM player working from /referee/briefing.
+
+    It sees what the briefing shows (every station's depot quotes, routes,
+    its own holdings), so information is not the handicap; execution is.
+    Each knob below is a behaviour tonight's #agent-chat thread predicted:
+      p_bad         order rejected outright (wrong station, no AT, bad qty)
+      p_inside      prices inside the spread instead of hitting the depot,
+                    which rests on the book where another fleet can take it
+      p_keep        leaves last round's resting orders up instead of cancelling
+      p_no_fuel     issues MOVE without topping up FUEL first
+      temperature   softmax over route margins instead of the single best
+    """
+
+    def __init__(self, agent: str, seed: int = 0, p_bad: float = 0.12, p_inside: float = 0.4,
+                 p_keep: float = 0.5, p_no_fuel: float = 0.15, temperature: float = 0.35):
+        self.agent = agent
+        self.rng = random.Random(f"{agent}-{seed}")
+        self.p_bad, self.p_inside, self.p_keep = p_bad, p_inside, p_keep
+        self.p_no_fuel, self.temperature = p_no_fuel, temperature
+        self.dest = None  # where the cargo it is buying is meant to go
+
+    def _price(self, side: str, bid: Optional[int], ask: Optional[int]) -> Optional[int]:
+        """Hit the depot, or pick a price strictly inside the spread."""
+        touch = ask if side == "bid" else bid
+        if touch is None:
+            return None
+        if bid and ask and ask - bid >= 2 and self.rng.random() < self.p_inside:
+            return self.rng.randint(bid + 1, ask - 1)
+        return touch
+
+    def _bad_order(self, ref: AgoraReferee, st: str, stats) -> None:
+        """What a confused first-timer sends: an order for a station it is not
+        docked at (the missing-AT case), or one it cannot pay for."""
+        stats["bad_orders"] = stats.get("bad_orders", 0) + 1
+        comm = self.rng.choice(TRADED)
+        if self.rng.random() < 0.6:
+            other = self.rng.choice([x for x in STATIONS if x != st])
+            order(ref, self.agent, "bid", 100, 20, comm, other, "bad")
+        else:
+            order(ref, self.agent, "ask", 10 ** 6, 20, comm, st, "bad")
+
+    def act(self, ref: AgoraReferee, quotes, stats) -> None:
+        st = location(ref, self.agent)
+        if st is None:
+            return
+        if self.rng.random() < self.p_bad:
+            self._bad_order(ref, st, stats)
+            return
+        if self.rng.random() >= self.p_keep:
+            cancel_all(ref, self.agent)
+        inv = inventory(ref, self.agent)
+
+        # Holding cargo: sell it here if this station pays the most, else fly.
+        for comm in ("FRAG", "FOOD", "ORE"):
+            if inv[comm] <= 0:
+                continue
+            best_dest = max(STATIONS, key=lambda d: quotes[d][comm]["best_bid"] or 0)
+            target = self.dest or best_dest
+            if st == target or st == best_dest:
+                q = quotes[st][comm]
+                px = self._price("ask", q["best_bid"], q["best_ask"])
+                if px and band_ok(ref, st, comm, px):
+                    order(ref, self.agent, "ask", inv[comm], px, comm, st, "sell")
+                self.dest = None
+                return
+            self._fly(ref, st, target, comm, inv, quotes, stats)
+            return
+
+        # Empty hold: choose a route by softmax over profit per round.
+        options = []
+        for dest in STATIONS:
+            route = get_route(st, dest, ref.current_round) if dest != st else None
+            if not route:
+                continue
+            for comm in ("FRAG", "FOOD", "ORE"):
+                ask, bid = quotes[st][comm]["best_ask"], quotes[dest][comm]["best_bid"]
+                if not ask or not bid:
+                    continue
+                qty = min(500, max(0, (inv["CR"] - 300) // ask))
+                if qty <= 0:
+                    continue
+                fuel_cost = route["fuel"] * (quotes[st]["FUEL"]["best_ask"] or 20)
+                profit = (bid - ask) * qty - fuel_cost - route.get("toll", 0)
+                if profit > 0:
+                    options.append((profit / route["rounds"], dest, comm, qty))
+        if not options:
+            return
+        top = max(o[0] for o in options)
+        weights = [math.exp((o[0] - top) / (self.temperature * top)) for o in options]
+        _, dest, comm, qty = self.rng.choices(options, weights=weights)[0]
+        q = quotes[st][comm]
+        px = self._price("bid", q["best_bid"], q["best_ask"])
+        if px is None or not band_ok(ref, st, comm, px):
+            stats["band_blocked"] += 1
+            return
+        order(ref, self.agent, "bid", qty, px, comm, st, "buy")
+        self.dest = dest
+        held = ref.get_balance(self.agent, comm)
+        if held > 0 and px >= (q["best_ask"] or 10 ** 9):
+            self._fly(ref, st, dest, comm, inventory(ref, self.agent), quotes, stats)
+        # else: the bid rests inside the spread; next round it flies whatever filled
+
+    def _fly(self, ref: AgoraReferee, st: str, dest: str, comm: str, inv, quotes, stats) -> None:
+        route = get_route(st, dest, ref.current_round)
+        need = route["fuel"] - inv["FUEL"]
+        if need > 0 and self.rng.random() >= self.p_no_fuel:
+            fa = quotes[st]["FUEL"]["best_ask"]
+            if fa and inv["CR"] >= need * fa and band_ok(ref, st, "FUEL", fa):
+                order(ref, self.agent, "bid", need, fa, "FUEL", st, "fuel")
+        held = ref.get_balance(self.agent, comm)
+        cancel_all(ref, self.agent)
+        t = ref.initiate_transit(agent_id=self.agent, destination=dest, commodity=comm, cargo_qty=held)
+        if t.get("status") == "in_transit":
+            stats["transits"] += 1
+        else:
+            stats["rejected_moves"] = stats.get("rejected_moves", 0) + 1
+
+
 STRATEGY = {"hauler": Hauler, "maker": Maker, "idler": Idler,
             "inside_maker": lambda a: Maker(a, clip=100, inside=True)}
 
@@ -418,8 +548,13 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
     ref.new_game(seed=seed, depots=True, asymmetric=True, depot_model=depot_model)
     if genesis == "planet":
         apply_planet_genesis(ref)
-    fleets = {a: (Hauler(a, tolerate_halts=(mode == "tolerant")) if kind == "hauler" else STRATEGY[kind](a))
-              for a, kind in SCENARIOS[scenario].items()}
+    def build(a: str, kind: str):
+        if kind == "hauler":
+            return Hauler(a, tolerate_halts=(mode == "tolerant"))
+        if kind == "novice":
+            return Novice(a, seed=seed)
+        return STRATEGY[kind](a)
+    fleets = {a: build(a, kind) for a, kind in SCENARIOS[scenario].items()}
     start = {a: score(ref, a) for a in FLEETS}
     stats = {"transits": 0, "halts_caused": 0, "band_blocked": 0, "stranded_events": 0, "contract_deliveries": 0}
     cboard = ContractBoard(ref, seed) if contracts else None
@@ -467,6 +602,8 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
         "halts_total": halts,
         "band_blocked_checks": stats["band_blocked"],
         "stranded_events": stats["stranded_events"],
+        "bad_orders": stats.get("bad_orders", 0),
+        "rejected_moves": stats.get("rejected_moves", 0),
         "ore_spread_by_quarter": [round(statistics.mean(spread[i:i + q]), 1) for i in range(0, len(spread), q)][:4],
         "first_negative_depot_round": first_negative_depot,
         "first_invariant_failure": first_invariant_failure,
