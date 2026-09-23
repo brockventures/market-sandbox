@@ -10,6 +10,8 @@ Strategies:
   hauler   buys where a good is cheap, flies it, sells where it is dear
   maker    quotes both sides at its home station, joining the depot touch
   idler    does nothing
+  aggregator  (#93) stays docked, rests bids for goods an all-or-nothing
+           contract at its station needs, and delivers once it holds the lot
 
 Scoring uses cash plus inventory at a FIXED reference price (the mean
 BASE_PRICES across stations), not the leaderboard: the leaderboard marks
@@ -21,6 +23,8 @@ Usage:
   python3 tools/economy_sim.py --depot-model reactive --band-pct 0.25 --drip 25 5
   python3 tools/economy_sim.py --rounds 500 --seeds 3
   python3 tools/economy_sim.py --scenario haulers4 --genesis planet
+  python3 tools/economy_sim.py --scenario logistics --depot-model reactive --band-pct 0.25 \
+      --contracts --hold 250 --contract-qty 600 1200 --contract-mode whole   # #93
 """
 
 import argparse
@@ -52,6 +56,8 @@ SCENARIOS = {
     "haulers4": {f: "hauler" for f in FLEETS},
     "idle4": {f: "idler" for f in FLEETS},
     "market": {"zero": "hauler", "amos": "hauler", "marvin": "inside_maker", "aerial": "hauler"},
+    # #93: three haulers and one docked aggregator that buys from them.
+    "logistics": {"zero": "hauler", "amos": "hauler", "marvin": "aggregator", "aerial": "hauler"},
 }
 
 
@@ -80,6 +86,19 @@ def band_ok(ref: AgoraReferee, st: str, comm: str, price: int) -> bool:
     return (lo is None or price >= lo) and (hi is None or price <= hi)
 
 
+def fleet_bid(ref: AgoraReferee, st: str, comm: str, exclude: str) -> tuple:
+    """Best resting bid for `comm` at `st` from another fleet (not a depot):
+    (price, qty), or (0, 0). get_depot_summary shows depot quotes only, so a
+    fleet reading just that never sees another fleet's bid."""
+    book = ref.books.get(st, {}).get(comm)
+    bids = [o for o in (book.bids if book else [])
+            if o.agent_id in FLEETS and o.agent_id != exclude and o.remaining_qty > 0]
+    if not bids:
+        return (0, 0)
+    top = max(o.limit_price for o in bids)
+    return (top, sum(o.remaining_qty for o in bids if o.limit_price == top))
+
+
 def location(ref: AgoraReferee, agent: str) -> Optional[str]:
     loc = ref.get_vessel_location(agent)
     return loc["station_id"] if loc.get("status") == "docked" else None
@@ -106,9 +125,17 @@ class ContractBoard:
     DEADLINE = (6, 10)
     PREMIUM = (1.3, 1.6)
 
-    def __init__(self, ref: AgoraReferee, seed: int):
+    def __init__(self, ref: AgoraReferee, seed: int, qty: Optional[tuple] = None, whole: bool = False,
+                 deadline: Optional[tuple] = None):
         import random
         self.ref = ref
+        if qty:
+            self.QTY = tuple(qty)
+        if deadline:
+            self.DEADLINE = tuple(deadline)
+        # whole (#93): a contract is filled in ONE delivery of its full size or
+        # not at all, so a lot bigger than a hold cannot be met by one trip.
+        self.whole = whole
         self.rng = random.Random(seed * 7919)
         self.open: List[dict] = []
         self.delivered = 0
@@ -143,7 +170,7 @@ class ContractBoard:
             if c["station"] != st or c["remaining"] <= 0:
                 continue
             qty = min(c["remaining"], ref.get_balance(agent, c["comm"]))
-            if qty <= 0:
+            if qty <= 0 or (self.whole and qty < c["remaining"]):
                 continue
             with ref.lock, ref.conn:
                 txn = f"contract-{c['id']}-{agent}-{ref.current_round}"
@@ -187,8 +214,9 @@ class Hauler:
     """Greedy one-hop arbitrage: sell cargo on arrival, then buy the single
     best (commodity, destination) margin net of fuel and toll, and fly."""
 
-    def __init__(self, agent: str, tolerate_halts: bool = False):
+    def __init__(self, agent: str, tolerate_halts: bool = False, hold: Optional[int] = None):
         self.agent = agent
+        self.hold = hold  # #93: max units carried per trip; None = unlimited
         self.stranded = False
         # strict: never place an order outside the circuit-breaker band.
         # tolerant: buy at the depot ask even if that trips a halt, then wait
@@ -197,9 +225,13 @@ class Hauler:
         self.tolerate_halts = tolerate_halts
         self.plan = None  # (dest, comm) while waiting on an auction fill
 
-    def _hauling_value(self, quotes, st: str, comm: str) -> int:
+    def _bid(self, ref, quotes, st: str, comm: str) -> int:
+        """Best bid for `comm` at `st` on the whole book: depot or another fleet."""
+        return max(quotes[st][comm]["best_bid"] or 0, fleet_bid(ref, st, comm, self.agent)[0])
+
+    def _hauling_value(self, ref, quotes, st: str, comm: str) -> int:
         """Best bid for `comm` at any other station."""
-        return max((quotes[d][comm]["best_bid"] or 0) for d in STATIONS if d != st)
+        return max(self._bid(ref, quotes, d, comm) for d in STATIONS if d != st)
 
     def act(self, ref: AgoraReferee, quotes, stats) -> None:
         st = location(ref, self.agent)
@@ -228,13 +260,19 @@ class Hauler:
         #    it is cargo to haul (e.g. a per-planet genesis export).
         for comm in ("FRAG", "FOOD", "ORE"):
             qty = inv[comm]
+            fb, fq = fleet_bid(ref, st, comm, self.agent)
+            if qty > 0 and fb and fb >= (quotes[st][comm]["best_bid"] or 0) and band_ok(ref, st, comm, fb):
+                # Another fleet outbids the depot here: sell into it first.
+                if order(ref, self.agent, "ask", min(qty, fq), fb, comm, st, "sellf").get("status") != "circuit_breaker_halted":
+                    stats["sold_to_fleet"] = stats.get("sold_to_fleet", 0) + min(qty, fq)
+                qty = ref.get_balance(self.agent, comm)
             bid = quotes[st][comm]["best_bid"]
-            if qty > 0 and bid and bid >= self._hauling_value(quotes, st, comm) and band_ok(ref, st, comm, bid):
+            if qty > 0 and bid and bid >= self._hauling_value(ref, quotes, st, comm) and band_ok(ref, st, comm, bid):
                 order(ref, self.agent, "ask", min(qty, quotes[st][comm]["bid_depth"] or qty), bid, comm, st, "sell")
         inv = inventory(ref, self.agent)
         for comm in ("FRAG", "FOOD", "ORE"):
             if inv[comm] > 0:
-                dest = max((d for d in STATIONS if d != st), key=lambda d: quotes[d][comm]["best_bid"] or 0)
+                dest = max((d for d in STATIONS if d != st), key=lambda d: self._bid(ref, quotes, d, comm))
                 self._fly(ref, st, dest, comm, inv, stats)
                 return
 
@@ -249,11 +287,17 @@ class Hauler:
             for comm in ("FRAG", "FOOD", "ORE"):
                 ask = quotes[st][comm]["best_ask"]
                 bid = quotes[dest][comm]["best_bid"] or 0
-                cap = 500
+                cap = 500 if self.hold is None else min(500, self.hold)
+                fb, fq = fleet_bid(ref, dest, comm, self.agent)
+                if fb > bid:
+                    bid, cap = fb, min(cap, fq)
                 if board is not None:
                     c = board.best_for(dest, comm, ref.current_round + route["rounds"])
-                    if c and c["price"] > bid:
-                        bid, cap = c["price"], min(500, c["remaining"])
+                    # An all-or-nothing lot bigger than one hold is out of reach alone.
+                    solo = c and (not board.whole or self.hold is None or c["remaining"] <= self.hold)
+                    if solo and c["price"] > bid:
+                        bid = c["price"]
+                        cap = min(c["remaining"], 500 if self.hold is None else min(500, self.hold))
                 if not ask or not bid:
                     continue
                 if not band_ok(ref, st, comm, ask) and not self.tolerate_halts:
@@ -301,6 +345,8 @@ class Hauler:
                 return
         self.stranded = False
         held = ref.get_balance(self.agent, comm)
+        if self.hold is not None:
+            held = min(held, self.hold)
         if held > 0:
             cancel_all(ref, self.agent)
             t = ref.initiate_transit(agent_id=self.agent, destination=dest, commodity=comm, cargo_qty=held)
@@ -336,6 +382,58 @@ class Maker:
                 order(ref, self.agent, "ask", self.clip, ask, comm, st, "ma")
 
 
+class Aggregator:
+    """#93: stays docked. For each open all-or-nothing contract at its station
+    it rests a bid for the shortfall, priced between the best depot bid
+    anywhere and the contract price, and delivers once it holds the full lot.
+    local_buy False: never pay the local depot (bids stay under its ask), so
+    every unit comes from another fleet. True: also lift the local depot's
+    ask when it is under the contract price, the rational move while the
+    station depot sells the good."""
+
+    def __init__(self, agent: str, local_buy: bool = False):
+        self.agent = agent
+        self.local_buy = local_buy
+
+    def act(self, ref: AgoraReferee, quotes, stats) -> None:
+        st = location(ref, self.agent)
+        board = getattr(ref, "_sim_contracts", None)
+        if st is None or board is None:
+            return
+        cancel_all(ref, self.agent)
+        if board.deliver(self.agent, st):
+            stats["contract_deliveries"] += 1
+        for c in sorted(board.open, key=lambda c: -c["price"]):
+            if c["station"] != st or c["remaining"] <= 0:
+                continue
+            comm = c["comm"]
+            short = c["remaining"] - ref.get_balance(self.agent, comm)
+            if short <= 0:
+                continue
+            ask = quotes[st][comm]["best_ask"]
+            if self.local_buy and ask and ask < c["price"] and band_ok(ref, st, comm, ask):
+                order(ref, self.agent, "bid", min(short, quotes[st][comm]["ask_depth"] or 0), ask, comm, st, "agl")
+                short = c["remaining"] - ref.get_balance(self.agent, comm)
+                if short <= 0:
+                    board.deliver(self.agent, st)
+                    continue
+            elsewhere = max((quotes[d][comm]["best_bid"] or 0) for d in STATIONS)
+            price = (elsewhere + c["price"]) // 2
+            if price <= (quotes[st][comm]["best_bid"] or 0):
+                continue
+            if not self.local_buy and ask:
+                # Stay under the local depot's ask: otherwise this resting bid
+                # just crosses it and the "aggregator" is buying from the depot.
+                price = min(price, ask - 1)
+            b = ref.circuit_breaker.get_bands(st, comm)
+            if b.get("upper_limit") is not None:
+                price = min(price, b["upper_limit"])
+            cash = ref.get_balance(self.agent, "CR") - 200
+            qty = min(short, cash // max(1, price))
+            if qty > 0 and band_ok(ref, st, comm, price):
+                order(ref, self.agent, "bid", qty, price, comm, st, "agg")
+
+
 class Idler:
     def __init__(self, agent: str):
         self.agent = agent
@@ -344,7 +442,7 @@ class Idler:
         return
 
 
-STRATEGY = {"hauler": Hauler, "maker": Maker, "idler": Idler,
+STRATEGY = {"hauler": Hauler, "maker": Maker, "idler": Idler, "aggregator": Aggregator,
             "inside_maker": lambda a: Maker(a, clip=100, inside=True)}
 
 
@@ -410,7 +508,9 @@ def depot_floor(ref: AgoraReferee) -> int:
 
 def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict", check_every: int = 25,
         depot_model: str = "static", band_pct: Optional[float] = None, reactive_bands: bool = True,
-        contracts: bool = False, dock_fee: int = 0) -> dict:
+        contracts: bool = False, dock_fee: int = 0, hold: Optional[int] = None,
+        contract_qty: Optional[tuple] = None, contract_mode: str = "partial", local_buy: bool = False,
+        contract_deadline: Optional[tuple] = None) -> dict:
     # Reactive depots are the referee's own implementation (agora/referee.py,
     # AGORA_DEPOT_MODEL), so these numbers describe what would ship.
     ref = AgoraReferee(depots=True, asymmetric=True, depot_model=depot_model,
@@ -418,11 +518,17 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
     ref.new_game(seed=seed, depots=True, asymmetric=True, depot_model=depot_model)
     if genesis == "planet":
         apply_planet_genesis(ref)
-    fleets = {a: (Hauler(a, tolerate_halts=(mode == "tolerant")) if kind == "hauler" else STRATEGY[kind](a))
-              for a, kind in SCENARIOS[scenario].items()}
+    def make(a, kind):
+        if kind == "hauler":
+            return Hauler(a, tolerate_halts=(mode == "tolerant"), hold=hold)
+        if kind == "aggregator":
+            return Aggregator(a, local_buy=local_buy)
+        return STRATEGY[kind](a)
+    fleets = {a: make(a, kind) for a, kind in SCENARIOS[scenario].items()}
     start = {a: score(ref, a) for a in FLEETS}
     stats = {"transits": 0, "halts_caused": 0, "band_blocked": 0, "stranded_events": 0, "contract_deliveries": 0}
-    cboard = ContractBoard(ref, seed) if contracts else None
+    cboard = ContractBoard(ref, seed, qty=contract_qty, whole=(contract_mode == "whole"),
+                           deadline=contract_deadline) if contracts else None
     ref._sim_contracts = cboard
     first_negative_depot = None
     first_invariant_failure = None
@@ -456,6 +562,8 @@ def run(scenario: str, genesis: str, seed: int, rounds: int, mode: str = "strict
         "depot_model": depot_model, "band_pct": ref.circuit_breaker.band_pct,
         "reactive_bands": reactive_bands,
         "dock_fee": dock_fee, "dock_fees_collected": stats.get("dock_fees", 0),
+        "hold": hold, "contract_mode": contract_mode, "local_buy": local_buy,
+        "units_sold_to_fleets": stats.get("sold_to_fleet", 0),
         "contracts": None if cboard is None else {"posted": cboard.posted, "units_delivered": cboard.delivered,
                                                   "paid": cboard.paid, "expired": cboard.expired},
         "depot_cr_end": {st: ref.get_balance(f"depot_{st}", "CR") for st in STATIONS},
@@ -488,6 +596,15 @@ def main() -> int:
                     help="reactive depots: per-round restock/consumption at the main and other stations (default 100 20)")
     ap.add_argument("--contracts", action="store_true", help="enable the #74 station contract prototype")
     ap.add_argument("--dock-fee", type=int, default=0, help="#73 prototype: CR charged per round to each docked fleet")
+    ap.add_argument("--hold", type=int, default=None, help="#93 prototype: max units a hauler carries per trip")
+    ap.add_argument("--contract-qty", type=int, nargs=2, metavar=("LO", "HI"), default=None,
+                    help="#93: contract size range (default 300 800)")
+    ap.add_argument("--contract-deadline", type=int, nargs=2, metavar=("LO", "HI"), default=None,
+                    help="#93: rounds a contract stays open (default 6 10)")
+    ap.add_argument("--contract-mode", choices=["partial", "whole"], default="partial",
+                    help="#93: whole = a contract is filled in one full delivery or not at all")
+    ap.add_argument("--local-buy", action="store_true",
+                    help="#93: aggregators also buy from their own station's depot when it is under the contract price")
     ap.add_argument("--free-quotes", action="store_true",
                     help="reactive depots: do not hold quotes inside the circuit-breaker band")
     ap.add_argument("--json", action="store_true", help="print raw results as JSON")
@@ -505,7 +622,9 @@ def main() -> int:
                     results.append(run(scen, gen, seed, args.rounds, mode,
                                        depot_model=args.depot_model, band_pct=args.band_pct,
                                        reactive_bands=not args.free_quotes, contracts=args.contracts,
-                                       dock_fee=args.dock_fee))
+                                       dock_fee=args.dock_fee, hold=args.hold,
+                                       contract_qty=args.contract_qty, contract_mode=args.contract_mode,
+                                       local_buy=args.local_buy, contract_deadline=args.contract_deadline))
     faulthandler.cancel_dump_traceback_later()
 
     if args.json:
@@ -520,6 +639,9 @@ def main() -> int:
               f"band-blocked checks {r['band_blocked_checks']}  stranded events {r['stranded_events']}")
         print(f"  Earth ORE bid - Ceres ORE ask, by quarter: {r['ore_spread_by_quarter']}")
         print(f"  depot CR at end: {r['depot_cr_end']}  contracts: {r['contracts']}")
+        if r["hold"] is not None or r["contract_mode"] != "partial":
+            print(f"  hold {r['hold']}  contract mode {r['contract_mode']}  local buy {r['local_buy']}  "
+                  f"units sold to fleets {r['units_sold_to_fleets']}")
         print(f"  first negative depot balance: round {r['first_negative_depot_round']}  "
               f"invariant failure: {r['first_invariant_failure']}")
     return 0
