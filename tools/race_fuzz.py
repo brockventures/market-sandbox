@@ -51,11 +51,22 @@ the exact command line, and the last --last-k ops of every thread; with
 
     python tools/race_fuzz.py --seed 1 --threads 8 --ops 4000 --rounds 40
     python tools/race_fuzz.py --seed 1 --serial --ops 1500      # no concurrency
+
+Hunting past a known finding, and seeing who touched the connection:
+
+    python tools/race_fuzz.py --seed 2 --ops 4000 --rounds 40 \\
+        --weights admin_fleets=20,equity=15 --skip-checks vessels,book-db \\
+        --trace-sql 300000 --keep-db
+
+--trace-sql logs every statement, commit and rollback on the shared
+connection with the thread that issued it, and writes the log next to the
+kept DB on a violation.
 """
 from __future__ import annotations
 
 import argparse
 import collections
+import faulthandler
 import json
 import os
 import random
@@ -149,6 +160,63 @@ def summarize(resp: Any) -> str:
     if not bits and "detail" in resp:
         bits.append(str(resp["detail"]))
     return " ".join(bits)[:160] or "ok"
+
+
+# --------------------------------------------------------------------------- sql trace
+
+def tracing_connection(buf):
+    """A sqlite3.Connection subclass that logs, in Python and before handing
+    over to sqlite, every statement plus commit/rollback and `with conn`
+    exits, tagged with the calling thread and whether that thread holds
+    ref.lock is unknown here -- the thread name is what matters. Logging from
+    Python rather than set_trace_callback matters: the C-level trace callback
+    runs while sqlite holds the connection mutex and needs the GIL, which
+    deadlocks as soon as two threads share the connection."""
+    import sqlite3
+    t0 = time.monotonic()
+
+    def log(kind, sql=""):
+        buf.append((round(time.monotonic() - t0, 5), threading.current_thread().name, kind,
+                    " ".join(str(sql).split())[:220]))
+
+    class TCursor(sqlite3.Cursor):
+        def execute(self, sql, *a):
+            log("exec", sql)
+            return super().execute(sql, *a)
+
+        def executemany(self, sql, *a):
+            log("execmany", sql)
+            return super().executemany(sql, *a)
+
+    class TConn(sqlite3.Connection):
+        def cursor(self, factory=TCursor):
+            return super().cursor(factory)
+
+        def execute(self, sql, *a):
+            log("exec", sql)
+            return super().execute(sql, *a)
+
+        def executemany(self, sql, *a):
+            log("execmany", sql)
+            return super().executemany(sql, *a)
+
+        def executescript(self, sql):
+            log("script", sql[:80])
+            return super().executescript(sql)
+
+        def commit(self):
+            log("COMMIT(explicit)", f"in_transaction={self.in_transaction}")
+            return super().commit()
+
+        def rollback(self):
+            log("ROLLBACK(explicit)", f"in_transaction={self.in_transaction}")
+            return super().rollback()
+
+        def __exit__(self, et, ev, tb):
+            log("ROLLBACK(with-exit)" if et else "COMMIT(with-exit)",
+                f"in_transaction={self.in_transaction}" + (f" exc={et.__name__}: {ev}" if et else ""))
+            return super().__exit__(et, ev, tb)
+    return TConn
 
 
 # --------------------------------------------------------------------------- checker
@@ -297,6 +365,7 @@ class Fuzzer:
         self.check_lock = threading.Lock()
         self.stall: Optional[str] = None
         self.errors_at_last_clean = 0
+        self.skip = {x.strip() for x in (args.skip_checks or "").split(",") if x.strip()}
         w = dict(self.OPS)
         for kv in filter(None, (args.weights or "").split(",")):
             k, _, val = kv.partition("=")
@@ -317,7 +386,19 @@ class Fuzzer:
         for suffix in ("", "-journal", "-wal", "-shm"):
             if os.path.exists(self.db_path + suffix):
                 os.remove(self.db_path + suffix)
-        self.ref = build_referee_from_env(self.db_path)
+        self.sql_trace = collections.deque(maxlen=a.trace_sql) if a.trace_sql else None
+        if self.sql_trace is not None:
+            # Build the referee on a tracing Connection subclass, so every
+            # engine that captured ref.conn at construction is traced too.
+            import agora.referee as _refmod
+            _real = _refmod.sqlite3.connect
+            _refmod.sqlite3.connect = lambda *x, **k: _real(*x, factory=tracing_connection(self.sql_trace), **k)
+            try:
+                self.ref = build_referee_from_env(self.db_path)
+            finally:
+                _refmod.sqlite3.connect = _real
+        else:
+            self.ref = build_referee_from_env(self.db_path)
         if not a.fsync:
             # Commits still happen exactly as in production; this only skips
             # the fsync, which otherwise dominates run time on slow disks.
@@ -398,6 +479,8 @@ class Fuzzer:
             if self.violations:
                 return
             vs = check_invariants(self.ref, self.supply0)
+            if self.skip:
+                vs = [x for x in vs if x[1:].split("]")[0] not in self.skip]
             self.checks_run += 1
             if vs:
                 self.violations = vs
@@ -763,12 +846,16 @@ class Fuzzer:
             for t in threads:
                 t.start()
             last, last_t = -1, time.monotonic()
+            # Backstop for a hang that holds the GIL (the Python watchdog below
+            # could not run): faulthandler's C thread dumps every stack and exits.
+            faulthandler.dump_traceback_later(a.stall_timeout * 2, exit=True)
             deadline = time.monotonic() + a.duration if a.duration else None
             while any(t.is_alive() for t in threads if t.name.startswith("w")):
                 time.sleep(0.05)
                 now = time.monotonic()
                 if self.done != last:
                     last, last_t = self.done, now
+                    faulthandler.dump_traceback_later(a.stall_timeout * 2, exit=True)
                 elif now - last_t > a.stall_timeout:
                     self.stall = self.dump_stacks()
                     self.stop.set()
@@ -778,6 +865,7 @@ class Fuzzer:
             self.stop.set()
             for t in threads:
                 t.join(timeout=a.stall_timeout)
+            faulthandler.cancel_dump_traceback_later()
         elapsed = time.monotonic() - self.t0
         if not self.violations and not self.stall:
             self.run_check(self.done)  # final, quiescent
@@ -862,6 +950,12 @@ class Fuzzer:
                     for e in self.window_errors:
                         self.say(f"  [{e['thread']}] {e['type']}: {e['msg'][:200]}  @ {e['site']}")
                         self.say("    " + e["tb"].strip().replace("\n", "\n    "))
+            if self.sql_trace is not None:
+                tp = os.path.join(self.tmpdir, "sql-trace.txt")
+                with open(tp, "w") as f:
+                    for t, th, kind, stmt in list(self.sql_trace):
+                        f.write(f"{t:10.5f} {th:40s} {kind:20s} {stmt}\n")
+                self.say(f"sql trace (last {len(self.sql_trace)} statements, all threads): {tp}")
             self.say(f"\nreplay: {self.replay_cmd()}")
             self.say(f"db kept at: {self.db_path}")
             self.say(f"last {a.last_k} ops per thread:")
@@ -895,6 +989,8 @@ class Fuzzer:
         parts.append("--serial" if a.serial else f"--threads {a.threads}")
         if a.weights:
             parts.append(f"--weights {a.weights}")
+        if a.skip_checks:
+            parts.append(f"--skip-checks {a.skip_checks}")
         if a.inject_corruption:
             parts.append(f"--inject-corruption {a.inject_corruption}")
         env = " ".join(f"{k}={v}" for k, v in sorted(os.environ.items()) if k.startswith("AGORA_"))
@@ -913,6 +1009,9 @@ def main(argv=None) -> int:
     p.add_argument("--last-k", type=int, default=15, help="ops per thread printed on a violation")
     p.add_argument("--weights", help="override op weights, e.g. admin_fleets=20,locate=10,junk=0 "
                                     "(ops: " + ", ".join(k for k, _ in Fuzzer.OPS) + ")")
+    p.add_argument("--skip-checks", help="comma-separated checker tags to ignore, e.g. vessels,book-db -- to hunt "
+                                        "past a known finding (tags: builtin, txn-instrument, supply, escrow-peer, "
+                                        "escrow-equity, escrow-contract, book-db, vessels, durable)")
     p.add_argument("--serial", action="store_true", help="one worker, rounds stepped inline: no concurrency (calibration)")
     p.add_argument("--stall-timeout", type=float, default=45.0)
     p.add_argument("--log-jsonl", help="write every op to this JSONL file")
@@ -921,6 +1020,9 @@ def main(argv=None) -> int:
     p.add_argument("--fsync", action="store_true", help="keep sqlite synchronous=FULL (default: OFF, for speed)")
     p.add_argument("--inject-corruption", type=int, default=0, metavar="N",
                    help="(self-test) after N ops, bump amos CR by 1 with no ledger row; the checker must catch it")
+    p.add_argument("--trace-sql", type=int, default=0, metavar="N",
+                   help="keep the last N SQL statements run on the shared connection, with the thread that ran "
+                        "each, and write them next to the DB on a violation (diagnosis; slows the run)")
     p.add_argument("--fail-on-server-error", action="store_true",
                    help="exit 1 if any request thread raised an unhandled exception")
     p.add_argument("--show-tracebacks", action="store_true")
