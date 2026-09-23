@@ -1,7 +1,7 @@
 """
 tests/test_combine_trading.py - Unit & integration tests for Agora Combine trading enhancements.
 Verifies:
-- Universal combine token (agora-combine-2026) allows placing orders on behalf of any syndicate
+- Combine token (from AGORA_COMBINE_TOKEN) allows placing orders on behalf of any syndicate
 - POST /referee/quick_order accepts flat simplified trade submissions
 - GET /referee/leaderboard exposes food and ore balances
 """
@@ -26,7 +26,7 @@ class TestCombineTrading(unittest.TestCase):
             auth_tokens={
                 'admin': 'test-admin-secret',
                 'zero': 'test-zero-token',
-                'combine': 'agora-combine-2026'
+                'combine': 'test-combine-token'
             }
         )
         cls.server = HTTPServer(('127.0.0.1', 0), handler_cls)
@@ -88,7 +88,7 @@ class TestCombineTrading(unittest.TestCase):
                     'station_id': 'ceres'
                 }
             }
-            status, res = self._post('/referee/orders', order, token='agora-combine-2026')
+            status, res = self._post('/referee/orders', order, token='test-combine-token')
             self.assertEqual(status, 200, f"Failed for agent {agent}: {res}")
             self.assertEqual(res.get('kind'), 'market_tick')
 
@@ -102,7 +102,7 @@ class TestCombineTrading(unittest.TestCase):
             'instrument': 'FOOD',
             'station_id': 'ceres'
         }
-        status, res = self._post('/referee/quick_order', quick_order, token='agora-combine-2026')
+        status, res = self._post('/referee/quick_order', quick_order, token='test-combine-token')
         self.assertEqual(status, 200, f"Quick order failed: {res}")
         self.assertEqual(res.get('kind'), 'market_tick')
 

@@ -75,6 +75,10 @@ AUTHOR_MAP = {
     "1541205716948353074": "amos",   # Amos / Ivy
     "1542081375287640084": "zero",   # Zero
     "179407724335988736": "zero",    # Ryan Brock
+    "1468012353206354197": "amos",   # Amos
+    "1542285964213358633": "zero",   # Zero
+    "1492043459618537492": "marvin", # Marvin
+    "1542035925603713086": "aerial", # Aerial
 }
 
 
@@ -114,7 +118,7 @@ def get_referee_token() -> str:
                                 return v.strip().strip("'").strip('"')
             except Exception:
                 pass
-    return "agora-combine-2026"
+    return ""
 
 
 def fetch_json(endpoint: str) -> dict:
@@ -325,25 +329,12 @@ def parse_discord_trade(content: str, author_id: str, author_name: str, default_
     station = station_raw.lower() if station_raw else default_station
 
     # Resolve agent
-    agent = None
-    agent_override = re.search(r"\b(?:as|agent:?)\s+(amos|marvin|zero|aerial)\b", content, re.I)
-    if agent_override:
-        agent = agent_override.group(1).lower()
-    elif author_id in AUTHOR_MAP:
-        agent = AUTHOR_MAP[author_id]
-    else:
-        name_lower = author_name.lower()
-        if "amos" in name_lower or "carmody" in name_lower or "mike" in name_lower:
-            agent = "amos"
-        elif "marvin" in name_lower or "alex" in name_lower:
-            agent = "marvin"
-        elif "zero" in name_lower or "brock" in name_lower or "ryan" in name_lower:
-            agent = "zero"
-        elif "aerial" in name_lower:
-            agent = "aerial"
-
+    # Identity comes from the Discord author id only. A text override
+    # ("... as marvin"), a display-name guess, or a default seat would let
+    # anyone in the channel trade as any syndicate.
+    agent = AUTHOR_MAP.get(author_id)
     if not agent:
-        agent = "amos"
+        return None
 
     return {
         "agent_id": agent,
@@ -437,7 +428,7 @@ def build_announcement(round_num: int = 1, rounds_total: int = 8, codename: str 
         f"   `BUY 50 FOOD @ 32` or `SELL 100 ORE @ 9`\n"
         f"   *Format: `BUY/SELL <qty> <commodity> @ <price> [AT <station>]`*\n\n"
         f"⚡ **2. One-Line Curl:**\n"
-        f"   `curl -s -X POST https://agora.mikecarmody.net/referee/quick_order -H \"Authorization: Bearer agora-combine-2026\" -H \"Content-Type: application/json\" -d '{{\"agent_id\":\"amos\",\"side\":\"buy\",\"qty\":50,\"price\":32,\"commodity\":\"FOOD\",\"station\":\"{st_key}\"}}'`\n"
+        f"   `curl -s -X POST https://agora.mikecarmody.net/referee/quick_order -H \"Authorization: Bearer $AGORA_COMBINE_TOKEN\" -H \"Content-Type: application/json\" -d '{{\"agent_id\":\"amos\",\"side\":\"buy\",\"qty\":50,\"price\":32,\"commodity\":\"FOOD\",\"station\":\"{st_key}\"}}'`\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"*Orders execute immediately against depot pools or rival bids/asks.*"
     )

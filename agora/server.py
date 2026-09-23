@@ -43,7 +43,9 @@ def get_configured_tokens() -> Dict[str, str]:
     admin_val = os.environ.get('AGORA_ADMIN_TOKEN')
     if admin_val:
         tokens['admin'] = admin_val
-    combine_val = os.environ.get('AGORA_COMBINE_TOKEN', 'agora-combine-2026')
+    # No default. The combine token bypasses the impersonation guard, so it
+    # must come from the deploy environment, never from this public repo.
+    combine_val = os.environ.get('AGORA_COMBINE_TOKEN')
     if combine_val:
         tokens['combine'] = combine_val
     return tokens
