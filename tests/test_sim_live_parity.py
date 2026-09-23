@@ -71,7 +71,8 @@ class _Spy:
 
 # An environment that would turn features off if anything read it.
 HOSTILE_ENV = {'AGORA_UPGRADES': '0', 'AGORA_PIRACY': '0', 'AGORA_CONTRACTS': '0', 'AGORA_FOG': '0',
-               'AGORA_PEER_TRADES': '0', 'AGORA_CORPORATE': '0', 'AGORA_HAZARDS': '0', 'AGORA_IDLE_FEE': '0'}
+               'AGORA_PEER_TRADES': '0', 'AGORA_CORPORATE': '0', 'AGORA_HAZARDS': '0', 'AGORA_IDLE_FEE': '0',
+               'AGORA_EVENTS': '0'}
 
 
 class TestSimulatorPlaysTheLiveGame(unittest.TestCase):
@@ -103,7 +104,8 @@ class TestSimulatorPlaysTheLiveGame(unittest.TestCase):
         self.assertEqual(set(got), set(want))
         # The ones that matter most, spelled out, so a failure reads plainly.
         ref = sim.start_game(SEED)
-        for on in ('depots_enabled', 'peer_trades', 'contracts_enabled', 'corporate_enabled', 'upgrades_enabled'):
+        for on in ('depots_enabled', 'peer_trades', 'contracts_enabled', 'corporate_enabled', 'upgrades_enabled',
+                   'events_enabled'):
             self.assertTrue(getattr(ref, on), on)
         self.assertIsNotNone(ref.fog)
         self.assertIsNotNone(ref.hazards.odds)

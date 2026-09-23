@@ -74,6 +74,10 @@ class TestEconomySim(unittest.TestCase):
         self.assertGreater(r["piracy"]["privateer_contracts"], 0)
         self.assertEqual(r["piracy"]["timed_out"], 0)  # haulers answer every demand
         self.assertGreater(r["peer"]["trades"], 0)
+        # #153/#151: those actions are corp events, and known ones move stocks.
+        self.assertGreater(r["events"]["by_kind"].get("upgrade", 0), 0)
+        self.assertGreater(r["events"]["by_visibility"].get("secret", 0), 0)  # the privateer contracts
+        self.assertGreater(r["events"]["stock_shocks"], 0)
 
     def test_peer_buyers_fly_to_collect(self):
         # #126: remote buyers used to leave their pickups uncollected.

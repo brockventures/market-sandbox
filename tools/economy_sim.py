@@ -11,8 +11,9 @@ should simulate the same game as our live game"). The referee comes from
 agora.server.build_referee_from_env, the live server's own factory, with
 every AGORA_* environment variable ignored, so every feature the server
 turns on is on here with the same constants: reactive depots, the 25%
-band, fog, peer trades, idle fee, rival shares, the stock exchange,
-contracts, corporate debt and takeovers, upgrades, hazards and piracy.
+band, fog, peer trades, idle fee, rival shares, the stock exchange (with
+event shocks), contracts, corporate debt and takeovers, upgrades, hazards,
+piracy, and corp-event secrecy and exposure.
 The game starts as a bare POST /referee/admin/new_game does. Fleets act
 only through the referee and desk methods the HTTP routes call; this file
 holds no game rules, only bot strategies, scenarios and reporting.
@@ -39,7 +40,8 @@ Scoring uses cash plus inventory at a FIXED reference price (the mean
 BASE_PRICES across stations), not the leaderboard: the leaderboard marks
 FUEL at zero, all FRAG at the Ceres mark, and cargo in transit (escrowed
 to SYSTEM) at zero. Contract deposits and peer escrow count for their
-owner. Leaderboard net worth is reported alongside.
+owner, and fitted upgrades at the live book value (UpgradeDesk.book_value,
+half their price). Leaderboard net worth is reported alongside.
 
 Knobs change the live game, never add a rule of their own. Default = live.
 Usage:
@@ -203,8 +205,8 @@ def pickups(ref: AgoraReferee, agent: str) -> List[dict]:
 def buy_upgrades(ref: AgoraReferee, agent: str, cash_mult: float, stats) -> None:
     """POST /referee/upgrades/buy: the next tier of the first upgrade in
     UPGRADE_ORDER not yet maxed, once available CR is cash_mult x its price.
-    At most one a round, never in debt. Upgrades are sunk: they add nothing
-    to net worth, so the threshold keeps a fleet's working capital intact."""
+    At most one a round, never in debt. The board counts an upgrade at half
+    its price, so the threshold keeps a fleet's working capital intact."""
     if not ref.upgrades_enabled or location(ref, agent) is None or debt(ref, agent) > 0:
         return
     for kind in UPGRADE_ORDER:
@@ -1039,6 +1041,8 @@ def score(ref: AgoraReferee, agent: str) -> float:
     held = ref.peer.holdings_adjustment().get(agent, {})
     escrow += held.get("CR", 0) + sum(held.get(c, 0) * REF_PRICE[c] for c in TRADED)
     escrow += ref.contract_desk.holdings_adjustment().get(agent, 0)
+    if ref.upgrades_enabled and not ref.fleet_out(agent):
+        escrow += ref.upgrades.book_value(agent)
     return inv["CR"] + sum(inv[c] * REF_PRICE[c] for c in TRADED) + escrow
 
 
@@ -1063,7 +1067,8 @@ def features(ref: AgoraReferee) -> Dict[str, Any]:
             "idle_fee": ref.idle_fee, "rival_shares": ref.rival_shares, "exchange_shares": ref.exchange_shares,
             "exchange_vol": ref.exchange.vol, "contracts": ref.contracts_enabled, "corporate": ref.corporate_enabled,
             "upgrades": ref.upgrades_enabled, "hazards": list(ref.hazards.odds) if ref.hazards.odds else None,
-            "piracy": list(ref.piracy.odds) if ref.piracy.odds else None}
+            "piracy": list(ref.piracy.odds) if ref.piracy.odds else None,
+            "events": getattr(ref, "events_enabled", None)}
 
 
 def contract_report(ref: AgoraReferee) -> Optional[dict]:
@@ -1106,6 +1111,17 @@ def corporate_report(ref: AgoraReferee, track: dict) -> Optional[dict]:
             "bonds_cr": _q(ref, "SELECT SUM(delta) FROM ledger_entries WHERE txn_id LIKE 'contract-claim-%' AND agent_id = 'SYSTEM'"),
             "debt_end": {a: s["debt"] for a, s in status.items() if s["debt"]},
             "absorbed": {a: (s["absorbed_by"] or s["status"]) for a, s in status.items() if s["status"] != "active"}}
+
+
+def events_report(ref: AgoraReferee) -> Optional[dict]:
+    """Corp events (agora/events.py) and the stock shocks they caused."""
+    if not getattr(ref, "events_enabled", False):
+        return None
+    kinds = {r[0]: r[1] for r in ref.conn.execute("SELECT kind, COUNT(*) FROM corp_events GROUP BY kind")}
+    vis = {r[0]: r[1] for r in ref.conn.execute("SELECT visibility, COUNT(*) FROM corp_events GROUP BY visibility")}
+    return {"by_kind": kinds, "by_visibility": vis,
+            "exposed": _q(ref, "SELECT COUNT(*) FROM corp_events WHERE exposed_round IS NOT NULL"),
+            "stock_shocks": len(ref.exchange.shocks)}
 
 
 def hazard_report(ref: AgoraReferee) -> Optional[dict]:
@@ -1293,6 +1309,7 @@ def _run(scenario, genesis, seed, rounds, mode, check_every, overrides, equity_m
         "contracts": contract_report(ref),
         "corporate": corporate_report(ref, corp_track),
         "hazards": hazard_report(ref),
+        "events": events_report(ref),
         "piracy": piracy_report(ref),
         "upgrades": {a: ref.upgrades.holdings(a) for a in FLEETS} if ref.upgrades_enabled else None,
         "upgrade_cr": _q(ref, "SELECT SUM(delta) FROM ledger_entries WHERE txn_id LIKE 'upgrade-%' AND agent_id = 'SYSTEM'"),
@@ -1484,6 +1501,7 @@ def main() -> int:
         print(f"  hazards: {r['hazards']}")
         print(f"  piracy: {r['piracy']}")
         print(f"  peer: {r['peer']}")
+        print(f"  events: {r['events']}")
         print(f"  depot CR at end: {r['depot_cr_end']}")
         print(f"  first negative depot balance: round {r['first_negative_depot_round']}  "
               f"invariant failure: {r['first_invariant_failure']}")
