@@ -1070,6 +1070,35 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             self._send_json(400 if result.get('kind') == 'reject' else 200, result)
             return
 
+        if path in ('/referee/covert/wiretap', '/referee/covert/sabotage'):
+            auth_agent, auth_err = self._authenticate_request()
+            if auth_err:
+                self._send_json(401, auth_err)
+                return
+            try:
+                length = int(self.headers.get('Content-Length', 0))
+                data = json.loads(self.rfile.read(length).decode('utf-8')) if length else {}
+            except Exception as e:
+                self._send_json(400, {'v': 1, 'kind': 'reject',
+                                      'payload': {'reason': 'invalid_format', 'detail': f'Malformed JSON: {e}'}})
+                return
+            ref = self.referee or AgoraReferee()
+            if not getattr(ref, 'events_enabled', False):
+                self._send_json(409, {'v': 1, 'kind': 'reject', 'payload': {
+                    'reason': 'covert_disabled', 'detail': 'Covert operations are off in this game.'}})
+                return
+            agent = data.get('agent_id') if auth_agent in ('admin', 'combine') else auth_agent
+            if not agent:
+                self._send_json(400, {'v': 1, 'kind': 'reject',
+                                      'payload': {'reason': 'agent_required', 'detail': 'agent_id is required with this token'}})
+                return
+            if path == '/referee/covert/wiretap':
+                result = ref.covert.plant_wiretap(agent, str(data.get('target', '')))
+            else:
+                result = ref.covert.execute_sabotage(agent, str(data.get('target', '')), str(data.get('mode', 'auto')))
+            self._send_json(400 if result.get('kind') == 'reject' else 200, result)
+            return
+
         if path == '/referee/upgrades/buy':
             auth_agent, auth_err = self._authenticate_request()
             if auth_err:
@@ -1420,6 +1449,27 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
         elif path == '/referee/corporate':
             self._send_json(200, {'status': 'ok', 'corporate_enabled': ref.corporate_enabled,
                                   'round': ref.current_round, **ref.corporate.summary()})
+        elif path == '/referee/covert/wiretaps':
+            viewer = self._reader()
+            if not viewer:
+                self._send_json(401, {'error': 'unauthorized', 'detail': 'Authentication required'})
+                return
+            self._send_json(200, {'status': 'ok', 'round': ref.current_round,
+                                  'wiretaps': ref.covert.active_wiretaps(viewer)})
+            return
+        elif path == '/referee/covert/intel':
+            viewer = self._reader()
+            if not viewer:
+                self._send_json(401, {'error': 'unauthorized', 'detail': 'Authentication required'})
+                return
+            target = query_params.get('target', [''])[0]
+            result = ref.covert.get_intel(viewer, target)
+            self._send_json(400 if result.get('kind') == 'reject' else 200, result)
+            return
+        elif path == '/referee/corporate/rivalry':
+            viewer = self._reader()
+            self._send_json(200, {'status': 'ok', **ref.covert.rivalry_scoreboard(viewer)})
+            return
         elif path == '/referee/corporate/events':
             # #153: only what the caller may see. No token = public events and
             # exposed ones; a fleet token adds its own secrets and private
