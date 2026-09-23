@@ -199,7 +199,36 @@ class TestStagedTiers181(unittest.TestCase):
         ref.upgrades.buy('amos', 'engines')
         self.assertEqual([ref.upgrades.engine_cut('amos', n) for n in (2, 3, 4, 5, 6)], [0, 1, 1, 1, 1])
         ref.upgrades.buy('amos', 'engines')
-        self.assertEqual([ref.upgrades.engine_cut('amos', n) for n in (2, 3, 4, 5, 6)], [0, 1, 1, 2, 2])
+        # Tier 2 cuts fuel, not rounds (#189): the round cut stays tier 1's.
+        self.assertEqual([ref.upgrades.engine_cut('amos', n) for n in (2, 3, 4, 5, 6)], [0, 1, 1, 1, 1])
+
+    def test_engines_tier_2_cuts_fuel_40pct(self):
+        """#189: engines tier 2 cuts every trip's FUEL burn by 40%; tier 1
+        leaves the burn alone. Checked on the live initiate_transit debit."""
+        from agora.spatial import get_route
+        ref = game()
+        to_round(ref, 250)
+        fund(ref, 'amos', 100_000)
+        self.assertEqual([ref.upgrades.engine_fuel('amos', f) for f in (0, 5, 15, 20, 30)], [0, 5, 15, 20, 30])
+        ref.upgrades.buy('amos', 'engines')
+        self.assertEqual([ref.upgrades.engine_fuel('amos', f) for f in (0, 5, 15, 20, 30)], [0, 5, 15, 20, 30])
+        self.assertEqual(ref.upgrades.buy('amos', 'engines')['kind'], 'upgrade_ok')
+        self.assertEqual([ref.upgrades.engine_fuel('amos', f) for f in (0, 1, 5, 15, 20, 30)], [0, 1, 3, 9, 12, 18])
+        rounds, d = dest_for(ref, 'amos')
+        here = ref.get_vessel_location('amos')['station_id']
+        full = get_route(here, d, ref.current_round)['fuel']
+        fuel = ref.get_balance('amos', 'FUEL')
+        p = ref.initiate_transit('amos', d)['payload']
+        self.assertEqual(p['fuel_burned'], round(full * 0.6))
+        self.assertEqual(ref.get_balance('amos', 'FUEL'), fuel - round(full * 0.6))
+        self.assertEqual(p['arrival_round'] - p['departure_round'] - ((p.get('hazard') or {}).get('delay') or 0),
+                         rounds - ref.upgrades.engine_cut('amos', rounds))
+        ok, errs = ref.verify_ledger_invariants()
+        self.assertTrue(ok, errs)
+
+    def test_engines_fuel_cut_off_when_upgrades_off(self):
+        ref = game(upgrades=False)
+        self.assertEqual(ref.upgrades.engine_fuel('amos', 30), 30)
 
     def news(self, ref):
         import json
