@@ -17,6 +17,7 @@ class TestDefaultsOn(unittest.TestCase):
         self.assertEqual(ref.circuit_breaker.band_pct, 0.25)
         self.assertTrue(ref.peer_trades)
         self.assertEqual((ref.fog.lag, ref.fog.noise), (3, 0.15))
+        self.assertEqual(ref.idle_fee, 10)
 
     def test_env_can_turn_off(self):
         with mock.patch.dict(os.environ, {'AGORA_PEER_TRADES': '0', 'AGORA_DEPOT_MODEL': 'static', 'AGORA_FOG': '0'}):

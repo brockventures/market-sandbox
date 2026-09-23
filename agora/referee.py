@@ -76,8 +76,13 @@ class AgoraReferee:
         reactive_bands: bool = True,
         peer_trades: Optional[bool] = None,
         fog: Any = None,
+        idle_fee: Optional[int] = None,
     ):
         self.db_path = db_path
+        # CR charged each round to a docked fleet that did nothing that round
+        # (no order, cancel, trip or peer offer/accept). 0 = off.
+        self.idle_fee = max(0, int(idle_fee)) if idle_fee is not None else 0
+        self._active_this_round: set = set()
         _fog = parse_fog(fog) if fog is not None else env_fog()
         self.fog: Optional[FogEngine] = FogEngine(*_fog) if _fog else None
         # Fleet-to-fleet goods trades agreed at a distance (agora/peer.py).
@@ -443,6 +448,7 @@ class AgoraReferee:
         band_pct: Optional[float] = None,
         peer_trades: Optional[bool] = None,
         fog: Any = None,
+        idle_fee: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Full clean-slate reset, callable live via POST /referee/admin/reset:
@@ -458,6 +464,9 @@ class AgoraReferee:
             self.depots_enabled = depots
         if peer_trades is not None:
             self.peer_trades = bool(peer_trades)
+        if idle_fee is not None:
+            self.idle_fee = max(0, int(idle_fee))
+        self._active_this_round = set()
         self.asymmetric_enabled = asymmetric
         if asymmetric or spawn_map:
             mapping = spawn_map or ASYMMETRIC_SPAWN_LOCATIONS
@@ -488,6 +497,7 @@ class AgoraReferee:
         band_pct: Optional[float] = None,
         peer_trades: Optional[bool] = None,
         fog: Any = None,
+        idle_fee: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Wipes the board exactly like reset_to_genesis(), but rolls a genuinely
@@ -504,6 +514,9 @@ class AgoraReferee:
             self.depots_enabled = depots
         if peer_trades is not None:
             self.peer_trades = bool(peer_trades)
+        if idle_fee is not None:
+            self.idle_fee = max(0, int(idle_fee))
+        self._active_this_round = set()
         self.asymmetric_enabled = asymmetric
         if asymmetric or spawn_map:
             mapping = spawn_map or ASYMMETRIC_SPAWN_LOCATIONS
@@ -591,6 +604,43 @@ class AgoraReferee:
         cur.execute("SELECT COALESCE(MAX(seq), 0) FROM book_events")
         row = cur.fetchone()
         return row[0] if row else 0
+
+    def mark_active(self, agent_id: Optional[str]) -> None:
+        """Record that a fleet acted this round (exempts it from the idle fee)."""
+        if agent_id:
+            self._active_this_round.add(str(agent_id))
+
+    def _charge_idle_fees_locked(self, round_num: int) -> Dict[str, int]:
+        """Charge idle_fee CR (capped at what the fleet holds) to every docked
+        fleet that did nothing since the last round, provided at least one
+        other fleet did. A fleet in transit is busy flying and pays nothing.
+        Balanced ledger entries to SYSTEM."""
+        charged: Dict[str, int] = {}
+        fleets = [r[0] for r in self.conn.execute("SELECT agent_id FROM fleet_roster")]
+        # The live ticker keeps stepping rounds when nobody is playing (every
+        # 60 s, overnight included). Charge only in rounds where some fleet
+        # did act, so an empty server never bleeds everyone's cash.
+        if not self.idle_fee or not (self._active_this_round & set(fleets)):
+            self._active_this_round = set()
+            return charged
+        seq = self._get_next_seq()
+        for agent in fleets:
+            if agent in self._active_this_round:
+                continue
+            if self.get_vessel_location(agent).get('status') != 'docked':
+                continue
+            fee = min(self.idle_fee, max(0, self.get_balance(agent, 'CR')))
+            if fee <= 0:
+                continue
+            txn = f"idle-fee-{agent}-{round_num}"
+            for acct, d in ((agent, -fee), ('SYSTEM', fee)):
+                self.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, 'CR', 0)", (acct,))
+                self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = 'CR'", (d, acct))
+                self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, 'CR', ?)",
+                                  (txn, seq, acct, d))
+            charged[agent] = fee
+        self._active_this_round = set()
+        return charged
 
     def _configure_fog(self, fog: Any, seed: int) -> None:
         """fog=None keeps the current setting (re-seeded for the new game);
@@ -794,6 +844,7 @@ class AgoraReferee:
         return {'round': self.current_round, 'prices': all_prices}
 
     def initiate_transit(self, agent_id: str, destination: str, commodity: str = 'FRAG', cargo_qty: int = 0, perishable: Optional[bool] = None) -> Dict[str, Any]:
+        self.mark_active(agent_id)
         with self.lock:
             dest = destination.lower().strip()
             if dest not in STATIONS:
@@ -983,6 +1034,9 @@ class AgoraReferee:
     def step_round(self, round_num: Optional[int] = None) -> Dict[str, Any]:
         with self.lock:
             new_round = round_num if round_num is not None else self.current_round + 1
+            # Idle fee for the round that is ending, before anything moves.
+            with self.conn:
+                idle_fees = self._charge_idle_fees_locked(self.current_round)
             self.current_round = new_round
 
             # Advance prices
@@ -1076,6 +1130,7 @@ class AgoraReferee:
                 'borrow_fee_reports': borrow_fee_reports,
                 'circuit_breaker_reopens': reopen_reports,
                 'peer_escrow': peer_report,
+                'idle_fees': idle_fees,
             }
 
     def get_equity_summary(self) -> Dict[str, Any]:
@@ -1253,6 +1308,7 @@ class AgoraReferee:
         ]
 
     def submit_envelope(self, envelope: Dict[str, Any]) -> Dict[str, Any]:
+        self.mark_active((envelope.get('payload') or {}).get('agent_id') if isinstance(envelope, dict) else None)
         with self.lock:
             return self._submit_envelope_locked(envelope)
 
@@ -1701,6 +1757,7 @@ class AgoraReferee:
         }
 
     def cancel_order(self, agent_id: str, order_id: str) -> Dict[str, Any]:
+        self.mark_active(agent_id)
         """
         Cancel one resting order across all station order books.
         """
@@ -1766,6 +1823,7 @@ class AgoraReferee:
         }
 
     def cancel_all(self, agent_id: str) -> Dict[str, Any]:
+        self.mark_active(agent_id)
         """Cancel every resting order across all stations for one agent."""
         with self.lock:
             targets = []

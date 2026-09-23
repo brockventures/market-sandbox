@@ -184,6 +184,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 band_pct=payload.get('band_pct'),
                 peer_trades=payload.get('peer_trades'),
                 fog=payload.get('fog'),
+                idle_fee=payload.get('idle_fee'),
             )
             self._send_json(200, {'v': 1, 'kind': 'new_game_ok', 'payload': result})
             return
@@ -1566,6 +1567,7 @@ def build_referee_from_env(db_path: str = 'agora.db') -> AgoraReferee:
       AGORA_BAND_PCT=0.25      circuit-breaker band
       AGORA_PEER_TRADES=1      remote fleet-to-fleet goods trades
       AGORA_FOG=3,0.15         fog of war (lag rounds, noise); 0 turns it off
+      AGORA_IDLE_FEE=10        CR per round for a docked fleet that did nothing; 0 = off
     """
     def _on(name: str) -> bool:
         return os.environ.get(name, '1').strip().lower() not in ('0', 'false', 'off', 'no')
@@ -1576,7 +1578,14 @@ def build_referee_from_env(db_path: str = 'agora.db') -> AgoraReferee:
     return AgoraReferee(db_path=db_path, depots=_on('AGORA_DEPOTS'), asymmetric=_on('AGORA_ASYMMETRIC'),
                         depot_model=os.environ.get('AGORA_DEPOT_MODEL', 'reactive').strip().lower(),
                         band_pct=band_pct, peer_trades=_on('AGORA_PEER_TRADES'),
-                        fog=_fog_from_env())
+                        fog=_fog_from_env(), idle_fee=_int_env('AGORA_IDLE_FEE', 10))
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, default))
+    except ValueError:
+        return default
 
 
 def _fog_from_env():

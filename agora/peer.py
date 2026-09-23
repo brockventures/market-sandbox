@@ -82,6 +82,7 @@ class PeerDesk:
     # ------------------------------------------------------------ actions
 
     def offer(self, seller: str, station_id: str, instrument: str, qty: int, price: int) -> Dict[str, Any]:
+        self.ref.mark_active(seller)
         ref = self.ref
         st, inst = (station_id or '').lower().strip(), (instrument or '').upper().strip()
         if st not in STATIONS:
@@ -111,6 +112,7 @@ class PeerDesk:
         return {'v': 1, 'kind': 'peer_offer_ok', 'payload': self.get(eid)}
 
     def accept(self, buyer: str, escrow_id: str) -> Dict[str, Any]:
+        self.ref.mark_active(buyer)
         ref = self.ref
         with ref.lock, ref.conn:
             row = self._row(escrow_id)
@@ -132,6 +134,7 @@ class PeerDesk:
         return {'v': 1, 'kind': 'peer_accept_ok', 'payload': self.get(escrow_id)}
 
     def cancel(self, seller: str, escrow_id: str) -> Dict[str, Any]:
+        self.ref.mark_active(seller)
         ref = self.ref
         with ref.lock, ref.conn:
             row = self._row(escrow_id)
