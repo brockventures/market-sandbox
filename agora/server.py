@@ -1495,12 +1495,36 @@ def make_handler(referee: AgoraReferee, auth_tokens: Optional[Dict[str, str]] = 
     return CustomHandler
 
 
+def build_referee_from_env(db_path: str = 'agora.db') -> AgoraReferee:
+    """The live server's referee.
+
+    Every shipped game feature is ON unless its env var turns it off (Ryan,
+    #agent-chat 2026-09-22 22:39: "default to all features being on").
+    new_game keeps the current setting for any flag it is not given, so a
+    bare {"confirm": true} starts a game with all of them. AgoraReferee()
+    itself stays conservative so unit tests opt in explicitly.
+
+      AGORA_DEPOTS=1           station depots
+      AGORA_ASYMMETRIC=1       fleets start at different stations
+      AGORA_DEPOT_MODEL=reactive
+      AGORA_BAND_PCT=0.25      circuit-breaker band
+      AGORA_PEER_TRADES=1      remote fleet-to-fleet goods trades
+    """
+    def _on(name: str) -> bool:
+        return os.environ.get(name, '1').strip().lower() not in ('0', 'false', 'off', 'no')
+    try:
+        band_pct = float(os.environ.get('AGORA_BAND_PCT', '0.25'))
+    except ValueError:
+        band_pct = 0.25
+    return AgoraReferee(db_path=db_path, depots=_on('AGORA_DEPOTS'), asymmetric=_on('AGORA_ASYMMETRIC'),
+                        depot_model=os.environ.get('AGORA_DEPOT_MODEL', 'reactive').strip().lower(),
+                        band_pct=band_pct, peer_trades=_on('AGORA_PEER_TRADES'))
+
+
 def run_server(host: Optional[str] = None, port: int = 8080, referee: Optional[AgoraReferee] = None, auth_tokens: Optional[Dict[str, str]] = None):
     bind_host = host or os.environ.get('AGORA_HOST', '0.0.0.0' if 'PORT' in os.environ else '127.0.0.1')
     db_path = os.environ.get('AGORA_DB_PATH', 'agora.db')
-    asymmetric = os.environ.get('AGORA_ASYMMETRIC', '1') not in ('0', 'false', 'False')
-    depots = os.environ.get('AGORA_DEPOTS', '1') not in ('0', 'false', 'False')
-    ref = referee or AgoraReferee(db_path=db_path, depots=depots, asymmetric=asymmetric)
+    ref = referee or build_referee_from_env(db_path)
     tokens = auth_tokens if auth_tokens is not None else get_configured_tokens()
 
     ticker = None
