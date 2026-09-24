@@ -149,12 +149,83 @@ class TestContracts(unittest.TestCase):
         self.assertEqual(ref.contract_desk.claim('amos', ids[1])['kind'], 'contract_claim_ok')
         self.assertEqual(ref.contract_desk.claim('amos', ids[2])['payload']['reason'], 'too_many_contracts')
 
+    def test_oversized_contracts_generation_and_filtering(self):
+        # #93: contract desk generates oversized lots (600-1200 units) with extended deadlines
+        ref = AgoraReferee(depots=True, contracts=True)
+        ref.new_game(seed=42, warmup_rounds=2, depots=True, contracts=True)
+        # Force oversized
+        ref.contract_desk.oversized_prob = 1.0
+        ref.contract_desk._post_locked(10)
+        c_over = ref.contract_desk.list(lot_type='oversized')
+        self.assertGreater(len(c_over), 0)
+        self.assertEqual(c_over[0]['lot_type'], 'oversized')
+        self.assertGreaterEqual(c_over[0]['qty_total'], 600)
+        self.assertLessEqual(c_over[0]['qty_total'], 1200)
+
+        # Force standard
+        ref.contract_desk.oversized_prob = 0.0
+        ref.contract_desk._post_locked(12)
+        c_std = ref.contract_desk.list(lot_type='standard')
+        self.assertGreater(len(c_std), 0)
+        self.assertEqual(c_std[0]['lot_type'], 'standard')
+        self.assertLessEqual(c_std[0]['qty_total'], 500)
+
+    def test_multi_vessel_incremental_delivery_on_oversized_contract(self):
+        # #93: multiple vessels can incrementally deliver against an oversized lot
+        ref = AgoraReferee(depots=True, contracts=True)
+        ref.new_game(seed=10, warmup_rounds=2, depots=True, contracts=True)
+        ref.contract_desk.oversized_prob = 1.0
+        cid = ref.contract_desk._post_locked(10)
+        row = ref.contract_desk.get(cid)
+        st, comm, total_qty = row['station_id'], row['instrument'], row['qty_total']
+
+        # Ensure agent has cash to claim
+        with ref.conn:
+            ref.contract_desk._move('fund-claim', (('zero', 'CR', 100_000), ('SYSTEM', 'CR', -100_000)))
+            # Place ships at the destination station and load cargo
+            ref.conn.execute("UPDATE vessels SET station_id = ?, status = 'docked' WHERE vessel_id = 'zero/1'", (st,))
+            ref.conn.execute("""INSERT OR REPLACE INTO vessels (vessel_id, agent_id, name, station_id, docked_since, status)
+                                VALUES ('zero/2', 'zero', 'Ship 2', ?, 0, 'docked')""", (st,))
+            # Endow each vessel with partial cargo
+            ref.contract_desk._move('fund-cargo-1', (('zero/1', comm, 250), ('SYSTEM', comm, -250)))
+            ref.contract_desk._move('fund-cargo-2', (('zero/2', comm, 250), ('SYSTEM', comm, -250)))
+            if total_qty > 500:
+                ref.contract_desk._move('fund-cargo-extra', (('zero/1', comm, total_qty - 500), ('SYSTEM', comm, -(total_qty - 500))))
+
+        claim_res = ref.contract_desk.claim('zero', cid)
+        self.assertEqual(claim_res['kind'], 'contract_claim_ok')
+
+        # Deliver from ship 1 (250 units)
+        del1 = ref.contract_desk.deliver('zero', cid, qty=250, vessel_id='1')
+        self.assertEqual(del1['kind'], 'contract_deliver_ok')
+        self.assertEqual(del1['payload']['delivered'], 250)
+        self.assertEqual(ref.contract_desk.get(cid)['qty_remaining'], total_qty - 250)
+
+        # Deliver from ship 2 (250 units)
+        del2 = ref.contract_desk.deliver('zero', cid, qty=250, vessel_id='2')
+        self.assertEqual(del2['kind'], 'contract_deliver_ok')
+        self.assertEqual(del2['payload']['delivered'], 250)
+        self.assertEqual(ref.contract_desk.get(cid)['qty_remaining'], total_qty - 500)
+
+        # Deliver remaining
+        rem = total_qty - 500
+        if rem > 0:
+            del3 = ref.contract_desk.deliver('zero', cid, qty=rem, vessel_id='1')
+            self.assertEqual(del3['kind'], 'contract_deliver_ok')
+
+        final_contract = ref.contract_desk.get(cid)
+        self.assertEqual(final_contract['status'], 'fulfilled')
+        self.assertEqual(final_contract['qty_remaining'], 0)
+
+        good, errs = ok(ref)
+        self.assertTrue(good, errs)
+
+
     def test_briefing_lists_contracts(self):
         from agora.briefing import build_briefing
         ref = game()
         text = build_briefing(ref)
         self.assertIn('## Station contracts', text)
-
 
 if __name__ == '__main__':
     unittest.main()
@@ -205,3 +276,10 @@ class TestContractEndpoints(unittest.TestCase):
         self.assertEqual(r['payload']['owner'], 'zero')
         with urllib.request.urlopen(self.base + '/referee/briefing', timeout=5) as resp:
             self.assertIn('Station contracts', resp.read().decode())
+
+    def test_http_filter_by_lot_type(self):
+        with urllib.request.urlopen(self.base + '/referee/contracts?lot_type=standard', timeout=5) as resp:
+            data = json.loads(resp.read())
+            self.assertEqual(data['status'], 'ok')
+            for c in data['contracts']:
+                self.assertEqual(c['lot_type'], 'standard')
