@@ -417,6 +417,22 @@ class AgoraReferee:
                         ('genesis-fuel', 0, 'zero', 'FUEL', 500)
                     """)
 
+            # Ensure ticker_state table exists unconditionally (durable
+            # desired-state for the background TickerEngine, Issue #63:
+            # survives a container restart so a Railway bounce doesn't
+            # silently leave the world clock paused in the dark).
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS ticker_state (
+                    id                  INTEGER PRIMARY KEY CHECK (id = 1),
+                    desired_state       TEXT NOT NULL DEFAULT 'stopped' CHECK (desired_state IN ('running', 'paused', 'stopped')),
+                    quiet_round_count   INTEGER NOT NULL DEFAULT 0,
+                    last_tick_at        TEXT,
+                    lease_owner         TEXT,
+                    lease_expires_at    TEXT,
+                    updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                )
+            """)
+
             # Ensure equity_loans table exists unconditionally
             self.conn.execute("""
                 CREATE TABLE IF NOT EXISTS equity_loans (
@@ -999,6 +1015,68 @@ class AgoraReferee:
                 (next_seq, json.dumps(event_dict))
             )
             return next_seq
+
+    def get_ticker_state(self) -> Optional[Dict[str, Any]]:
+        """
+        Read the durable ticker desired-state record (Issue #63). Returns
+        None if no state has ever been persisted (fresh database).
+        """
+        with self.lock:
+            row = self.conn.execute(
+                "SELECT desired_state, quiet_round_count, last_tick_at, lease_owner, lease_expires_at, updated_at "
+                "FROM ticker_state WHERE id = 1"
+            ).fetchone()
+            if row is None:
+                return None
+            return dict(row)
+
+    def set_ticker_state(
+        self,
+        desired_state: str,
+        quiet_round_count: Optional[int] = None,
+        last_tick_at: Optional[str] = None,
+        lease_owner: Optional[str] = None,
+        lease_expires_at: Optional[str] = None,
+    ) -> None:
+        """
+        Upsert the durable ticker desired-state record. Called on start/
+        pause/stop and periodically on tick so a process restart can
+        reconcile against what the ticker was actually doing, not wake up
+        cold. `lease_owner`/`lease_expires_at` fence against two server
+        instances (e.g. a Railway blue/green rollover) both stepping the
+        referee concurrently — a process only ticks while it holds the lease.
+        """
+        if desired_state not in ('running', 'paused', 'stopped'):
+            raise ValueError(f"invalid desired_state '{desired_state}'")
+        with self.lock:
+            existing = self.conn.execute("SELECT 1 FROM ticker_state WHERE id = 1").fetchone()
+            if existing is None:
+                self.conn.execute(
+                    "INSERT INTO ticker_state (id, desired_state, quiet_round_count, last_tick_at, lease_owner, lease_expires_at) "
+                    "VALUES (1, ?, ?, ?, ?, ?)",
+                    (desired_state, quiet_round_count or 0, last_tick_at, lease_owner, lease_expires_at)
+                )
+                return
+            # lease_owner/lease_expires_at are always written to whatever was
+            # passed (None included) — the caller (TickerEngine._persist_state)
+            # always passes them explicitly, and None is the meaningful "this
+            # process no longer holds a lease" state on pause/stop. Only
+            # quiet_round_count/last_tick_at are conditionally-updated, since
+            # other callers may legitimately omit them.
+            fields = [
+                "desired_state = ?",
+                "lease_owner = ?",
+                "lease_expires_at = ?",
+                "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')",
+            ]
+            params: list = [desired_state, lease_owner, lease_expires_at]
+            if quiet_round_count is not None:
+                fields.append("quiet_round_count = ?")
+                params.append(quiet_round_count)
+            if last_tick_at is not None:
+                fields.append("last_tick_at = ?")
+                params.append(last_tick_at)
+            self.conn.execute(f"UPDATE ticker_state SET {', '.join(fields)} WHERE id = 1", params)
 
     def record_burst_event(self, phase: str, payload_extra: Optional[Dict[str, Any]] = None) -> int:
         """

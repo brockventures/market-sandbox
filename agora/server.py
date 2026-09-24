@@ -2101,9 +2101,20 @@ def run_server(host: Optional[str] = None, port: int = 8080, referee: Optional[A
     if os.environ.get('AGORA_TICKER_ENABLED', '1') not in ('0', 'false', 'False'):
         interval = float(os.environ.get('AGORA_TICK_INTERVAL_SEC', DEFAULT_TICK_INTERVAL_SEC))
         inactivity_rounds = int(os.environ.get('AGORA_TICKER_INACTIVITY_ROUNDS', DEFAULT_INACTIVITY_ROUNDS))
-        ticker = TickerEngine(ref, interval_sec=interval, inactivity_rounds=inactivity_rounds)
-        ticker.start()
-        print(f"Background ticker started: interval={interval}s, inactivity_watchdog={inactivity_rounds} quiet rounds")
+        # Boot-time reconciliation (Issue #63): resume from durable desired
+        # state rather than always waking up running-from-zero. A container
+        # restart that happened while the ticker was intentionally paused
+        # (manual pause, or the inactivity watchdog) stays paused; one that
+        # happened mid-run resumes with its quiet-round count intact instead
+        # of losing that progress and needing to re-accumulate it.
+        ticker = TickerEngine.boot_from_persisted_state(
+            ref, interval_sec=interval, inactivity_rounds=inactivity_rounds
+        )
+        st = ticker.status()
+        print(
+            f"Background ticker started: interval={interval}s, inactivity_watchdog={inactivity_rounds} quiet rounds, "
+            f"paused={st.get('paused')} ({st.get('pause_reason') or 'running'})"
+        )
     else:
         print("Background ticker disabled (AGORA_TICKER_ENABLED=0)")
 
@@ -2120,7 +2131,9 @@ def run_server(host: Optional[str] = None, port: int = 8080, referee: Optional[A
         pass
     finally:
         if ticker:
-            ticker.stop()
+            # Shutdown is not operator intent: leave desired_state as-is so
+            # the next boot resumes what was running.
+            ticker.stop(persist=False)
         server.server_close()
 
 

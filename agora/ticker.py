@@ -9,6 +9,9 @@ detected via referee.current_seq not advancing) to avoid burning Railway
 compute/budget on an idle table.
 """
 
+import datetime
+import os
+import socket
 import threading
 import time
 import uuid
@@ -19,6 +22,11 @@ DEFAULT_TICK_INTERVAL_SEC = 60.0
 DEFAULT_INACTIVITY_ROUNDS = 2880  # consecutive quiet rounds before auto-pause (48 hours at 60s cadence)
 MAX_BURST_ROUNDS = 50
 MAX_BURST_INTERVAL_SEC = 600.0
+LEASE_DURATION_SEC = 180.0  # must be well above interval_sec so a live ticker never lets its own lease lapse
+
+
+def _utcnow_iso() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
 
 
 class TickerEngine:
@@ -41,6 +49,9 @@ class TickerEngine:
         self.interval_sec = max(self.min_interval_sec, float(interval_sec))
         self.inactivity_rounds = max(1, int(inactivity_rounds))
         self.on_tick = on_tick  # optional callback(round_result: dict) for broadcast hooks
+        # Lease identity for this process (Issue #63 fencing): only the
+        # process holding an unexpired lease on ticker_state actually ticks.
+        self.lease_owner = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
 
         self._lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
@@ -80,19 +91,36 @@ class TickerEngine:
             self._last_seq = seq
             self._stop_event.clear()
             self._next_tick_at = time.time() + self.interval_sec
+        self._persist_state('running')
         self._thread = threading.Thread(target=self._run_loop, name="agora-ticker", daemon=True)
         self._thread.start()
 
-    def stop(self) -> None:
+    def stop(self, persist: bool = True) -> None:
+        """
+        Stop the ticker thread. `persist=False` is for process shutdown: a
+        server exiting is not an operator asking for the clock to stop, so
+        it must not overwrite the durable desired_state the next boot
+        reconciles against.
+        """
         self._stop_event.set()
         with self._lock:
             self._running = False
             self._next_tick_at = None
+        if persist:
+            self._persist_state('stopped')
 
     def pause(self, reason: str = "manual") -> None:
         with self._lock:
             self._paused = True
             self._pause_reason = reason
+            # A burst pause (#62) is transient: the burst thread does not
+            # survive a restart, so persist what the continuous ticker returns
+            # to once the burst concludes, not the momentary pause. Otherwise
+            # a container bounce mid-burst would leave the clock paused for good.
+            durable = 'paused'
+            if reason.startswith("burst:") and self._burst_resume_ticker_after:
+                durable = 'running'
+        self._persist_state(durable)
 
     def resume(self) -> None:
         seq = getattr(self.referee, "current_seq", 0)
@@ -102,6 +130,74 @@ class TickerEngine:
             self._quiet_round_count = 0
             self._last_seq = seq
             self._next_tick_at = time.time() + self.interval_sec
+        self._persist_state('running')
+
+    def _persist_state(self, desired_state: str) -> None:
+        """Best-effort durable write; a persistence failure must never break in-memory ticking."""
+        try:
+            with self._lock:
+                quiet = self._quiet_round_count
+            lease_expires = None
+            if desired_state == 'running':
+                lease_expires = (
+                    datetime.datetime.now(datetime.timezone.utc)
+                    + datetime.timedelta(seconds=LEASE_DURATION_SEC)
+                ).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+            self.referee.set_ticker_state(
+                desired_state=desired_state,
+                quiet_round_count=quiet,
+                last_tick_at=_utcnow_iso(),
+                lease_owner=self.lease_owner if desired_state == 'running' else None,
+                lease_expires_at=lease_expires,
+            )
+        except Exception:
+            pass
+
+    @staticmethod
+    def resume_from_persisted_state(referee, **kwargs) -> Optional["TickerEngine"]:
+        """
+        Boot-time reconciliation (Issue #63): read ticker_state and, if the
+        desired state was 'running' last time this referee's process was
+        asked, construct a TickerEngine and start() it immediately instead
+        of coming back up cold and silent after a restart. Returns None if
+        there is no persisted state or it wasn't 'running'.
+        """
+        try:
+            state = referee.get_ticker_state()
+        except Exception:
+            return None
+        if not state or state.get('desired_state') != 'running':
+            return None
+        engine = TickerEngine(referee, **kwargs)
+        engine.start()  # start() resets quiet_round_count to 0 — restore the persisted value after
+        with engine._lock:
+            engine._quiet_round_count = max(0, int(state.get('quiet_round_count') or 0))
+        return engine
+
+    @staticmethod
+    def boot_from_persisted_state(referee, **kwargs) -> "TickerEngine":
+        """
+        Server boot path: always returns a *started* engine, so the admin
+        pause/resume endpoints keep working after a restart.
+          - no persisted state (fresh db) -> started, running
+          - persisted 'running'            -> started, quiet_round_count restored
+          - persisted 'paused'/'stopped'   -> started, then paused with reason
+            'restored_from_persisted_state:<state>'; admin resume revives it
+        An engine that was merely constructed would have no ticker thread, and
+        resume() only clears the pause flag, so it could never tick again.
+        """
+        engine = TickerEngine.resume_from_persisted_state(referee, **kwargs)
+        if engine is not None:
+            return engine
+        try:
+            state = referee.get_ticker_state()
+        except Exception:
+            state = None
+        engine = TickerEngine(referee, **kwargs)
+        engine.start()
+        if state is not None:
+            engine.pause(reason=f"restored_from_persisted_state:{state.get('desired_state')}")
+        return engine
 
     def configure(
         self,
@@ -274,6 +370,7 @@ class TickerEngine:
                 continue
 
             seq_now = getattr(self.referee, "current_seq", None)
+            watchdog_tripped = False
             with self._lock:
                 self._last_round_result = result
                 new_seq = self._last_seq if seq_now is None else seq_now
@@ -289,6 +386,12 @@ class TickerEngine:
                         f"inactivity_watchdog: {self._quiet_round_count} consecutive "
                         f"quiet rounds (no order/fill/transit activity)"
                     )
+                    watchdog_tripped = True
+
+            # Persist every tick: keeps quiet_round_count/last_tick_at current
+            # and renews this process's lease so a restart mid-run resumes
+            # from close to where it left off, not from zero.
+            self._persist_state('paused' if watchdog_tripped else 'running')
 
             if self.on_tick:
                 try:
