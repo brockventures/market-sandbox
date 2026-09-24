@@ -752,6 +752,10 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             perishable = payload.get('perishable')
 
             ref = self.referee or AgoraReferee()
+            if '/' in str(target_agent):
+                self._send_json(400, {'v': 1, 'kind': 'reject', 'payload': {
+                    'reason': 'invalid_format', 'detail': 'agent_id is a fleet; name the ship in vessel_id'}})
+                return
             result = ref.initiate_transit(
                 agent_id=target_agent,
                 destination=destination,
@@ -759,6 +763,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 cargo_qty=cargo_qty,
                 perishable=perishable,
                 escort=bool(payload.get('escort')),
+                vessel_id=payload.get('vessel_id') or payload.get('vessel'),
             )
             if result.get('kind') == 'reject':
                 self._send_json(400, result)
@@ -1115,9 +1120,10 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 except (TypeError, ValueError):
                     qty, price = 0, 0
                 result = ref.peer.offer(agent, data.get('station_id') or data.get('station'),
-                                        data.get('instrument') or data.get('commodity'), qty, price)
+                                        data.get('instrument') or data.get('commodity'), qty, price,
+                                        vessel_id=data.get('vessel_id'))
             elif path.endswith('/accept'):
-                result = ref.peer.accept(agent, str(data.get('escrow_id', '')))
+                result = ref.peer.accept(agent, str(data.get('escrow_id', '')), vessel_id=data.get('vessel_id'))
             else:
                 result = ref.peer.cancel(agent, str(data.get('escrow_id', '')))
             self._send_json(400 if result.get('kind') == 'reject' else 200, result)
@@ -1148,7 +1154,40 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             if path == '/referee/covert/wiretap':
                 result = ref.covert.plant_wiretap(agent, str(data.get('target', '')))
             else:
-                result = ref.covert.execute_sabotage(agent, str(data.get('target', '')), str(data.get('mode', 'auto')))
+                result = ref.covert.execute_sabotage(agent, str(data.get('target', '')), str(data.get('mode', 'auto')),
+                                                     target_vessel=data.get('target_vessel'))
+            self._send_json(400 if result.get('kind') == 'reject' else 200, result)
+            return
+
+        if path in ('/referee/vessels/buy', '/referee/vessels/transfer', '/referee/vessels/scrap'):
+            # Ships (#175): buy one while docked; move goods between two of
+            # your ships (or a ship and your station hold) at one station.
+            auth_agent, auth_err = self._authenticate_request()
+            if auth_err:
+                self._send_json(401, auth_err)
+                return
+            try:
+                length = int(self.headers.get('Content-Length', 0))
+                data = json.loads(self.rfile.read(length).decode('utf-8')) if length else {}
+                if not isinstance(data, dict):
+                    raise ValueError('expected a JSON object')
+            except Exception as e:
+                self._send_json(400, {'v': 1, 'kind': 'reject',
+                                      'payload': {'reason': 'invalid_format', 'detail': f'Malformed JSON: {e}'}})
+                return
+            ref = self.referee or AgoraReferee()
+            agent = data.get('agent_id') if auth_agent in ('admin', 'combine') else auth_agent
+            if not agent or '/' in str(agent):
+                self._send_json(400, {'v': 1, 'kind': 'reject', 'payload': {
+                    'reason': 'agent_required', 'detail': 'agent_id (a fleet, not a ship) is required with this token'}})
+                return
+            if path.endswith('/buy'):
+                result = ref.fleet.buy(str(agent), data.get('vessel_id') or data.get('at'))
+            elif path.endswith('/scrap'):
+                result = ref.fleet.scrap(str(agent), data.get('vessel_id'))
+            else:
+                result = ref.fleet.transfer(str(agent), data.get('from'), data.get('to'),
+                                            str(data.get('instrument') or data.get('commodity') or ''), data.get('qty'))
             self._send_json(400 if result.get('kind') == 'reject' else 200, result)
             return
 
@@ -1214,7 +1253,8 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                     result = ref.contract_desk.buy(agent, cid)
                 else:
                     qty = data.get('qty')
-                    result = ref.contract_desk.deliver(agent, cid, None if qty is None else int(qty))
+                    result = ref.contract_desk.deliver(agent, cid, None if qty is None else int(qty),
+                                                       vessel_id=data.get('vessel_id'))
             except (TypeError, ValueError):
                 result = {'v': 1, 'kind': 'reject', 'payload': {'reason': 'invalid_format', 'detail': 'price/qty must be integers'}}
             self._send_json(400 if result.get('kind') == 'reject' else 200, result)
@@ -1293,7 +1333,8 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                     'limit_price': int(raw_data.get('limit_price', raw_data.get('price', 0))),
                     'order_id': raw_data.get('order_id') or f"{raw_data.get('agent_id', 'ord')}-{int(time.time())}-{uuid.uuid4().hex[:6]}",
                     'instrument': (raw_data.get('instrument') or raw_data.get('commodity') or 'FRAG').upper(),
-                    'station_id': (raw_data.get('station_id') or raw_data.get('station') or 'ceres').lower()
+                    'station_id': (raw_data.get('station_id') or raw_data.get('station') or 'ceres').lower(),
+                    'vessel_id': raw_data.get('vessel_id') or raw_data.get('vessel'),
                 }
             }
         else:
@@ -1474,10 +1515,11 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 # Default to viewing own account
                 agent_id = auth_agent
 
-            self._send_json(200, {
-                'status': 'ok',
-                'accounts': ref.get_accounts(agent_id=agent_id)
-            })
+            out = {'status': 'ok', 'accounts': ref.get_accounts(agent_id=agent_id)}
+            if agent_id and ref.fleet.is_corp(agent_id):
+                # Each ship's hold and station hold (#175); 'accounts' carries corp totals.
+                out['ships'] = ref.get_ship_accounts(agent_id)
+            self._send_json(200, out)
         elif path == '/referee/leaderboard':
             self._send_json(200, {
                 'status': 'ok',
@@ -1570,11 +1612,12 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             })
         elif path == '/referee/vessels':
             ag = query_params.get('agent_id', [None])[0]
-            vessels = ref.get_vessels(ag)
-            self._send_json(200, {
-                'status': 'ok',
-                'vessels': vessels
-            })
+            with ref.lock:
+                vessels = ref.get_vessels(ag)
+                out = {'status': 'ok', 'vessels': vessels}
+                if ag and ref.fleet.is_corp(ag):
+                    out['fleet'] = ref.fleet.summary(ag)
+            self._send_json(200, out)
         elif path in ('/referee/instructions', '/referee/rules'):
             format_param = query_params.get('format', ['json'])[0].lower()
             accept_header = self.headers.get('Accept', '')
@@ -1630,7 +1673,10 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                     'cancel_all': 'POST /referee/orders/cancel_all (auth required)',
                     'health': 'GET /referee/health',
                     'fleets': 'GET /referee/fleets',
-                    'vessels': 'GET /referee/vessels?agent_id= — list fleet vessels',
+                    'vessels': 'GET /referee/vessels?agent_id= — list fleet vessels (with agent_id: holds, cap, next ship price)',
+                    'vessels_buy': 'POST /referee/vessels/buy {vessel_id?} — buy a ship while docked (#175)',
+                    'vessels_transfer': 'POST /referee/vessels/transfer {from, to, instrument, qty} — move goods between your ships at one station',
+                    'vessels_scrap': 'POST /referee/vessels/scrap {vessel_id} — sell a bought ship back (docked) for half its price',
                     'admin_fleets': 'POST /referee/admin/fleets (admin auth) — add/update a fleet_roster row',
                     'admin_reset': 'POST /referee/admin/reset (admin auth) — {"confirm": true} wipes all trading state and re-seeds genesis from fleet_roster, prices flat at BASE_PRICES (deterministic)',
                     'admin_new_game': 'POST /referee/admin/new_game (amos or zero auth only) — {"confirm": true, "seed": optional int, "warmup_rounds": optional int} wipes the board and rolls a fresh, random opening market for Round 0',

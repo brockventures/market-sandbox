@@ -159,7 +159,7 @@ class TestFills(unittest.TestCase):
         left = 7
         gone = ref.get_balance('zero', 'FRAG') - left
         with ref.conn:
-            for acct, d in (('zero', -gone), ('SYSTEM', gone)):
+            for acct, d in (('zero/1', -gone), ('SYSTEM', gone)):  # zero's FRAG is on its ship 1 (#175)
                 ref.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = 'FRAG'", (d, acct))
                 ref.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES ('t-drain', 0, ?, 'FRAG', ?)", (acct, d))
         ref.step_round()
@@ -202,7 +202,8 @@ class TestFills(unittest.TestCase):
         ref.step_round()
         self.assertTrue(flow_txns(ref))
         for (txn,) in ref.conn.execute("SELECT DISTINCT txn_id FROM ledger_entries WHERE txn_id LIKE 'flow-%'"):
-            parties = {r[0] for r in ref.conn.execute("SELECT agent_id FROM ledger_entries WHERE txn_id = ?", (txn,))}
+            # One fleet (its CR on '<fleet>', its goods on its ship '<fleet>/<n>', #175) and SYSTEM.
+            parties = {r[0].split('/')[0] for r in ref.conn.execute("SELECT agent_id FROM ledger_entries WHERE txn_id = ?", (txn,))}
             self.assertIn('SYSTEM', parties)
             self.assertEqual(len(parties), 2)
         ok, errs = ref.verify_ledger_invariants()

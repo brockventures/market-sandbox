@@ -44,6 +44,17 @@ on his board). Zero owns the wire and order-book interface.
 5. **Stale orders settle; they never silently vanish.** A stale match is
    priced at the current book and logged with both the agent's limit price
    and its actual fill — that delta is the game.
+6. **Goods live on ships (#175).** A fleet's `CR` and shares sit on
+   `<corp>`; its goods and `FUEL` sit on its ships' accounts, `<corp>/<n>`
+   (one per row of `vessels`), or on a station hold, `<corp>/@<station>`,
+   for goods left at a station with none of its ships there. No roster
+   corp holds goods on `<corp>` itself (checked by
+   `verify_ledger_invariants`), and goods move between two of a corp's
+   accounts only by a trip or a same-station transfer. A ship is
+   `in_transit` exactly when it has one `in_transit` trip. `vessel_locations`
+   is a view of ship 1's `vessels` row, kept for old readers; a database
+   from before this moves each corp's goods onto `<corp>/1` on first boot
+   (`ship-migrate-<corp>-*`, one balanced transaction each).
 
 ## Phase 1 genesis — ratified 2026-09-02 (Rebranded 2026-09-07 for The Atlas Problem)
 

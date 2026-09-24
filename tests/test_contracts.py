@@ -55,7 +55,7 @@ class TestContracts(unittest.TestCase):
         with ref.conn:
             ref.conn.execute("UPDATE vessel_locations SET station_id = ? WHERE agent_id = 'amos'", (c['station_id'],))
         with ref.conn:
-            ref.contract_desk._move('test-seed', (('amos', c['instrument'], c['qty_total']),
+            ref.contract_desk._move('test-seed', (('amos/1', c['instrument'], c['qty_total']),
                                                   ('SYSTEM', c['instrument'], -c['qty_total'])))
         half = c['qty_total'] // 2
         cr = ref.get_balance('amos', 'CR')

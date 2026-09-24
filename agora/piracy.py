@@ -363,7 +363,12 @@ class PiracyDesk:
         fence = self._fence_account()
         legs = [('SYSTEM', comm, -(cut + (fence_qty if fence else 0)))]
         if cut:
-            legs.append((row['sponsor'], comm, cut))
+            # The sponsor's cut is delivered to its ship 1 (#175): the raiders
+            # carry it, as before ships, so #186's covert economics are unchanged.
+            sponsor = row['sponsor']
+            if self.ref.fleet.is_corp(sponsor):
+                sponsor = f"{sponsor}/1"
+            legs.append((sponsor, comm, cut))
         if fence and fence_qty:
             legs.append((fence, comm, fence_qty))
         self._move(f"piracy-loot-{tid}", legs)

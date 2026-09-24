@@ -139,14 +139,16 @@ class OrderFlowDesk:
 
     # ------------------------------------------------------------ matching
 
-    def _eligible(self, agent: str, st: str) -> bool:
-        """A fleet's order meets the station's traders only while the fleet
-        is docked there. Moving does not cancel resting orders, and without
+    def _eligible(self, o, st: str) -> bool:
+        """A fleet's order meets the station's traders only while the ship
+        that placed it is docked there (#175: each ship at its own station,
+        so a corp with ships at two stations takes flow at both). Without
         this a fleet could leave quotes at every station it passed and make
         markets at all four at once."""
+        agent = o.agent_id
         if agent.startswith('depot_') or agent == FLOW_ACCOUNT or self.ref.fleet_out(agent):
             return False
-        loc = self.ref.get_vessel_location(agent)
+        loc = self.ref.get_vessel_location(agent, o.vessel_id)
         return loc.get('status') == 'docked' and loc.get('station_id') == st
 
     def _settle(self, st: str, comm: str, o, qty: int, npc_buys: bool, round_num: int, n: int) -> None:
@@ -156,7 +158,7 @@ class OrderFlowDesk:
         txn = f"flow-{st}-{comm.lower()}-r{round_num}-{n}"
         seq = ref.current_seq + 1  # book_events.seq is unique: one new seq per fill
         sign = -1 if npc_buys else 1  # the fleet's goods delta
-        legs = ((o.agent_id, comm, sign * qty), (FLOW_ACCOUNT, comm, -sign * qty),
+        legs = ((o.goods_acct, comm, sign * qty), (FLOW_ACCOUNT, comm, -sign * qty),
                 (o.agent_id, 'CR', -sign * cost), (FLOW_ACCOUNT, 'CR', sign * cost))
         for acct, inst, d in legs:
             ref.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, ?, 0)",
@@ -175,7 +177,8 @@ class OrderFlowDesk:
         ref.conn.execute("INSERT INTO book_events (seq, kind, payload) VALUES (?, 'trade', ?)", (seq, json.dumps({
             'trade_id': txn, 'station_id': st, 'instrument': comm, 'price': o.limit_price, 'qty': qty, 'cost': cost,
             'buyer_id': 'station_flow' if npc_buys else o.agent_id,
-            'seller_id': o.agent_id if npc_buys else 'station_flow', 'order_flow': True})))
+            'seller_id': o.agent_id if npc_buys else 'station_flow', 'vessel_id': o.vessel_id,
+            'order_flow': True})))
         t = self.totals
         t['fills'] += 1
         f = self.by_fleet.setdefault(o.agent_id, {'units': 0, 'cr': 0})
@@ -199,10 +202,10 @@ class OrderFlowDesk:
                 break
             if not ok(o.limit_price):
                 break
-            if o.remaining_qty <= 0 or not self._eligible(o.agent_id, st):
+            if o.remaining_qty <= 0 or not self._eligible(o, st):
                 continue
             if npc_buys:
-                can = ref.get_balance(o.agent_id, comm)
+                can = ref._account_balance(o.goods_acct, comm)
             else:
                 can = ref.get_balance(o.agent_id, 'CR') // o.limit_price
             qty = min(want - filled, o.remaining_qty, max(0, can))
