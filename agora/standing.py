@@ -93,6 +93,13 @@ LANES = ('hauling', 'trading', 'market_making', 'covert')
 WINDOW = 50
 T1_SHARE, T1_FLOOR = 0.50, 40_000
 T2_SHARE, T2_FLOOR = 0.75, 120_000
+# Market makers earn ~93k in their lane by round 300 (styles, seeds 1-40), so the
+# default 120k tier-2 floor was reachable in 2 of 40 games; their floor is 80k.
+T2_FLOOR_BY_LANE: Dict[str, int] = {'market_making': 80_000}
+
+
+def t2_floor(lane: Optional[str] = None) -> int:
+    return T2_FLOOR_BY_LANE.get(lane, T2_FLOOR) if lane else T2_FLOOR
 T1_KEEP, T2_KEEP = 0.35, 0.60
 LAPSE_ROUNDS = 25
 
@@ -172,7 +179,8 @@ def new_lane_state() -> Dict[str, Any]:
     return {'tier': 0, 'below1': 0, 'below2': 0, 'first_t1': None, 'first_t2': None}
 
 
-def advance(state: Dict[str, Any], share: float, cum_profit: int, round_num: int) -> Tuple[Dict[str, Any], List[Tuple[str, int]]]:
+def advance(state: Dict[str, Any], share: float, cum_profit: int, round_num: int,
+            tier2_floor: int = T2_FLOOR) -> Tuple[Dict[str, Any], List[Tuple[str, int]]]:
     """One round of one lane's standing. Returns (new state, transitions),
     transitions being ('earn', tier) or ('lapse', tier) in the order they
     happened. Pure: the threshold and hysteresis rules live here only."""
@@ -184,7 +192,7 @@ def advance(state: Dict[str, Any], share: float, cum_profit: int, round_num: int
         moves.append(('earn', 1))
         if s['first_t1'] is None:
             s['first_t1'] = round_num
-    if s['tier'] == 1 and share >= T2_SHARE and cum_profit >= T2_FLOOR:
+    if s['tier'] == 1 and share >= T2_SHARE and cum_profit >= tier2_floor:
         s['tier'], s['below2'], earned_now = 2, 0, True
         moves.append(('earn', 2))
         if s['first_t2'] is None:
@@ -219,7 +227,7 @@ def news(agent: str, lane: str, move: str, tier: int) -> Tuple[str, str]:
     title = inst['titles'][tier - 1]
     who = agent.upper()
     if move == 'earn':
-        need = (T1_SHARE, T1_FLOOR) if tier == 1 else (T2_SHARE, T2_FLOOR)
+        need = (T1_SHARE, T1_FLOOR) if tier == 1 else (T2_SHARE, t2_floor(lane))
         head = (f"{inst['short']} ADMITS {who}" if tier == 1 else f"{who} NAMED {title.upper()}")
         body = (f"{inst['name']} has recognised {agent} as {title}: {int(need[0] * 100)}% or more of its trailing "
                 f"income is {inst['lane_label'].lower()} and it has earned over {need[1]:,} CR in the lane. "
@@ -558,7 +566,7 @@ class StandingDesk:
                 row = conn.execute("SELECT * FROM standing_lanes WHERE agent_id = ? AND lane = ?", (agent, lane)).fetchone()
                 st = {k: row[k] for k in ('tier', 'below1', 'below2', 'first_t1', 'first_t2')} if row else new_lane_state()
                 cum = (row['cum_profit'] if row else 0) + int(round(income.get(agent, {}).get(lane, 0)))
-                st, moves = advance(st, sh[lane], cum, round_num)
+                st, moves = advance(st, sh[lane], cum, round_num, t2_floor(lane))
                 conn.execute("""INSERT OR REPLACE INTO standing_lanes
                     (agent_id, lane, cum_profit, tier, below1, below2, first_t1, first_t2, share, trailing)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -641,7 +649,8 @@ class StandingDesk:
             'enabled': self.enabled, 'round': self.ref.current_round,
             'rules': {'window_rounds': WINDOW,
                       'tier1': {'share': T1_SHARE, 'lane_profit_cr': T1_FLOOR, 'keep_share': T1_KEEP},
-                      'tier2': {'share': T2_SHARE, 'lane_profit_cr': T2_FLOOR, 'keep_share': T2_KEEP},
+                      'tier2': {'share': T2_SHARE, 'lane_profit_cr': T2_FLOOR, 'keep_share': T2_KEEP,
+                                'lane_profit_cr_by_lane': {l: t2_floor(l) for l in LANES}},
                       'lapse_rounds': LAPSE_ROUNDS},
             'institutions': {lane: {'capability': v['cap'], 'name': v['name'], 'titles': list(v['titles']),
                                     'opens': list(v['opens']), 'why': v['why']} for lane, v in INSTITUTIONS.items()},

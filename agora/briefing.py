@@ -437,7 +437,7 @@ def _standing_section(standing) -> List[str]:
            f"trading (stock round trips and borrow fees), market making (goods bought and sold at the same station) "
            f"or covert (privateer loot and ransoms, sabotage and wiretaps). Earn a lane's standing with "
            f"{S.T1_SHARE:.0%} of your last {S.WINDOW} rounds' lane profit from it and {S.T1_FLOOR:,} CR earned in it "
-           f"all game; {S.T2_SHARE:.0%} and {S.T2_FLOOR:,} CR for the second tier. Membership lapses after "
+           f"all game; {S.T2_SHARE:.0%} and {S.T2_FLOOR:,} CR for the second tier ({S.t2_floor('market_making'):,} CR for market making). Membership lapses after "
            f"{S.LAPSE_ROUNDS} rounds below {S.T1_KEEP:.0%} ({S.T2_KEEP:.0%} for the second tier), and GalNet reports "
            f"every admission and lapse. Standing opens the institution's lane tech for purchase; tech you already "
            f"bought is yours to keep if standing lapses. `GET /referee/standing`",
@@ -461,7 +461,7 @@ def _standing_section(standing) -> List[str]:
                            f"at {S.T1_SHARE:.0%} and {S.T1_FLOOR:,} CR")
             elif v['tier'] == 1:
                 nxt.append(f"{inst['lane_label']} {v['share']:.0%} / {v['lane_profit_cr']:,} CR: {inst['titles'][1]} "
-                           f"at {S.T2_SHARE:.0%} and {S.T2_FLOOR:,} CR")
+                           f"at {S.T2_SHARE:.0%} and {S.t2_floor(l):,} CR")
             if v['tier'] and v['rounds_below_keep']:
                 keep = S.T2_KEEP if v['tier'] == 2 else S.T1_KEEP
                 nxt.append(f"{inst['titles'][v['tier'] - 1]} lapses in "

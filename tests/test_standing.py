@@ -290,7 +290,9 @@ class TestDesk(unittest.TestCase):
         self.assertIn('lapses after 25 rounds below 35%', text)
         rep = ref.standing.report()
         self.assertEqual(set(rep['corps']), {'aerial', 'amos', 'marvin', 'zero'})
-        self.assertEqual(rep['rules']['tier2'], {'share': 0.75, 'lane_profit_cr': 120_000, 'keep_share': 0.6})
+        self.assertEqual(rep['rules']['tier2'], {'share': 0.75, 'lane_profit_cr': 120_000, 'keep_share': 0.6,
+                                                 'lane_profit_cr_by_lane': {'hauling': 120_000, 'trading': 120_000,
+                                                                            'market_making': 80_000, 'covert': 120_000}})
 
 
 class TestStylesEarnTheirLane(unittest.TestCase):
@@ -306,6 +308,15 @@ class TestStylesEarnTheirLane(unittest.TestCase):
         for a, f in r['fleets'].items():
             mix = {l: v['share'] for l, v in rep[a]['lanes'].items()}
             self.assertEqual(max(mix, key=mix.get), want[f['strategy']], (f['strategy'], mix))
+
+
+class TestMarketMakingTier2Floor(unittest.TestCase):
+    def test_market_making_tier2_floor_is_80k(self):
+        self.assertEqual(S.t2_floor('market_making'), 80_000)
+        self.assertEqual(S.t2_floor('hauling'), S.T2_FLOOR)
+        t1 = S.advance(S.new_lane_state(), 0.8, S.T1_FLOOR, 1)[0]
+        self.assertEqual(S.advance(t1, 0.8, 80_000, 2, S.t2_floor('market_making'))[0]['tier'], 2)
+        self.assertEqual(S.advance(t1, 0.8, 80_000, 2, S.t2_floor('hauling'))[0]['tier'], 1)
 
 
 if __name__ == '__main__':
