@@ -15,6 +15,22 @@ import os
 STATIONS = ["earth", "luna", "mars", "ceres"]
 COMMODITIES = ["FRAG", "FUEL", "FOOD", "ORE"]
 
+# Commodity aliases for natural command parsing and backwards compatibility (#75)
+COMMODITY_ALIASES: Dict[str, str] = {
+    "ORGANICS": "FOOD",
+    "BIO": "FOOD",
+    "HYDROPONICS": "FOOD",
+    "BANANA": "FRAG",
+}
+
+
+def normalize_commodity(name: str) -> str:
+    """Normalize commodity name/alias to canonical symbol."""
+    if not name:
+        return ""
+    upper = str(name).strip().upper()
+    return COMMODITY_ALIASES.get(upper, upper)
+
 # Base fundamental mean valuations (equilibrium price surface).
 # #162 (with #118): every station's gap to the good's four-station mean is
 # narrowed to 75% of the original surface below (rounded to 0.1 CR), so
