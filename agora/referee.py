@@ -119,7 +119,7 @@ class AgoraReferee:
         extended_shocks: Optional[bool] = None,
         contracts: Optional[bool] = None,
         hazards: Any = None,
-        corporate: Optional[bool] = None,
+        corporate: Optional[bool] = None, dividends: Optional[bool] = None,
         upgrades: Optional[bool] = None,
         piracy: Any = None,
         events: Optional[bool] = None,
@@ -738,7 +738,7 @@ class AgoraReferee:
         extended_shocks: Optional[bool] = None,
         contracts: Optional[bool] = None,
         hazards: Any = None,
-        corporate: Optional[bool] = None,
+        corporate: Optional[bool] = None, dividends: Optional[bool] = None,
         upgrades: Optional[bool] = None,
         piracy: Any = None,
         events: Optional[bool] = None,
@@ -784,6 +784,8 @@ class AgoraReferee:
             self.hazards.odds = parse_hazards(hazards)
         if corporate is not None:
             self.corporate_enabled = bool(corporate)
+        if dividends is not None:
+            self.dividends_enabled = bool(dividends)
         if upgrades is not None:
             self.upgrades_enabled = bool(upgrades)
         if piracy is not None:
@@ -854,7 +856,7 @@ class AgoraReferee:
         extended_shocks: Optional[bool] = None,
         contracts: Optional[bool] = None,
         hazards: Any = None,
-        corporate: Optional[bool] = None,
+        corporate: Optional[bool] = None, dividends: Optional[bool] = None,
         upgrades: Optional[bool] = None,
         piracy: Any = None,
         events: Optional[bool] = None,
@@ -901,6 +903,8 @@ class AgoraReferee:
             self.hazards.odds = parse_hazards(hazards)
         if corporate is not None:
             self.corporate_enabled = bool(corporate)
+        if dividends is not None:
+            self.dividends_enabled = bool(dividends)
         if upgrades is not None:
             self.upgrades_enabled = bool(upgrades)
         if piracy is not None:
@@ -2581,6 +2585,26 @@ class AgoraReferee:
                     )
                     if cur.rowcount != 1:
                         raise RuntimeError(f"Failed to debit {seller_goods} {commodity_inst}: rowcount {cur.rowcount} != 1")
+
+                    # Exchange transaction fee on stock trades (#165)
+                    if commodity_inst.startswith('EQ_') and getattr(self, 'upgrades_enabled', False) and getattr(self, 'upgrades', None):
+                        taker = order.agent_id
+                        fee_rate = self.upgrades.fee_rate(taker)
+                        fee = int(round(cost * fee_rate))
+                        if fee > 0:
+                            taker_cr = self.get_balance(taker, 'CR')
+                            fee_paid = min(taker_cr, fee)
+                            if fee_paid > 0:
+                                txn_fee = f"exchange-fee-{trade.trade_id}"
+                                self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, 'CR', ?)",
+                                                 (txn_fee, next_seq, taker, -fee_paid))
+                                self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, 'ceres_exchange', 'CR', ?)",
+                                                 (txn_fee, next_seq, fee_paid))
+                                self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = ? AND instrument = 'CR'",
+                                                 (fee_paid, taker))
+                                self.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES ('ceres_exchange', 'CR', 0)")
+                                self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = 'ceres_exchange' AND instrument = 'CR'",
+                                                 (fee_paid,))
 
                     # Record trade event in book_events
                     trade_seq = self.current_seq + 1

@@ -47,6 +47,10 @@ TRANSIT_SIPHON = 0.3   # of the cargo in flight, and +1 round
 DOCK_STEAL = 0.25      # of the largest docked holding
 FUEL_SIPHON = 15       # units, when the hold is empty
 RIVALRY_DECAY_ROUNDS = 30
+RUMOR_COST = 1_000
+RUMOR_DISCOUNT_COST = 500
+RUMOR_TRACE = 0.20
+RUMOR_FINE = 2_000
 
 
 def ref_value(commodity: str, qty: int) -> int:
@@ -66,6 +70,17 @@ CREATE TABLE IF NOT EXISTS covert_wiretaps (
     cost        INTEGER NOT NULL,
     round       INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS covert_rumors (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor       TEXT NOT NULL,
+    station_id  TEXT NOT NULL,
+    commodity   TEXT NOT NULL,
+    headline    TEXT NOT NULL,
+    drift_bias  REAL NOT NULL,
+    cost        INTEGER NOT NULL,
+    traced      INTEGER NOT NULL,
+    round       INTEGER NOT NULL
+);
 """
 
 
@@ -77,9 +92,9 @@ class CovertDesk:
     def __init__(self, ref, seed: int = 0):
         self.ref = ref
         with ref.conn:
-            ref.conn.execute(SCHEMA)
+            ref.conn.executescript(SCHEMA)
         self.bags = Bags(ref.conn, 'covert')
-        self.rng = random.Random(f"covert-{seed}")
+        self.reset(seed)
 
     def reset(self, seed: int) -> None:
         self.rng = random.Random(f"covert-{seed}")
@@ -175,7 +190,7 @@ class CovertDesk:
         }}
 
     def get_intel(self, viewer: str, target: str) -> Dict[str, Any]:
-        """Telemetry on target: location, cargo, contracts, liquid cash, upgrades."""
+        """Telemetry on target: location, cargo, contracts, liquid cash, upgrades, incoming landings."""
         ref = self.ref
         viewer = (viewer or '').strip().lower()
         target = (target or '').strip().lower()
@@ -199,11 +214,158 @@ class CovertDesk:
         if getattr(ref, 'upgrades_enabled', False):
             upgrades = ref.upgrades.holdings(target)
 
+        # Insider telemetry: in-flight transit landings
+        landings = []
+        rows = ref.conn.execute(
+            "SELECT transit_id, origin, destination, commodity, cargo_qty, departure_round, arrival_round "
+            "FROM transits WHERE agent_id = ? AND status = 'in_transit'", (target,)).fetchall()
+        for r in rows:
+            d = dict(r)
+            d['rounds_until_landing'] = max(0, d['arrival_round'] - ref.current_round)
+            landings.append(d)
+
         return {'v': 1, 'kind': 'intel_ok', 'payload': {
             'target': target, 'round': ref.current_round,
             'location': loc, 'liquid_cr': liquid, 'cargo': hold, 'fleet': fleet,
-            'contracts': contracts, 'upgrades': upgrades
+            'contracts': contracts, 'upgrades': upgrades,
+            'incoming_landings': landings
         }}
+
+    def get_insider_taps(self, viewer: str) -> List[Dict[str, Any]]:
+        """Early visibility into upcoming bulk trade landings 1 round before execution for wiretapped rivals (#165)."""
+        ref = self.ref
+        viewer = (viewer or '').strip().lower()
+        if viewer == 'admin':
+            targets = sorted({r[0].lower() for r in ref.conn.execute("SELECT agent_id FROM fleet_roster")})
+        else:
+            targets = sorted(self.tapped_targets(viewer))
+
+        taps = []
+        rnd = ref.current_round
+        for target in targets:
+            if target == viewer:
+                continue
+            rows = ref.conn.execute(
+                "SELECT transit_id, origin, destination, commodity, cargo_qty, departure_round, arrival_round "
+                "FROM transits WHERE agent_id = ? AND status = 'in_transit' AND arrival_round <= ?",
+                (target, rnd + 1)).fetchall()
+            for r in rows:
+                taps.append({
+                    'target': target,
+                    'transit_id': r['transit_id'],
+                    'origin': r['origin'],
+                    'destination': r['destination'],
+                    'commodity': r['commodity'],
+                    'cargo_qty': r['cargo_qty'],
+                    'departure_round': r['departure_round'],
+                    'arrival_round': r['arrival_round'],
+                    'rounds_until_landing': max(0, r['arrival_round'] - rnd),
+                    'landing_next_round': (r['arrival_round'] == rnd + 1),
+                })
+        taps.sort(key=lambda x: (x['rounds_until_landing'], -x['cargo_qty']))
+        return taps
+
+    def plant_rumor(self, actor: str, station_id: str, commodity: str, direction: str = 'bullish',
+                    headline: Optional[str] = None, body: Optional[str] = None) -> Dict[str, Any]:
+        """Plant GalNet disinformation / rumor mill to spike or crash spot prices (#165)."""
+        import json
+        import time
+        ref = self.ref
+        ref.mark_active(actor)
+        actor = (actor or '').strip().lower()
+        station_id = (station_id or 'ceres').strip().lower()
+        commodity = (commodity or 'FRAG').strip().upper()
+        direction = (direction or 'bullish').strip().lower()
+
+        fleets = {r[0].lower() for r in ref.conn.execute("SELECT agent_id FROM fleet_roster")}
+        if actor not in fleets and actor != 'admin':
+            return _reject('invalid_actor', f"Unknown fleet '{actor}'")
+        if station_id not in ('ceres', 'mars', 'luna', 'earth'):
+            return _reject('invalid_station', f"Unknown station '{station_id}'")
+        if commodity not in ('FRAG', 'FOOD', 'ORE', 'FUEL'):
+            return _reject('invalid_commodity', f"Unknown commodity '{commodity}'")
+
+        cost = RUMOR_COST
+        standing = getattr(ref, 'standing', None)
+        if standing is not None and standing.allows(actor, 'rumor_discount'):
+            cost = RUMOR_DISCOUNT_COST
+
+        rnd = ref.current_round
+        with ref.lock, ref.conn:
+            avail = ref.peer._available(actor, 'CR') if hasattr(ref, 'peer') else ref.get_balance(actor, 'CR')
+            if avail < cost:
+                return _reject('insufficient_credits', f"Planting rumor costs {cost} CR; available {avail}")
+
+            seq = ref._get_next_seq()
+            txn = f"rumor-fee-{actor}-{station_id}-{commodity.lower()}-r{rnd}"
+            for acct, d in ((actor, -cost), ('SYSTEM', cost)):
+                ref.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = 'CR'", (d, acct))
+                ref.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, 'CR', ?)",
+                                 (txn, seq, acct, d))
+
+            is_bullish = direction in ('bullish', 'spike', 'short_squeeze', 'shortage')
+            drift_bias = 0.35 if is_bullish else -0.30
+            duration = 3
+
+            if not headline:
+                action_word = "SUPPLY SHORTAGE LOOMS" if is_bullish else "MARKET FLOODED WITH SURPLUS"
+                headline = f"UNVERIFIED REPORTS: {station_id.upper()} {commodity} {action_word}"
+            if not body:
+                body = (f"GalNet anonymous dispatches allege upcoming logistics disruptions for {commodity} "
+                        f"docking at {station_id.title()}. Traders anticipate sharp volatility.")
+
+            event_id = f"gn-rumor-{rnd}-{self.rng.randint(1000, 9999)}"
+            galnet = getattr(ref, 'galnet', None)
+            if galnet is not None:
+                from agora.galnet import GalNetNewsEvent
+                ev = GalNetNewsEvent(
+                    id=event_id,
+                    round=rnd,
+                    timestamp=time.time(),
+                    station_id=station_id,
+                    commodity=commodity,
+                    headline=headline,
+                    body=body,
+                    drift_bias=drift_bias,
+                    duration_rounds=duration,
+                )
+                galnet.events.append(ev)
+                galnet.active_shocks.append(ev)
+
+            ref.conn.execute("INSERT INTO book_events (seq, kind, payload) VALUES (?, 'news', ?)",
+                             (seq, json.dumps({
+                                 'id': event_id, 'round': rnd, 'station_id': station_id,
+                                 'commodity': commodity, 'headline': headline, 'body': body,
+                                 'drift_bias': drift_bias, 'duration_rounds': duration
+                             })))
+
+            traced = (self.rng.random() < RUMOR_TRACE)
+            fine_paid = 0
+            if traced:
+                actor_cr = ref.get_balance(actor, 'CR')
+                fine_paid = min(actor_cr, RUMOR_FINE)
+                if fine_paid > 0:
+                    seq_fine = ref._get_next_seq()
+                    txn_fine = f"rumor-fine-{actor}-r{rnd}"
+                    for acct, d in ((actor, -fine_paid), ('SYSTEM', fine_paid)):
+                        ref.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = 'CR'", (d, acct))
+                        ref.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, 'CR', ?)",
+                                         (txn_fine, seq_fine, acct, d))
+                if getattr(ref, 'events_enabled', False):
+                    ref.events.record_locked('disinformation_trace', 'public', actor=actor, amount=fine_paid,
+                                             detail=f"{actor} exposed for planting false GalNet market rumors on {commodity} at {station_id}; fined {fine_paid} CR")
+
+            ref.conn.execute(
+                "INSERT INTO covert_rumors (actor, station_id, commodity, headline, drift_bias, cost, traced, round) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (actor, station_id, commodity, headline, drift_bias, cost, 1 if traced else 0, rnd))
+
+            return {'v': 1, 'kind': 'rumor_ok', 'payload': {
+                'event_id': event_id, 'actor': actor, 'station_id': station_id, 'commodity': commodity,
+                'direction': 'bullish' if is_bullish else 'bearish', 'drift_bias': drift_bias,
+                'duration_rounds': duration, 'cost': cost, 'traced': traced, 'fine': fine_paid,
+                'headline': headline, 'round': rnd
+            }}
 
     # ------------------------------------------------------------ Sabotage (#135)
 

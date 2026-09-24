@@ -1137,7 +1137,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             self._send_json(400 if result.get('kind') == 'reject' else 200, result)
             return
 
-        if path in ('/referee/covert/wiretap', '/referee/covert/sabotage'):
+        if path in ('/referee/covert/wiretap', '/referee/covert/sabotage', '/referee/covert/rumor'):
             auth_agent, auth_err = self._authenticate_request()
             if auth_err:
                 self._send_json(401, auth_err)
@@ -1161,9 +1161,18 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 return
             if path == '/referee/covert/wiretap':
                 result = ref.covert.plant_wiretap(agent, str(data.get('target', '')))
-            else:
+            elif path == '/referee/covert/sabotage':
                 result = ref.covert.execute_sabotage(agent, str(data.get('target', '')), str(data.get('mode', 'auto')),
                                                      target_vessel=data.get('target_vessel'))
+            else:
+                result = ref.covert.plant_rumor(
+                    agent,
+                    str(data.get('station_id') or data.get('station', 'ceres')),
+                    str(data.get('commodity', 'FRAG')),
+                    str(data.get('direction', 'bullish')),
+                    headline=data.get('headline'),
+                    body=data.get('body')
+                )
             self._send_json(400 if result.get('kind') == 'reject' else 200, result)
             return
 
@@ -1767,6 +1776,14 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             target = query_params.get('target', [''])[0]
             result = ref.covert.get_intel(viewer, target)
             self._send_json(400 if result.get('kind') == 'reject' else 200, result)
+            return
+        elif path == '/referee/covert/insider_taps':
+            viewer = self._reader()
+            if not viewer:
+                self._send_json(401, {'error': 'unauthorized', 'detail': 'Authentication required'})
+                return
+            self._send_json(200, {'status': 'ok', 'round': ref.current_round,
+                                  'insider_taps': ref.covert.get_insider_taps(viewer)})
             return
         elif path == '/referee/corporate/rivalry':
             viewer = self._reader()

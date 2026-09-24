@@ -99,12 +99,19 @@ class FogEngine:
         return here | ({one} if one else set())
 
     def exact_station(self, ref, viewer: Optional[str], st: str) -> bool:
-        return viewer == ADMIN or st in self.docked_everywhere(ref, viewer)
+        if viewer == ADMIN:
+            return True
+        if viewer and getattr(ref, 'upgrades_enabled', False) and getattr(ref, 'upgrades', None):
+            if ref.upgrades.has_telemetry(viewer):
+                return True
+        return st in self.docked_everywhere(ref, viewer)
 
     def depot_view(self, ref, viewer: Optional[str]) -> Dict[str, Any]:
         """Same shape as ref.get_depot_summary()."""
         live = ref.get_depot_summary()
-        if viewer == ADMIN or not self.snapshots:
+        has_telemetry = bool(viewer and getattr(ref, 'upgrades_enabled', False) and
+                             getattr(ref, 'upgrades', None) and ref.upgrades.has_telemetry(viewer))
+        if viewer == ADMIN or has_telemetry or not self.snapshots:
             return live
         here, rnd = self.docked_at(ref, viewer), ref.current_round
         live_at = self.docked_everywhere(ref, viewer)
@@ -129,7 +136,9 @@ class FogEngine:
 
     def spot_view(self, ref, viewer: Optional[str]) -> Dict[str, Dict[str, float]]:
         live = ref.spatial.get_prices()
-        if viewer == ADMIN or not self.snapshots:
+        has_telemetry = bool(viewer and getattr(ref, 'upgrades_enabled', False) and
+                             getattr(ref, 'upgrades', None) and ref.upgrades.has_telemetry(viewer))
+        if viewer == ADMIN or has_telemetry or not self.snapshots:
             return live
         rnd = ref.current_round
         live_at = self.docked_everywhere(ref, viewer)
@@ -164,7 +173,9 @@ class FogEngine:
     def filter_ticks(self, ref, viewer: Optional[str], ticks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Trade prints carry exact prices, so a fleet sees prints only from
         the station it is docked at; the public sees none."""
-        if viewer == ADMIN:
+        has_telemetry = bool(viewer and getattr(ref, 'upgrades_enabled', False) and
+                             getattr(ref, 'upgrades', None) and ref.upgrades.has_telemetry(viewer))
+        if viewer == ADMIN or has_telemetry:
             return ticks
         live_at = self.docked_everywhere(ref, viewer)
         out = []

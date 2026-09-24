@@ -197,7 +197,15 @@ class OrderFlowDesk:
         order) whose price passes ok(price). Returns (units filled, next n)."""
         filled = 0
         ref = self.ref
-        for o in list(orders):
+
+        def _prio_key(o):
+            has_algo = bool(getattr(ref, 'upgrades_enabled', False) and
+                            getattr(ref, 'upgrades', None) and
+                            ref.upgrades.has_algo_desk(o.agent_id))
+            return 0 if has_algo else 1
+
+        sweep_orders = sorted(list(orders), key=lambda o: (o.limit_price if npc_buys else -o.limit_price, _prio_key(o)))
+        for o in sweep_orders:
             if filled >= want:
                 break
             if not ok(o.limit_price):
@@ -217,7 +225,7 @@ class OrderFlowDesk:
             n += 1
             self._settle(st, comm, o, qty, npc_buys, round_num, n)
             filled += qty
-            if o.is_filled:
+            if o.is_filled and o in orders:
                 orders.remove(o)
         return filled, n
 
