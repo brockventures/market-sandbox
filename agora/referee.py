@@ -31,7 +31,7 @@ STOCK_EXCHANGE_STATION = 'ceres'  # the one book every fleet stock trades on
 
 from agora.spatial import (
     StationPriceEngine, STATIONS, COMMODITIES, BASE_PRICES, get_route, ROUTES,
-    get_alignment_windows, PERISHABLE_COMMODITIES
+    get_alignment_windows, PERISHABLE_COMMODITIES, COMMODITY_ALIASES, normalize_commodity
 )
 from agora.equity import (
     SyndicateEquityEngine, FLEET_EQUITIES, EQUITY_SYMBOLS,
@@ -1050,6 +1050,8 @@ class AgoraReferee:
                 continue  # a ship in flight: the fleet is working
             if hasattr(self, 'lobbying') and self.lobbying and self.lobbying.is_idle_exempt(agent):
                 continue
+            if hasattr(self, 'upgrades') and self.upgrades and self.upgrades.has_priority_slips(agent):
+                continue
             fee = min(self.idle_fee, max(0, self.get_balance(agent, 'CR')))
             if fee <= 0:
                 continue
@@ -1553,7 +1555,7 @@ class AgoraReferee:
                     'payload': {'reason': 'insufficient_fuel', 'detail': f"Route {origin}->{dest} requires {required_fuel} FUEL, available {avail_fuel} (balance {fuel_bal} - committed {committed_fuel})"}
                 }
 
-            comm = (commodity or 'FRAG').upper().strip()
+            comm = normalize_commodity((commodity or 'FRAG').upper().strip())
             is_perishable = bool(perishable) if perishable is not None else (comm in PERISHABLE_COMMODITIES)
             decay_rate = route.get('decay_rate', 0.0) if is_perishable else 0.0
 
@@ -2181,6 +2183,9 @@ class AgoraReferee:
             )
 
         instrument = payload.get('instrument')
+        if instrument:
+            instrument = normalize_commodity(str(instrument))
+            payload['instrument'] = instrument
         side = payload.get('side')
         qty = payload.get('qty')
         limit_price = payload.get('limit_price')

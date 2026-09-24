@@ -60,6 +60,12 @@ CATALOG: Dict[str, Dict[str, Any]] = {
                   "what": "cuts exchange transaction fee from 0.5% to 0.1% and grants priority order matching ahead of NPC flow"},
     "telemetry": {"prices": [5_000], "factors": [1.0], "unlocks": [15],
                   "what": "gives real-time Level 2 depth telemetry and visibility into resting order books across all stations without visiting them"},
+    "priority_slips": {"prices": [8_000], "factors": [1.0], "unlocks": [25],
+                      "what": "priority docking slips waive all docked idle fees across Sol stations"},
+    "bulk_storage":   {"prices": [10_000], "factors": [1.0], "unlocks": [50],
+                      "what": "bulk warehouse storage increases ship hold capacity by +500 cargo units per tier"},
+    "refinery_loop":  {"prices": [12_000], "factors": [0.80], "unlocks": [80],
+                      "what": "catalytic refinery loop cuts transit propellant burn by an additional 20% on top of engine upgrades"},
 }
 
 # hold: the size of a cargo loss, by tier held (tier 0 first).
@@ -88,6 +94,12 @@ NEWS_NOUN = {
     "engines": "ENGINES",
     "algo_desk": "ALGO EXECUTION DESKS",
     "telemetry": "DEPTH TELEMETRY",
+    "boarding_pods": "BOARDING PODS",
+    "ecm_jammers": "ECM JAMMERS",
+    "stealth_drives": "STEALTH DRIVES",
+    "priority_slips": "PRIORITY DOCKING SLIPS",
+    "bulk_storage": "BULK WAREHOUSE STORAGE",
+    "refinery_loop": "CATALYTIC REFINERY LOOPS",
 }
 
 
@@ -157,12 +169,16 @@ class UpgradeDesk:
 
     def engine_fuel(self, agent: str, fuel: int) -> int:
         """FUEL a trip whose route burns `fuel` actually burns for `agent`:
-        engines tier 2 cuts it by ENGINE_FUEL_CUT (40%), rounded, never below
-        1 on a trip that burns any (#189)."""
+        engines tier 2 cuts it by ENGINE_FUEL_CUT (40%), and refinery_loop
+        cuts an additional 20% on top (#167), rounded, never below 1 on a trip
+        that burns any (#189)."""
         if fuel <= 0 or not getattr(self.ref, 'upgrades_enabled', False):
             return fuel
         cut = ENGINE_FUEL_CUT[min(self.tier(agent, 'engines'), len(ENGINE_FUEL_CUT) - 1)]
-        return max(1, int(round(fuel * (1.0 - cut)))) if cut else fuel
+        burn = fuel * (1.0 - cut) if cut else float(fuel)
+        if self.has_refinery_loop(agent):
+            burn *= 0.80
+        return max(1, int(round(burn)))
 
     DEFAULT_EXCHANGE_FEE = 0.005  # 0.5% baseline
     ALGO_DESK_EXCHANGE_FEE = 0.001  # 0.1% with Algo Execution Desk
@@ -202,6 +218,24 @@ class UpgradeDesk:
 
     def has_stealth_drives(self, agent: str) -> bool:
         return self.tier(agent, 'stealth_drives') > 0
+
+    def has_priority_slips(self, agent: str) -> bool:
+        """Returns True if agent has fitted priority docking slips (waives idle fees)."""
+        if not getattr(self.ref, 'upgrades_enabled', False):
+            return False
+        return self.tier(agent, 'priority_slips') > 0
+
+    def bulk_storage_bonus(self, agent: str) -> int:
+        """Extra ship hold capacity (+500 cargo units per tier)."""
+        if not getattr(self.ref, 'upgrades_enabled', False):
+            return 0
+        return self.tier(agent, 'bulk_storage') * 500
+
+    def has_refinery_loop(self, agent: str) -> bool:
+        """Returns True if agent has fitted a catalytic refinery loop."""
+        if not getattr(self.ref, 'upgrades_enabled', False):
+            return False
+        return self.tier(agent, 'refinery_loop') > 0
 
     def holdings(self, agent: str) -> Dict[str, int]:
         return {r["kind"]: r["tier"] for r in self.ref.conn.execute(

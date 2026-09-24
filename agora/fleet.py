@@ -291,6 +291,9 @@ class FleetDesk:
         cap = int(getattr(self.ref, 'ship_hold', 0) or 0)
         if cap <= 0 or ship_number(acct) is None:
             return None
+        corp = corp_of(acct)
+        if hasattr(self.ref, 'upgrades') and self.ref.upgrades:
+            cap += self.ref.upgrades.bulk_storage_bonus(corp)
         return cap
 
     @staticmethod
