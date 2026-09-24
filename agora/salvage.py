@@ -236,6 +236,9 @@ class DerelictSalvageEngine:
                     'max_reward_cr': max_reward_cr,
                     'round': current_round,
                 })))
+                if hasattr(self.referee, 'events') and self.referee.events:
+                    self.referee.events.record_locked('distress_beacon', 'public', actor=agent_id,
+                                                      detail=f"Distress beacon '{beacon_id}' broadcast for {agent_id} ({reason})")
 
         return {
             'ok': True,

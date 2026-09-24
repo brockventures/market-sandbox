@@ -44,7 +44,7 @@ from agora.hazards import HazardEngine, env_hazards, parse_hazards
 from agora.standing import StandingDesk, env_standing, TABLES as STANDING_TABLES
 from agora.piracy import PiracyDesk, env_piracy, parse_piracy, ESCORT_PCT as PIRACY_ESCORT_PCT
 from agora.piracy import cargo_value as piracy_cargo_value
-from agora.exchange import EquityExchange, EXCHANGE_ID, clamp_shares, DEFAULT_VOL
+from agora.exchange import EquityExchange, EXCHANGE_ID, clamp_shares, DEFAULT_VOL, DEFAULT_MOMENTUM
 
 
 ASYMMETRIC_SPAWN_LOCATIONS: Dict[str, str] = {
@@ -115,6 +115,7 @@ class AgoraReferee:
         rival_shares: Optional[int] = None,
         exchange_shares: Optional[int] = None,
         exchange_vol: Optional[float] = None,
+        exchange_momentum: Optional[float] = None,
         contracts: Optional[bool] = None,
         hazards: Any = None,
         corporate: Optional[bool] = None,
@@ -144,7 +145,11 @@ class AgoraReferee:
         # The stock exchange's market maker (agora/exchange.py): shares of
         # each fleet it takes from treasury at genesis. 0 = no exchange quotes.
         self.exchange_shares = clamp_shares(exchange_shares) if exchange_shares is not None else 0
-        self.exchange = EquityExchange(self, vol=DEFAULT_VOL if exchange_vol is None else exchange_vol)
+        self.exchange = EquityExchange(
+            self,
+            vol=DEFAULT_VOL if exchange_vol is None else exchange_vol,
+            momentum=DEFAULT_MOMENTUM if exchange_momentum is None else exchange_momentum,
+        )
         # Shares of each rival's stock every fleet starts with (0 = issuers
         # hold all their own stock, the old behaviour).
         self.rival_shares = max(0, int(rival_shares)) if rival_shares is not None else 0
@@ -1713,8 +1718,39 @@ class AgoraReferee:
                 if ev:
                     self.record_news(ev.to_dict(new_round))
 
-            # Advance prices
-            spot_prices = self.spatial.step_round(new_round, galnet_engine=self.galnet)
+            # Advance prices with market drivers (inventory, deliveries, contract demand)
+            depot_inv = dict(self._reactive['shelf']) if getattr(self, '_reactive', None) and 'shelf' in self._reactive else None
+            deliveries_map = {}
+            demands_map = {}
+            with self.conn:
+                arr_rows = self.conn.execute("""
+                    SELECT destination, commodity, SUM(cargo_qty) as total_cargo
+                    FROM transits
+                    WHERE status = 'in_transit' AND arrival_round <= ?
+                    GROUP BY destination, commodity
+                """, (new_round,)).fetchall()
+                for r in arr_rows:
+                    if r['destination'] and r['commodity']:
+                        deliveries_map[(r['destination'].lower(), r['commodity'].upper())] = int(r['total_cargo'] or 0)
+
+                if getattr(self, 'contracts_enabled', False):
+                    contract_rows = self.conn.execute("""
+                        SELECT station_id, instrument, SUM(qty_remaining) as total_demand
+                        FROM station_contracts
+                        WHERE status = 'open'
+                        GROUP BY station_id, instrument
+                    """).fetchall()
+                    for r in contract_rows:
+                        if r['station_id'] and r['instrument']:
+                            demands_map[(r['station_id'].lower(), r['instrument'].upper())] = int(r['total_demand'] or 0)
+
+            spot_prices = self.spatial.step_round(
+                new_round,
+                galnet_engine=self.galnet,
+                depot_inventory=depot_inv,
+                deliveries=deliveries_map,
+                contract_demands=demands_map,
+            )
             with self.conn:
                 for p in spot_prices:
                     self.conn.execute("""
