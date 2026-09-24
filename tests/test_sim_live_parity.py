@@ -72,7 +72,7 @@ class _Spy:
 # An environment that would turn features off if anything read it.
 HOSTILE_ENV = {'AGORA_UPGRADES': '0', 'AGORA_PIRACY': '0', 'AGORA_CONTRACTS': '0', 'AGORA_FOG': '0',
                'AGORA_PEER_TRADES': '0', 'AGORA_CORPORATE': '0', 'AGORA_HAZARDS': '0', 'AGORA_IDLE_FEE': '0',
-               'AGORA_EVENTS': '0', 'AGORA_ORDER_FLOW': '0', 'AGORA_STANDING': '0'}
+               'AGORA_EVENTS': '0', 'AGORA_ORDER_FLOW': '0', 'AGORA_STANDING': '0', 'AGORA_SHIP_HOLD': '0'}
 
 
 class TestSimulatorPlaysTheLiveGame(unittest.TestCase):

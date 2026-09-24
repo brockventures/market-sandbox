@@ -393,6 +393,14 @@ class DerelictSalvageEngine:
                     'reason': 'rescuer_insufficient_fuel',
                     'detail': f"Rescuer has {avail_fuel} FUEL available, requires {fuel_offered}"
                 }
+            # The stranded ship's tank and hold must take the FUEL (#95).
+            room = self.referee.fleet.room(self._goods_acct(agent_id, transit_id), 'FUEL')
+            if room is not None and fuel_offered > room:
+                return {
+                    'ok': False,
+                    'reason': 'hold_full',
+                    'detail': f"The stranded ship has room for {room} more FUEL (tank and hold), not {fuel_offered}"
+                }
 
         next_seq = self.referee._get_next_seq() if self.referee else 1
         txn_id = f"rescue-{quote_id}"
@@ -461,6 +469,18 @@ class DerelictSalvageEngine:
                 return row[0]
         return f"{agent}/1"
 
+    def _credit(self, txn_id: str, seq: int, acct: str, comm: str, qty: int, stowed: Dict) -> None:
+        """Credit goods to a ship: what its hold cannot take goes to its
+        corp's hold at the ship's station (#95, FleetDesk.stow_locked)."""
+        ref = self.referee
+        parts = ref.fleet.stow_locked(acct, comm, qty) if ref is not None else [(acct, qty)]
+        for a, n in parts:
+            self.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, ?, 0)", (a, comm))
+            self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?", (n, a, comm))
+            self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)", (txn_id, seq, a, comm, n))
+            if a != acct:
+                stowed.setdefault(a, {})[comm] = stowed.get(a, {}).get(comm, 0) + n
+
     def claim_salvage(
         self,
         salvager_id: str,
@@ -503,6 +523,7 @@ class DerelictSalvageEngine:
 
         with self.conn:
             claimed_cargo = {}
+            stowed: Dict[str, Dict[str, int]] = {}  # goods left in a station hold for want of room (#95)
             # Goods move ship to ship (#175): the salvager's ship 1 takes the
             # bounty; the stranded ship gets back what is left of its escrow.
             salvager_hold = self._goods_acct(salvager_id)
@@ -532,10 +553,8 @@ class DerelictSalvageEngine:
                     # 1. Transfer capped cargo bounty to salvager from SYSTEM escrow
                     if bounty_to_pay > 0:
                         self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = 'SYSTEM' AND instrument = ?", (bounty_to_pay, comm))
-                        self.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, ?, 0)", (salvager_hold, comm))
-                        self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?", (bounty_to_pay, salvager_hold, comm))
                         self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, 'SYSTEM', ?, ?)", (txn_id, next_seq, comm, -bounty_to_pay))
-                        self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)", (txn_id, next_seq, salvager_hold, comm, bounty_to_pay))
+                        self._credit(txn_id, next_seq, salvager_hold, comm, bounty_to_pay, stowed)
                         claimed_cargo[comm] = bounty_to_pay
 
                     # 2. Return leftover escrow to the stranded fleet (#205):
@@ -545,20 +564,16 @@ class DerelictSalvageEngine:
                         refund_seq = self.referee._get_next_seq() if self.referee else next_seq
                         refund_txn = f"refund-{claim_id}"
                         self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = 'SYSTEM' AND instrument = ?", (leftover_escrow, comm))
-                        self.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, ?, 0)", (stranded_agent, comm))
-                        self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?", (leftover_escrow, stranded_agent, comm))
                         self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, 'SYSTEM', ?, ?)", (refund_txn, refund_seq, comm, -leftover_escrow))
-                        self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)", (refund_txn, refund_seq, stranded_agent, comm, leftover_escrow))
+                        self._credit(refund_txn, refund_seq, stranded_agent, comm, leftover_escrow, stowed)
             else:
                 for comm, qty in cargo_bounty.items():
                     if qty <= 0:
                         continue
                     source_agent = self._goods_acct(beacon['agent_id'])
                     self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = ? AND instrument = ?", (qty, source_agent, comm))
-                    self.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, ?, 0)", (salvager_hold, comm))
-                    self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?", (qty, salvager_hold, comm))
                     self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)", (txn_id, next_seq, source_agent, comm, -qty))
-                    self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)", (txn_id, next_seq, salvager_hold, comm, qty))
+                    self._credit(txn_id, next_seq, salvager_hold, comm, qty, stowed)
                     claimed_cargo[comm] = qty
 
             # Mark beacon salvaged
@@ -600,6 +615,7 @@ class DerelictSalvageEngine:
             'salvager_id': salvager_id,
             'original_agent': beacon['agent_id'],
             'cargo_claimed': claimed_cargo,
+            'stowed': stowed,
             'status': 'salvaged'
         }
 

@@ -402,10 +402,13 @@ class PiracyDesk:
         if cut:
             # The sponsor's cut is delivered to its ship 1 (#175): the raiders
             # carry it, as before ships, so #186's covert economics are unchanged.
+            # What ship 1's hold cannot take waits in the sponsor's hold at
+            # the ship's station (#95, FleetDesk.stow_locked).
             sponsor = row['sponsor']
             if self.ref.fleet.is_corp(sponsor):
-                sponsor = f"{sponsor}/1"
-            legs.append((sponsor, comm, cut))
+                legs += [(acct, comm, n) for acct, n in self.ref.fleet.stow_locked(f"{sponsor}/1", comm, cut)]
+            else:
+                legs.append((sponsor, comm, cut))
         if fence and fence_qty:
             legs.append((fence, comm, fence_qty))
         self._move(f"piracy-loot-{tid}", legs)

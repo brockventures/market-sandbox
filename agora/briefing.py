@@ -70,8 +70,10 @@ def _ships(ref, agent: str) -> List[Dict[str, Any]]:
     out = []
     for loc in ref.fleet_locations(agent):
         vid = loc['vessel_id']
+        h = fleet.hold_status(vid)
         out.append({'vessel_id': vid, 'where': _where(loc), 'location': loc,
-                    'hold': {c: ref.get_balance(vid, c) for c in ('FUEL', 'FRAG', 'FOOD', 'ORE')}})
+                    'hold': {c: ref.get_balance(vid, c) for c in ('FUEL', 'FRAG', 'FOOD', 'ORE')},
+                    'hold_used': h['hold_used'], 'hold_capacity': h['hold_capacity']})
     return out
 
 
@@ -145,6 +147,10 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
     r = get_route('ceres', 'earth', rnd) or {}
     buy_px = _fmt(ceres_ore.get('best_ask') or ceres_ore.get('spot_price'))
     sell_px = _fmt(earth_ore.get('best_bid') or earth_ore.get('spot_price'))
+    if getattr(ref, 'ship_hold', 0):
+        out.append(f"Your ship starts with its hold full ({ref.ship_hold} FRAG aboard; the rest of your FRAG waits "
+                   "in your station hold `@<home>`), so sell FRAG, or move some to the station hold with "
+                   "`POST /referee/vessels/transfer`, before you buy. See Ships, Hold size.")
     out.append(f"Docked at Ceres. ORE sells there for {buy_px}; Earth buys it at {sell_px}.")
     out.append(f"1. `BUY 200 ORE @ {buy_px} AT CERES`")
     out.append(f"2. `MOVE TO EARTH WITH 200 ORE` ({r.get('rounds', '?')} rounds, "
@@ -518,14 +524,35 @@ def _ships_section(ref, board, viewer: Optional[str]) -> List[str]:
            "and ends its upkeep; its cargo stays in your station hold.",
            "- `GET /referee/vessels?agent_id=<you>` lists your ships, holds and the next ship's price.",
            ""]
+    cap = getattr(ref, 'ship_hold', 0) or 0
+    if cap:
+        out[-1:] = [
+            f"- **Hold size.** Each ship's hold carries at most {cap} cargo units: one unit per FRAG, FOOD or ORE. "
+            f"FUEL rides in the ship's tank, up to {F.FUEL_TANK}; only FUEL above that takes hold space. "
+            "Cargo on a trip is still aboard. A BUY whose goods would not fit, beside what your ship's other "
+            "resting BUYs already keep room for, is rejected (`hold_full`); so is a transfer onto a full ship. "
+            "Goods nobody chose the size of (loot, salvage, a refunded or collected offer) fill the ship up and "
+            "the rest waits in your station hold `@<station>`. Your station holds have no size limit. "
+            "`GET /referee/vessels?agent_id=<you>` shows each ship's `hold_used`, `hold_reserved`, `hold_free` "
+            "and `hold_capacity`.",
+            ""]
+        if viewer and ref.fleet.is_corp(viewer):
+            mine = []
+            for vid in (s['vessel_id'] for s in ref.fleet.ships(viewer)):
+                h = ref.fleet.hold_status(vid)
+                mine.append(f"{vid} {h['hold_used']}/{h['hold_capacity']} used, {h['hold_reserved']} kept for "
+                            f"resting BUYs, {h['hold_free']} free")
+            if mine:
+                out[-1:] = [f"Your holds now: {'; '.join(mine)}.", ""]
     multi = [r for r in board if (r.get('ships') or 1) > 1]
     if multi:
-        out.append("| Fleet | Ship | Where | FUEL | FRAG | FOOD | ORE |")
-        out.append("|---|---|---|---|---|---|---|")
+        out.append("| Fleet | Ship | Where | FUEL | FRAG | FOOD | ORE | Hold used |")
+        out.append("|---|---|---|---|---|---|---|---|")
         for r in multi:
             for sh in _ships(ref, r['agent_id']):
                 h = sh['hold']
+                used = f"{sh['hold_used']} / {sh['hold_capacity']}" if sh['hold_capacity'] else str(sh['hold_used'])
                 out.append(f"| {r['agent_id']} | {sh['vessel_id']} | {sh['where']} | {h['FUEL']} | {h['FRAG']} | "
-                           f"{h['FOOD']} | {h['ORE']} |")
+                           f"{h['FOOD']} | {h['ORE']} | {used} |")
         out.append("")
     return out

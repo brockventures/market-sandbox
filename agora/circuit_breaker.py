@@ -467,17 +467,22 @@ class CircuitBreakerEngine:
         ref = self.referee
         if ref is None:
             return qty, False
-        cash = goods = None
+        cash = goods = room = None
         if bid.agent_id != 'SYSTEM':
             # The settlement below debits 'CR', so that is what must cover it.
             cash = max(0, ref.get_balance(bid.agent_id, 'CR'))
             qty = min(qty, cash // price)
+            # And the buying ship's hold must take the goods (#95).
+            if getattr(bid, 'acct', None) and getattr(ref, 'fleet', None) is not None:
+                room = ref.fleet.room(bid.acct, inst, reserved=False)
+                if room is not None:
+                    qty = min(qty, room)
         if ask.agent_id != 'SYSTEM':
             goods = max(0, ref._account_balance(ask.goods_acct, inst))
             qty = min(qty, goods)
         if qty > 0:
             return qty, False
-        for o, side, short in ((bid, book.bids, cash is not None and cash < price),
+        for o, side, short in ((bid, book.bids, (cash is not None and cash < price) or (room is not None and room < 1)),
                                (ask, book.asks, goods is not None and goods < 1)):
             if not short:
                 continue
