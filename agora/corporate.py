@@ -33,11 +33,15 @@ AUCTION_CAP = 100
 DISCOUNT = 0.7
 PRICE_FLOOR = 10
 BANKRUPT_ROUNDS = 10
-TAKEOVER_SHARES = 510
+TAKEOVER_SHARES = 501  # baseline 50.1% threshold on 1,000 genesis shares; dynamically (live_shares // 2) + 1 (#164)
 
 
 def env_corporate() -> bool:
     return os.environ.get("AGORA_CORPORATE", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _reject(reason: str, detail: str) -> Dict[str, Any]:
+    return {"v": 1, "kind": "reject", "payload": {"reason": reason, "detail": detail}}
 
 
 SCHEMA = [
@@ -48,6 +52,36 @@ SCHEMA = [
         status          TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'bankrupt', 'absorbed')),
         absorbed_by     TEXT,
         out_round       INTEGER
+    )""",
+    """CREATE TABLE IF NOT EXISTS corp_tender_offers (
+        offer_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+        raider          TEXT NOT NULL,
+        target          TEXT NOT NULL,
+        price           INTEGER NOT NULL,
+        shares_wanted   INTEGER NOT NULL,
+        shares_filled   INTEGER NOT NULL DEFAULT 0,
+        escrow_cr       INTEGER NOT NULL,
+        created_round   INTEGER NOT NULL,
+        status          TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'filled', 'cancelled'))
+    )""",
+    """CREATE TABLE IF NOT EXISTS corp_poison_pills (
+        target          TEXT PRIMARY KEY,
+        trigger_raider  TEXT NOT NULL,
+        activated_round INTEGER NOT NULL,
+        rights_price    INTEGER NOT NULL,
+        rights_issued   INTEGER NOT NULL,
+        rights_exercised INTEGER NOT NULL DEFAULT 0,
+        status          TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'expired'))
+    )""",
+    """CREATE TABLE IF NOT EXISTS corp_predatory_loans (
+        loan_id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        lender          TEXT NOT NULL,
+        borrower        TEXT NOT NULL,
+        principal       INTEGER NOT NULL,
+        due_amount      INTEGER NOT NULL,
+        due_round       INTEGER NOT NULL,
+        collateral_sym  TEXT NOT NULL,
+        status          TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'repaid', 'defaulted'))
     )""",
 ]
 
@@ -141,12 +175,32 @@ class CorporateDesk:
     def active(self) -> List[str]:
         return [a for a in self._fleets() if self.status(a) == "active"]
 
+    def live_shares(self, sym: str) -> int:
+        if hasattr(self.ref, 'get_live_shares'):
+            return self.ref.get_live_shares(sym)
+        return 1000
+
+    def takeover_threshold(self, target: str) -> int:
+        sym = self._sym(target)
+        if not sym:
+            return TAKEOVER_SHARES
+        return (self.live_shares(sym) // 2) + 1
+
     def summary(self) -> Dict[str, Any]:
         rows = {a: self._row(a) for a in self._fleets()}
         act = [a for a, r in rows.items() if r["status"] == "active"]
+        win_ev = self.ref.conn.execute("SELECT actor, detail FROM corp_events WHERE kind = 'winner'").fetchone()
+        winner = win_ev["actor"] if win_ev else (act[0] if len(act) == 1 and len(rows) > 1 else None)
+        offers = [dict(r) for r in self.ref.conn.execute("SELECT * FROM corp_tender_offers WHERE status = 'open'").fetchall()]
+        pills = [dict(r) for r in self.ref.conn.execute("SELECT * FROM corp_poison_pills WHERE status = 'active'").fetchall()]
+        loans = [dict(r) for r in self.ref.conn.execute("SELECT * FROM corp_predatory_loans WHERE status = 'active'").fetchall()]
         return {
             "corps": rows,
-            "winner": act[0] if len(act) == 1 and len(rows) > 1 else None,
+            "winner": winner,
+            "win_reason": win_ev["detail"] if win_ev else ("last corp standing" if winner else None),
+            "tender_offers": offers,
+            "poison_pills": pills,
+            "predatory_loans": loans,
             # Public and exposed events only: private and secret ones are
             # served per viewer by GET /referee/corporate/events (#153).
             "events": [{k: e[k] for k in ("round", "kind", "agent_id", "actor", "victim", "detail", "exposed")}
@@ -245,10 +299,11 @@ class CorporateDesk:
             sym = self._sym(target)
             if not sym:
                 continue
+            threshold = self.takeover_threshold(target)
             for raider in self.active():
                 if raider == target or self.status(target) != "active":
                     continue
-                if ref.get_balance(raider, sym) < TAKEOVER_SHARES:
+                if ref.get_balance(raider, sym) < threshold:
                     continue
                 self._cancel_all(target)
                 self._settle_transits(target, raider)
@@ -261,12 +316,435 @@ class CorporateDesk:
                     self._set(raider, debt=r["debt"] + debt)
                 self._set(target, status="absorbed", absorbed_by=raider, out_round=ref.current_round, debt=0)
                 self._event("takeover", raider, f"took over {target} holding {ref.get_balance(raider, sym)} "
-                                                f"{sym}; absorbed its assets" + (f" and {debt} CR of debt" if debt else ""),
+                                                f"{sym} (threshold {threshold}); absorbed its assets" + (f" and {debt} CR of debt" if debt else ""),
                             victim=target)
         act = self.active()
         if len(act) == 1 and len(self._fleets()) > 1:
             if not self.ref.conn.execute("SELECT 1 FROM corp_events WHERE kind = 'winner'").fetchone():
-                self._event("winner", act[0], f"{act[0]} is the last corp standing and wins the game")
+                rivals = [r for r in self._fleets() if r != act[0]]
+                absorbed_all = bool(rivals) and all(self.status(r) == 'absorbed' and self._row(r).get('absorbed_by') == act[0] for r in rivals)
+                reason = "Corporate Monopoly (absorbed all rival corporations)" if absorbed_all else "the last corp standing"
+                self._event("winner", act[0], f"{act[0]} has won the game: {reason}")
+        elif len(self._fleets()) > 1 and not self.ref.conn.execute("SELECT 1 FROM corp_events WHERE kind = 'winner'").fetchone():
+            # Corporate Monopoly (#164)
+            # Achieving majority board control in every surviving rival
+            for candidate in act:
+                rivals = [r for r in act if r != candidate]
+                has_monopoly = bool(rivals) and all(
+                    ref.get_balance(candidate, self._sym(r) or '') >= self.takeover_threshold(r)
+                    for r in rivals
+                )
+                if has_monopoly:
+                    self._event("winner", candidate, f"{candidate} has won the game: Corporate Monopoly (majority board control in all surviving corps)")
+                    break
+
+    # ------------------------------------------------------------ Hostile M&A Levers (#164)
+
+    def create_tender_offer(self, raider: str, target: str, price: int, shares: int) -> Dict[str, Any]:
+        """Solicit direct buyout bids for rival shares at a premium above NAV or market (#164)."""
+        ref = self.ref
+        raider = (raider or '').strip().lower()
+        target = (target or '').strip().lower()
+        try:
+            price = int(price)
+            shares = int(shares)
+        except (ValueError, TypeError):
+            return _reject('invalid_parameters', "Price and shares must be valid integers")
+
+        if raider not in self.active():
+            return _reject('invalid_raider', f"Unknown or inactive raider '{raider}'")
+        if target not in self.active():
+            return _reject('invalid_target', f"Unknown or inactive target '{target}'")
+        if raider == target:
+            return _reject('self_tender', "Cannot launch a tender offer against your own fleet")
+        if price <= 0 or shares <= 0:
+            return _reject('invalid_parameters', "Price and shares must be positive integers")
+
+        escrow = price * shares
+        with ref.lock, ref.conn:
+            avail = ref.peer._available(raider, 'CR') if hasattr(ref, 'peer') else ref.get_balance(raider, 'CR')
+            if avail < escrow:
+                return _reject('insufficient_credits', f"Tender offer requires {escrow} CR in escrow; available {avail}")
+
+            self._move(f"tender-escrow-{raider}-{target}-r{ref.current_round}",
+                       ((raider, 'CR', -escrow), ('SYSTEM', 'CR', escrow)))
+            cur = ref.conn.execute(
+                "INSERT INTO corp_tender_offers (raider, target, price, shares_wanted, shares_filled, escrow_cr, created_round, status) "
+                "VALUES (?, ?, ?, ?, 0, ?, ?, 'open')",
+                (raider, target, price, shares, escrow, ref.current_round))
+            offer_id = cur.lastrowid
+            self._event("tender_offer", raider,
+                        f"{raider} launched hostile tender offer for {shares} shares of {target} at {price} CR/share (#{offer_id})",
+                        victim=target)
+            return {'v': 1, 'kind': 'tender_offer_ok', 'payload': {
+                'offer_id': offer_id, 'raider': raider, 'target': target,
+                'price': price, 'shares_wanted': shares, 'escrow_cr': escrow,
+                'round': ref.current_round
+            }}
+
+    def accept_tender_offer(self, seller: str, offer_id: int, shares: int) -> Dict[str, Any]:
+        """Tender shares to an active hostile buyout offer (#164)."""
+        ref = self.ref
+        seller = (seller or '').strip().lower()
+        try:
+            offer_id = int(offer_id)
+            shares = int(shares)
+        except (ValueError, TypeError):
+            return _reject('invalid_parameters', "Offer ID and shares must be valid integers")
+
+        if shares <= 0:
+            return _reject('invalid_shares', "Shares to tender must be positive")
+
+        with ref.lock, ref.conn:
+            offer = ref.conn.execute("SELECT * FROM corp_tender_offers WHERE offer_id = ? AND status = 'open'", (offer_id,)).fetchone()
+            if not offer:
+                return _reject('offer_not_found', f"Active tender offer #{offer_id} not found")
+            offer = dict(offer)
+            if seller == offer['raider']:
+                return _reject('invalid_seller', "Raider cannot sell to their own tender offer")
+
+            sym = self._sym(offer['target'])
+            if not sym:
+                return _reject('invalid_target', f"No equity found for target '{offer['target']}'")
+
+            avail_shares = ref.peer._available(seller, sym) if hasattr(ref, 'peer') else ref.get_balance(seller, sym)
+            if avail_shares < shares:
+                return _reject('insufficient_shares', f"Need {shares} {sym}; available {avail_shares}")
+
+            remaining = offer['shares_wanted'] - offer['shares_filled']
+            if shares > remaining:
+                return _reject('exceeds_offer', f"Offer only has {remaining} shares remaining")
+
+            payout = shares * offer['price']
+            self._move(f"tender-fill-{offer_id}-{seller}-r{ref.current_round}", (
+                (seller, sym, -shares),
+                (offer['raider'], sym, shares),
+                ('SYSTEM', 'CR', -payout),
+                (seller, 'CR', payout),
+            ))
+            new_filled = offer['shares_filled'] + shares
+            new_status = 'filled' if new_filled >= offer['shares_wanted'] else 'open'
+            ref.conn.execute("UPDATE corp_tender_offers SET shares_filled = ?, status = ? WHERE offer_id = ?",
+                             (new_filled, new_status, offer_id))
+            self._event("tender_accepted", seller,
+                        f"{seller} tendered {shares} shares of {sym} to {offer['raider']} at {offer['price']} CR (#{offer_id})",
+                        victim=offer['target'])
+            self._takeovers()
+            return {'v': 1, 'kind': 'tender_accept_ok', 'payload': {
+                'offer_id': offer_id, 'seller': seller, 'shares_tendered': shares,
+                'payout': payout, 'remaining_shares': offer['shares_wanted'] - new_filled,
+                'status': new_status
+            }}
+
+    def cancel_tender_offer(self, raider: str, offer_id: int) -> Dict[str, Any]:
+        """Cancel an open tender offer and refund unspent escrow (#164)."""
+        ref = self.ref
+        raider = (raider or '').strip().lower()
+        try:
+            offer_id = int(offer_id)
+        except (ValueError, TypeError):
+            return _reject('invalid_parameters', "Offer ID must be an integer")
+
+        with ref.lock, ref.conn:
+            offer = ref.conn.execute("SELECT * FROM corp_tender_offers WHERE offer_id = ? AND status = 'open'", (offer_id,)).fetchone()
+            if not offer:
+                return _reject('offer_not_found', f"Active tender offer #{offer_id} not found")
+            offer = dict(offer)
+            if raider != offer['raider'] and raider != 'admin':
+                return _reject('unauthorized', "Only the offering raider can cancel this tender offer")
+
+            remaining = offer['shares_wanted'] - offer['shares_filled']
+            refund = remaining * offer['price']
+            if refund > 0:
+                self._move(f"tender-refund-{offer_id}-r{ref.current_round}",
+                           (('SYSTEM', 'CR', -refund), (offer['raider'], 'CR', refund)))
+            ref.conn.execute("UPDATE corp_tender_offers SET status = 'cancelled' WHERE offer_id = ?", (offer_id,))
+            self._event("tender_cancelled", offer['raider'],
+                        f"{offer['raider']} cancelled tender offer #{offer_id}; refunded {refund} CR",
+                        victim=offer['target'])
+            return {'v': 1, 'kind': 'tender_cancel_ok', 'payload': {'offer_id': offer_id, 'refund_cr': refund}}
+
+    # ------------------------------------------------------------ Defensive Governance: Poison Pills (#164)
+
+    def activate_poison_pill(self, target: str, caller: Optional[str] = None) -> Dict[str, Any]:
+        """Enact a dilutive rights offering if an outside entity acquires >30% stake (#164)."""
+        ref = self.ref
+        target = (target or '').strip().lower()
+        if target not in self.active():
+            return _reject('invalid_target', f"Target '{target}' is not an active corporation")
+
+        sym = self._sym(target)
+        if not sym:
+            return _reject('invalid_equity', f"No equity symbol for target '{target}'")
+
+        with ref.lock, ref.conn:
+            existing = ref.conn.execute("SELECT * FROM corp_poison_pills WHERE target = ? AND status = 'active'", (target,)).fetchone()
+            if existing:
+                return _reject('pill_already_active', f"Poison pill already active for {target}")
+
+            live_float = self.live_shares(sym)
+            raiders = []
+            for fleet in self.active():
+                if fleet == target:
+                    continue
+                stake = ref.get_balance(fleet, sym)
+                if stake > int(0.30 * live_float):
+                    raiders.append((fleet, stake))
+
+            if not raiders:
+                return _reject('no_hostile_stake', f"No outside rival holds >30% stake in {target} (float {live_float})")
+
+            trigger_raider = raiders[0][0]
+            base = {e["agent_id"]: e["net_worth"] - e.get("stocks_value", 0) for e in ref.get_leaderboard()}
+            marks = ref.stock_marks(base).get(sym, {})
+            nav = marks.get("nav", 10.0)
+            rights_price = max(1, int(round(nav * 0.50)))  # 50% discount to NAV
+            rights_issued = min(500, max(50, live_float // 2))
+
+            ref.conn.execute(
+                "INSERT INTO corp_poison_pills (target, trigger_raider, activated_round, rights_price, rights_issued, rights_exercised, status) "
+                "VALUES (?, ?, ?, ?, ?, 0, 'active') "
+                "ON CONFLICT(target) DO UPDATE SET trigger_raider = excluded.trigger_raider, activated_round = excluded.activated_round, "
+                "rights_price = excluded.rights_price, rights_issued = excluded.rights_issued, rights_exercised = 0, status = 'active'",
+                (target, trigger_raider, ref.current_round, rights_price, rights_issued))
+
+            self._event("poison_pill_activated", target,
+                        f"{target} enacted Poison Pill against {trigger_raider} (holding {raiders[0][1]}/{live_float} shares). "
+                        f"Issued {rights_issued} rights at {rights_price} CR/share (50% NAV discount)",
+                        victim=trigger_raider)
+
+            return {'v': 1, 'kind': 'poison_pill_ok', 'payload': {
+                'target': target, 'trigger_raider': trigger_raider,
+                'rights_price': rights_price, 'rights_issued': rights_issued,
+                'round': ref.current_round
+            }}
+
+    def exercise_rights(self, agent: str, target: str, qty: int) -> Dict[str, Any]:
+        """Exercise defensive rights offering, minting new shares to dilute raiders (#164)."""
+        ref = self.ref
+        agent = (agent or '').strip().lower()
+        target = (target or '').strip().lower()
+        try:
+            qty = int(qty)
+        except (ValueError, TypeError):
+            return _reject('invalid_parameters', "Rights quantity must be an integer")
+
+        if qty <= 0:
+            return _reject('invalid_qty', "Rights quantity must be positive")
+
+        with ref.lock, ref.conn:
+            pill = ref.conn.execute("SELECT * FROM corp_poison_pills WHERE target = ? AND status = 'active'", (target,)).fetchone()
+            if not pill:
+                return _reject('no_active_pill', f"No active poison pill rights offering for '{target}'")
+            pill = dict(pill)
+
+            if agent == pill['trigger_raider']:
+                return _reject('raider_excluded', f"Hostile raider {agent} is barred from participating in {target}'s rights offering")
+
+            remaining = pill['rights_issued'] - pill['rights_exercised']
+            if qty > remaining:
+                return _reject('exceeds_rights', f"Only {remaining} rights remaining in offering")
+
+            cost = qty * pill['rights_price']
+            avail_cr = ref.peer._available(agent, 'CR') if hasattr(ref, 'peer') else ref.get_balance(agent, 'CR')
+            if avail_cr < cost:
+                return _reject('insufficient_credits', f"Exercising {qty} rights costs {cost} CR; available {avail_cr}")
+
+            sym = self._sym(target)
+            # Mint new shares: SYSTEM balance debited -qty (float expands), agent credited +qty
+            self._move(f"poison-exercise-{target}-{agent}-r{ref.current_round}", (
+                (agent, 'CR', -cost),
+                (target, 'CR', cost),
+                ('SYSTEM', sym, -qty),
+                (agent, sym, qty),
+            ))
+
+            new_exercised = pill['rights_exercised'] + qty
+            new_status = 'expired' if new_exercised >= pill['rights_issued'] else 'active'
+            ref.conn.execute("UPDATE corp_poison_pills SET rights_exercised = ?, status = ? WHERE target = ?",
+                             (new_exercised, new_status, target))
+
+            new_float = self.live_shares(sym)
+            self._event("poison_pill_exercised", agent,
+                        f"{agent} exercised {qty} poison pill rights of {sym} for {cost} CR (circulating float expanded to {new_float})",
+                        victim=pill['trigger_raider'])
+            self._takeovers()
+            return {'v': 1, 'kind': 'exercise_rights_ok', 'payload': {
+                'agent': agent, 'target': target, 'rights_exercised': qty,
+                'cost': cost, 'new_circulating_float': new_float, 'status': new_status
+            }}
+
+    # ------------------------------------------------------------ Predatory Lending & Debt Buying (#164)
+
+    def issue_predatory_loan(self, lender: str, borrower: str, principal: int, interest_rate: float = 0.20, due_rounds: int = 5) -> Dict[str, Any]:
+        """Issue high-interest private credit line to a rival; default converts directly into equity (#164)."""
+        ref = self.ref
+        lender = (lender or '').strip().lower()
+        borrower = (borrower or '').strip().lower()
+        try:
+            principal = int(principal)
+            interest_rate = float(interest_rate)
+            due_rounds = int(due_rounds)
+        except (ValueError, TypeError):
+            return _reject('invalid_parameters', "Principal, interest rate, and due rounds must be valid numbers")
+
+        if principal <= 0:
+            return _reject('invalid_principal', "Principal must be positive")
+        if lender not in self.active():
+            return _reject('invalid_lender', f"Unknown or inactive lender '{lender}'")
+        if borrower not in self.active():
+            return _reject('invalid_borrower', f"Unknown or inactive borrower '{borrower}'")
+        if lender == borrower:
+            return _reject('self_loan', "Cannot issue loan to yourself")
+
+        due_amount = int(round(principal * (1.0 + interest_rate)))
+        sym = self._sym(borrower)
+
+        with ref.lock, ref.conn:
+            avail = ref.peer._available(lender, 'CR') if hasattr(ref, 'peer') else ref.get_balance(lender, 'CR')
+            if avail < principal:
+                return _reject('insufficient_credits', f"Lender requires {principal} CR; available {avail}")
+
+            self._move(f"loan-disburse-{lender}-{borrower}-r{ref.current_round}", (
+                (lender, 'CR', -principal),
+                (borrower, 'CR', principal),
+            ))
+            due_round = ref.current_round + due_rounds
+            cur = ref.conn.execute(
+                "INSERT INTO corp_predatory_loans (lender, borrower, principal, due_amount, due_round, collateral_sym, status) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'active')",
+                (lender, borrower, principal, due_amount, due_round, sym or ''))
+            loan_id = cur.lastrowid
+            self._event("predatory_loan", lender,
+                        f"{lender} issued predatory loan #{loan_id} to {borrower}: {principal} CR principal, {due_amount} CR due round {due_round} ({int(interest_rate*100)}% interest)",
+                        victim=borrower)
+            return {'v': 1, 'kind': 'loan_ok', 'payload': {
+                'loan_id': loan_id, 'lender': lender, 'borrower': borrower,
+                'principal': principal, 'due_amount': due_amount, 'due_round': due_round
+            }}
+
+    def buy_distressed_debt(self, buyer: str, debtor: str, amount: int) -> Dict[str, Any]:
+        """Purchase distressed referee debt from SYSTEM; default converts to debtor's equity (#164)."""
+        ref = self.ref
+        buyer = (buyer or '').strip().lower()
+        debtor = (debtor or '').strip().lower()
+        try:
+            amount = int(amount)
+        except (ValueError, TypeError):
+            return _reject('invalid_parameters', "Amount must be an integer")
+
+        if amount <= 0:
+            return _reject('invalid_amount', "Amount must be positive")
+        if buyer not in self.active():
+            return _reject('invalid_buyer', f"Unknown or inactive buyer '{buyer}'")
+        if debtor not in self.active():
+            return _reject('invalid_debtor', f"Unknown or inactive debtor '{debtor}'")
+        if buyer == debtor:
+            return _reject('self_debt', "Cannot buy your own debt")
+
+        with ref.lock, ref.conn:
+            r = self._row(debtor)
+            debt = r['debt']
+            if debt <= 0:
+                return _reject('no_debt', f"{debtor} has no outstanding debt")
+
+            buy_amount = min(debt, amount)
+            avail = ref.peer._available(buyer, 'CR') if hasattr(ref, 'peer') else ref.get_balance(buyer, 'CR')
+            if avail < buy_amount:
+                return _reject('insufficient_credits', f"Requires {buy_amount} CR; available {avail}")
+
+            # Pay SYSTEM to retire official referee debt and convert to private claim
+            self._move(f"debt-buy-{buyer}-{debtor}-r{ref.current_round}", (
+                (buyer, 'CR', -buy_amount),
+                ('SYSTEM', 'CR', buy_amount),
+            ))
+            self._set(debtor, debt=debt - buy_amount)
+            due_amount = int(round(buy_amount * 1.25))  # 25% raider surcharge
+            due_round = ref.current_round + 5
+            sym = self._sym(debtor)
+            cur = ref.conn.execute(
+                "INSERT INTO corp_predatory_loans (lender, borrower, principal, due_amount, due_round, collateral_sym, status) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'active')",
+                (buyer, debtor, buy_amount, due_amount, due_round, sym or ''))
+            loan_id = cur.lastrowid
+            self._event("debt_bought", buyer,
+                        f"{buyer} purchased {buy_amount} CR of {debtor}'s distressed debt from SYSTEM; converted to predatory claim #{loan_id} ({due_amount} CR due round {due_round})",
+                        victim=debtor)
+            return {'v': 1, 'kind': 'debt_bought_ok', 'payload': {
+                'loan_id': loan_id, 'buyer': buyer, 'debtor': debtor,
+                'amount_bought': buy_amount, 'due_amount': due_amount, 'due_round': due_round
+            }}
+
+    def repay_loan(self, borrower: str, loan_id: int) -> Dict[str, Any]:
+        """Repay outstanding predatory loan principal + interest (#164)."""
+        ref = self.ref
+        borrower = (borrower or '').strip().lower()
+        try:
+            loan_id = int(loan_id)
+        except (ValueError, TypeError):
+            return _reject('invalid_parameters', "Loan ID must be an integer")
+
+        with ref.lock, ref.conn:
+            loan = ref.conn.execute("SELECT * FROM corp_predatory_loans WHERE loan_id = ? AND status = 'active'", (loan_id,)).fetchone()
+            if not loan:
+                return _reject('loan_not_found', f"Active loan #{loan_id} not found")
+            loan = dict(loan)
+            if borrower != loan['borrower'] and borrower != 'admin':
+                return _reject('unauthorized', f"Only borrower {loan['borrower']} can repay this loan")
+
+            due = loan['due_amount']
+            avail = ref.peer._available(borrower, 'CR') if hasattr(ref, 'peer') else ref.get_balance(borrower, 'CR')
+            if avail < due:
+                return _reject('insufficient_credits', f"Repaying loan #{loan_id} requires {due} CR; available {avail}")
+
+            self._move(f"loan-repay-{loan_id}-r{ref.current_round}", (
+                (borrower, 'CR', -due),
+                (loan['lender'], 'CR', due),
+            ))
+            ref.conn.execute("UPDATE corp_predatory_loans SET status = 'repaid' WHERE loan_id = ?", (loan_id,))
+            self._event("loan_repaid", borrower,
+                        f"{borrower} repaid loan #{loan_id} ({due} CR) to {loan['lender']}")
+            return {'v': 1, 'kind': 'loan_repaid_ok', 'payload': {'loan_id': loan_id, 'amount': due}}
+
+    def _check_loan_maturities(self, round_num: int) -> None:
+        """Process maturing loans: auto-repay if cash allows, else default into equity conversion (#164)."""
+        ref = self.ref
+        mature = ref.conn.execute(
+            "SELECT * FROM corp_predatory_loans WHERE status = 'active' AND due_round <= ?", (round_num,)
+        ).fetchall()
+        for loan in mature:
+            loan_id = loan["loan_id"]
+            borrower, lender = loan["borrower"], loan["lender"]
+            due = loan["due_amount"]
+            avail = ref.get_balance(borrower, "CR")
+            if avail >= due:
+                self._move(f"loan-repay-auto-{loan_id}-r{round_num}",
+                           ((borrower, "CR", -due), (lender, "CR", due)))
+                ref.conn.execute("UPDATE corp_predatory_loans SET status = 'repaid' WHERE loan_id = ?", (loan_id,))
+                self._event("loan_repaid", borrower, f"{borrower} auto-repaid predatory loan #{loan_id} ({due} CR) to {lender}")
+            else:
+                ref.conn.execute("UPDATE corp_predatory_loans SET status = 'defaulted' WHERE loan_id = ?", (loan_id,))
+                sym = loan["collateral_sym"] or self._sym(borrower)
+                if sym:
+                    base = {e["agent_id"]: e["net_worth"] - e.get("stocks_value", 0) for e in ref.get_leaderboard()}
+                    m = ref.stock_marks(base).get(sym, {})
+                    px = max(10, int(round(m.get("nav", 10.0) * 0.7)))
+                    shares_wanted = max(1, due // px)
+                    treasury_shares = ref.get_balance(borrower, sym)
+                    seize = min(treasury_shares, shares_wanted)
+                    if seize > 0:
+                        self._move(f"loan-default-equity-{loan_id}-r{round_num}",
+                                   ((borrower, sym, -seize), (lender, sym, seize)))
+                        self._event("loan_default", borrower,
+                                    f"{borrower} defaulted on predatory loan #{loan_id} ({due} CR); forfeited {seize} shares of {sym} to {lender}",
+                                    victim=borrower)
+                    else:
+                        self.add_debt(borrower, due, f"default on predatory loan #{loan_id}")
+                        self._event("loan_default", borrower,
+                                    f"{borrower} defaulted on predatory loan #{loan_id} ({due} CR); balance added to corporate debt",
+                                    victim=borrower)
+                else:
+                    self.add_debt(borrower, due, f"default on predatory loan #{loan_id}")
 
     # ------------------------------------------------------------ rounds
 
@@ -286,5 +764,6 @@ class CorporateDesk:
             sym = self._sym(agent)
             if (not sym or self.ref.get_balance(agent, sym) <= 0) and r["rounds_in_debt"] + 1 >= BANKRUPT_ROUNDS:
                 self._bankrupt(agent)
+        self._check_loan_maturities(round_num)
         self._takeovers()
         return {"active": self.active()}

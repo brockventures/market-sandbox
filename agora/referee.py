@@ -2536,6 +2536,22 @@ class AgoraReferee:
             board.sort(key=lambda x: x['net_worth'], reverse=True)
             return board
 
+    def get_live_shares(self, sym: str) -> int:
+        """Returns the current circulating float of an equity symbol (#164).
+        At genesis, SYSTEM holds -1,000 shares, so -balance on SYSTEM represents the net issued float.
+        When rights offerings mint new shares, SYSTEM's negative balance deepens.
+        Sum of non-SYSTEM accounts also equals this float."""
+        try:
+            row = self.conn.execute("SELECT -balance AS live_float FROM accounts WHERE agent_id = 'SYSTEM' AND instrument = ?", (sym,)).fetchone()
+            if row and row['live_float'] is not None and row['live_float'] > 0:
+                return int(row['live_float'])
+            row2 = self.conn.execute("SELECT SUM(balance) AS total FROM accounts WHERE agent_id != 'SYSTEM' AND instrument = ?", (sym,)).fetchone()
+            if row2 and row2['total'] is not None and row2['total'] > 0:
+                return int(row2['total'])
+        except Exception:
+            pass
+        return 1000
+
     def stock_marks(self, base_net_worth: Dict[str, float]) -> Dict[str, Dict[str, Any]]:
         """Per fleet stock: NAV per share from the issuer's net worth before
         stock holdings, and the mark used on the leaderboard: the exchange
@@ -2543,7 +2559,8 @@ class AgoraReferee:
         out = {}
         for issuer, conf in FLEET_EQUITIES.items():
             sym = conf["symbol"]
-            nav = max(1.0, round(base_net_worth.get(issuer, 0) / conf["total_shares"], 2))
+            total_shares = self.get_live_shares(sym)
+            nav = max(1.0, round(base_net_worth.get(issuer, 0) / total_shares, 2))
             book = self.books.get(STOCK_EXCHANGE_STATION, {}).get(sym)
             bid = book.best_bid() if book else None
             ask = book.best_ask() if book else None
@@ -2554,7 +2571,7 @@ class AgoraReferee:
             else:
                 mark, basis = nav, 'nav'
             out[sym] = {'symbol': sym, 'issuer': issuer, 'nav': nav, 'mark': mark, 'basis': basis,
-                        'best_bid': bid, 'best_ask': ask}
+                        'best_bid': bid, 'best_ask': ask, 'total_shares': total_shares}
         return out
 
     def seed_depots(self, initial_cr: int = 1000000, initial_qty: int = 100000) -> None:
