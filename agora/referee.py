@@ -2384,133 +2384,156 @@ class AgoraReferee:
 
     def get_leaderboard(self) -> List[Dict[str, Any]]:
         """
-        Calculate Net Worth = Balance(Credits/CR) + Qty(FRAG) * Mark Price
-        + Qty(FOOD|ORE) * mean station spot price.
-        FRAG mark price is determined strictly against Ceres FRAG:
-        1. Inside mid: (best_bid + best_ask) // 2 if both sides of book are present
-        2. Last Ceres FRAG trade price if executed
-        3. Default baseline: 10 CR
-        Unrelated trades (e.g. 1-credit FUEL or 50-credit equities) do not contaminate the mark.
+        Calculate Net Worth = Balance(Credits/CR) + Qty(Cargo) * Local Spot Price
+        + Upgrades + Stocks.
+        All commodities (FRAG, FOOD, ORE) are marked at the fleet's docked station
+        spot price (or departure station spot for cargo in transit), eliminating
+        mean-spot distortions where buying cheap cargo rewarded fleets without hauling (#196).
         """
-        ceres_frag_book = self.books.get('ceres', {}).get('FRAG')
-        best_bid = ceres_frag_book.best_bid() if ceres_frag_book else None
-        best_ask = ceres_frag_book.best_ask() if ceres_frag_book else None
-        if best_bid is not None and best_ask is not None:
-            mark = (best_bid + best_ask) // 2
-        elif ('ceres', 'FRAG') in self.last_prices:
-            mark = self.last_prices[('ceres', 'FRAG')]
-        elif ('ceres', 'BANANA') in self.last_prices:
-            mark = self.last_prices[('ceres', 'BANANA')]
-        else:
-            mark = 10  # default mark if no trades or active inside market
-        cur = self.conn.cursor()
-        cur.execute("""
-            SELECT agent_id,
-                   SUM(CASE WHEN instrument IN ('CR', 'CREDITS', 'CASH') THEN balance ELSE 0 END) as liquid,
-                   SUM(CASE WHEN instrument IN ('FRAG', 'BANANA') THEN balance ELSE 0 END) as frags,
-                   SUM(CASE WHEN instrument = 'FUEL' THEN balance ELSE 0 END) as fuel,
-                   SUM(CASE WHEN instrument = 'FOOD' THEN balance ELSE 0 END) as food,
-                   SUM(CASE WHEN instrument = 'ORE' THEN balance ELSE 0 END) as ore
-            FROM accounts
-            WHERE agent_id != 'SYSTEM' AND agent_id NOT LIKE 'depot_%'
-            GROUP BY agent_id
-        """)
-        rows = cur.fetchall()
-        # FOOD and ORE (every fleet starts with 0) are marked at their mean
-        # spot price across all stations. Unmarked, buying either one read as
-        # a pure loss on the board, which punished the haul trades the game
-        # is built around.
-        commodity_marks = {}
-        for comm in ('FOOD', 'ORE'):
-            spots = [self.spatial.get_station_price(st, comm) for st in STATIONS] if self.spatial else []
-            commodity_marks[comm] = int(round(sum(spots) / len(spots))) if spots else 0
-        board = []
-        # Goods and CR held in peer escrow still count toward whoever owns them.
-        escrow = self.peer.holdings_adjustment() if getattr(self, 'peer', None) else {}
-        # Contract deposits are still the owner's money.
-        bonds = self.contract_desk.holdings_adjustment() if getattr(self, 'contract_desk', None) else {}
-        for agent, cr in bonds.items():
-            escrow.setdefault(agent, {})
-            escrow[agent]['CR'] = escrow[agent].get('CR', 0) + cr
-        upgrades = getattr(self, 'upgrades', None)
+        station_marks: Dict[str, Dict[str, int]] = {}
+        for st in STATIONS:
+            station_marks[st] = {
+                comm: int(round(self.spatial.get_station_price(st, comm))) if self.spatial else int(round(BASE_PRICES[st][comm]))
+                for comm in ('FRAG', 'FOOD', 'ORE')
+            }
 
-        # Cargo in transit (transits table, status='in_transit') is escrowed to
-        # SYSTEM while under way. It still belongs to the fleet and is counted
-        # toward net worth, net of projected perishable decay, so haulers do
-        # not show a phantom drawdown while traveling (#195).
-        transit_cargo: Dict[str, Dict[str, int]] = {}
-        tables = [t[0] for t in cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
-        if 'transits' in tables:
-            for tx in cur.execute("""
-                SELECT agent_id, commodity, cargo_qty, perishable, decay_rate, departure_round
-                FROM transits
-                WHERE status = 'in_transit'
-            """).fetchall():
-                c_qty = tx['cargo_qty'] or 0
-                if c_qty <= 0:
-                    continue
-                comm = (tx['commodity'] or '').upper().strip()
-                if not comm:
-                    continue
-                dep_round = tx['departure_round'] if tx['departure_round'] is not None else self.current_round
-                elapsed = max(0, self.current_round - dep_round)
-                rate = tx['decay_rate'] or 0.0
-                decay = min(c_qty, int(round(c_qty * rate * elapsed))) if (tx['perishable'] and rate > 0) else 0
-                net_qty = max(0, c_qty - decay)
-                transit_cargo.setdefault(tx['agent_id'], {})
-                transit_cargo[tx['agent_id']][comm] = transit_cargo[tx['agent_id']].get(comm, 0) + net_qty
+        with self.lock:
+            cur = self.conn.cursor()
+            cur.execute("""
+                SELECT agent_id,
+                       SUM(CASE WHEN instrument IN ('CR', 'CREDITS', 'CASH') THEN balance ELSE 0 END) as liquid,
+                       SUM(CASE WHEN instrument IN ('FRAG', 'BANANA') THEN balance ELSE 0 END) as frags,
+                       SUM(CASE WHEN instrument = 'FUEL' THEN balance ELSE 0 END) as fuel,
+                       SUM(CASE WHEN instrument = 'FOOD' THEN balance ELSE 0 END) as food,
+                       SUM(CASE WHEN instrument = 'ORE' THEN balance ELSE 0 END) as ore
+                FROM accounts
+                WHERE agent_id != 'SYSTEM' AND agent_id NOT LIKE 'depot_%'
+                GROUP BY agent_id
+            """)
+            rows = cur.fetchall()
 
-        for r in rows:
-            adj = escrow.get(r['agent_id'], {})
-            in_flight = transit_cargo.get(r['agent_id'], {})
-            in_flight_frags = in_flight.get('FRAG', 0) + in_flight.get('BANANA', 0)
-            in_flight_food = in_flight.get('FOOD', 0)
-            in_flight_ore = in_flight.get('ORE', 0)
+            board = []
+            # Goods and CR held in peer escrow still count toward whoever owns them.
+            # Goods in escrow stay at their escrow station until collected, and are
+            # valued at that station's spot price (#196).
+            peer_escrow = self.peer.holdings_adjustment_by_station() if getattr(self, 'peer', None) else {}
+            escrow_cr: Dict[str, int] = {}
+            escrow_goods_val: Dict[str, int] = {}
+            for agent, data in peer_escrow.items():
+                escrow_cr[agent] = data.get('CR', 0)
+                for st, inst, qty in data.get('goods', []):
+                    st_key = st if st in STATIONS else 'ceres'
+                    comm_key = 'FRAG' if inst in ('FRAG', 'BANANA') else inst
+                    if comm_key in ('FRAG', 'FOOD', 'ORE'):
+                        mark = station_marks.get(st_key, {}).get(comm_key, 0)
+                        escrow_goods_val[agent] = escrow_goods_val.get(agent, 0) + qty * mark
 
-            total_frags = (r['frags'] or 0) + adj.get('FRAG', 0) + in_flight_frags
-            total_food = (r['food'] or 0) + adj.get('FOOD', 0) + in_flight_food
-            total_ore = (r['ore'] or 0) + adj.get('ORE', 0) + in_flight_ore
+            # Contract deposits are still the owner's money.
+            bonds = self.contract_desk.holdings_adjustment() if getattr(self, 'contract_desk', None) else {}
+            for agent, cr in bonds.items():
+                escrow_cr[agent] = escrow_cr.get(agent, 0) + cr
+            upgrades = getattr(self, 'upgrades', None)
 
-            # Fitted ship upgrades at half their cost (agora/upgrades.py,
-            # #151); nothing for a corp that is out of the game.
-            fitted = upgrades.book_value(r['agent_id']) if upgrades and not self.fleet_out(r['agent_id']) else 0
-            net_worth = (r['liquid'] + adj.get('CR', 0) + total_frags * mark
-                         + total_food * commodity_marks['FOOD'] + total_ore * commodity_marks['ORE'] + fitted)
-            board.append({
-                'agent_id': r['agent_id'],
-                'net_worth': net_worth,
-                'liquid': r['liquid'],
-                'frags': r['frags'],
-                'fuel': r['fuel'],
-                'food': r['food'] if 'food' in r.keys() else 0,
-                'ore': r['ore'] if 'ore' in r.keys() else 0,
-                'bananas': r['frags'],  # backward compatibility alias
-                'mark_price': mark,
-                'commodity_marks': commodity_marks,
-                'upgrades_value': fitted,
-                'in_transit_cargo': in_flight,
-            })
-        # Rival stocks count at their mark. A fleet's own shares do not count
-        # toward its own net worth (that would be circular), and NAV is built
-        # from the net worth above, before any stock holdings.
-        base = {b['agent_id']: b['net_worth'] for b in board}
-        marks = self.stock_marks(base)
-        holdings: Dict[str, Dict[str, int]] = {}
-        for row in cur.execute("SELECT agent_id, instrument, balance FROM accounts WHERE instrument LIKE 'EQ_%' "
-                               "AND agent_id != 'SYSTEM' AND agent_id NOT LIKE 'depot_%'"):
-            holdings.setdefault(row['agent_id'], {})[row['instrument']] = row['balance']
-        for b in board:
-            own = FLEET_EQUITIES.get(b['agent_id'], {}).get('symbol')
-            held = {sym: q for sym, q in holdings.get(b['agent_id'], {}).items() if sym != own and q}
-            value = int(round(sum(q * marks[sym]['mark'] for sym, q in held.items() if sym in marks)))
-            b['stocks'] = held
-            b['stocks_value'] = value
-            b['net_worth'] += value
-        if getattr(self, 'corporate_enabled', False):
+            # Cargo in transit (transits table, status='in_transit') is escrowed to
+            # SYSTEM while under way. It still belongs to the fleet and is counted
+            # toward net worth, net of projected perishable decay, valued at its
+            # origin station spot (#195, #196).
+            transit_cargo: Dict[str, Dict[str, int]] = {}
+            transit_val: Dict[str, int] = {}
+            tables = [t[0] for t in cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+            if 'transits' in tables:
+                for tx in cur.execute("""
+                    SELECT agent_id, origin, destination, commodity, cargo_qty, perishable, decay_rate, departure_round
+                    FROM transits
+                    WHERE status = 'in_transit'
+                """).fetchall():
+                    c_qty = tx['cargo_qty'] or 0
+                    if c_qty <= 0:
+                        continue
+                    comm = (tx['commodity'] or '').upper().strip()
+                    if not comm:
+                        continue
+                    dep_round = tx['departure_round'] if tx['departure_round'] is not None else self.current_round
+                    elapsed = max(0, self.current_round - dep_round)
+                    rate = tx['decay_rate'] or 0.0
+                    decay = min(c_qty, int(round(c_qty * rate * elapsed))) if (tx['perishable'] and rate > 0) else 0
+                    net_qty = max(0, c_qty - decay)
+                    transit_cargo.setdefault(tx['agent_id'], {})
+                    transit_cargo[tx['agent_id']][comm] = transit_cargo[tx['agent_id']].get(comm, 0) + net_qty
+
+                    tx_orig = tx['origin'].lower().strip() if tx['origin'] and tx['origin'].lower().strip() in STATIONS else 'ceres'
+                    comm_key = 'FRAG' if comm == 'BANANA' else comm
+                    t_mark = station_marks.get(tx_orig, {}).get(comm_key, 0)
+                    transit_val[tx['agent_id']] = transit_val.get(tx['agent_id'], 0) + net_qty * t_mark
+
+            for r in rows:
+                in_flight = transit_cargo.get(r['agent_id'], {})
+                in_flight_val = transit_val.get(r['agent_id'], 0)
+
+                # Determine fleet location for local spot marks
+                vessel = self._get_vessel_location_locked(r['agent_id'])
+                if vessel.get('status') == 'in_transit' and vessel.get('transit'):
+                    st_id = vessel['transit'].get('origin', 'ceres').lower().strip()
+                else:
+                    st_id = vessel.get('station_id', 'ceres').lower().strip()
+                if st_id not in STATIONS:
+                    st_id = 'ceres'
+
+                fleet_marks = station_marks[st_id]
+
+                docked_frags = r['frags'] or 0
+                docked_food = r['food'] or 0
+                docked_ore = r['ore'] or 0
+
+                docked_cargo_val = (docked_frags * fleet_marks['FRAG']
+                                    + docked_food * fleet_marks['FOOD']
+                                    + docked_ore * fleet_marks['ORE'])
+
+                # Fitted ship upgrades at half their cost (agora/upgrades.py,
+                # #151); nothing for a corp that is out of the game.
+                fitted = upgrades.book_value(r['agent_id']) if upgrades and not self.fleet_out(r['agent_id']) else 0
+                net_worth = (r['liquid']
+                             + escrow_cr.get(r['agent_id'], 0)
+                             + docked_cargo_val
+                             + escrow_goods_val.get(r['agent_id'], 0)
+                             + in_flight_val
+                             + fitted)
+                board.append({
+                    'agent_id': r['agent_id'],
+                    'net_worth': net_worth,
+                    'liquid': r['liquid'],
+                    'frags': r['frags'],
+                    'fuel': r['fuel'],
+                    'food': r['food'] if 'food' in r.keys() else 0,
+                    'ore': r['ore'] if 'ore' in r.keys() else 0,
+                    'bananas': r['frags'],  # backward compatibility alias
+                    'mark_price': fleet_marks['FRAG'],
+                    'commodity_marks': fleet_marks,
+                    'station_id': st_id,
+                    'upgrades_value': fitted,
+                    'in_transit_cargo': in_flight,
+                })
+            # Rival stocks count at their mark. A fleet's own shares do not count
+            # toward its own net worth (that would be circular), and NAV is built
+            # from the net worth above, before any stock holdings.
+            base = {b['agent_id']: b['net_worth'] for b in board}
+            marks = self.stock_marks(base)
+            holdings: Dict[str, Dict[str, int]] = {}
+            for row in cur.execute("SELECT agent_id, instrument, balance FROM accounts WHERE instrument LIKE 'EQ_%' "
+                                   "AND agent_id != 'SYSTEM' AND agent_id NOT LIKE 'depot_%'"):
+                holdings.setdefault(row['agent_id'], {})[row['instrument']] = row['balance']
             for b in board:
-                b['status'] = self.corporate.status(b['agent_id'])
-        board.sort(key=lambda x: x['net_worth'], reverse=True)
-        return board
+                own = FLEET_EQUITIES.get(b['agent_id'], {}).get('symbol')
+                held = {sym: q for sym, q in holdings.get(b['agent_id'], {}).items() if sym != own and q}
+                value = int(round(sum(q * marks[sym]['mark'] for sym, q in held.items() if sym in marks)))
+                b['stocks'] = held
+                b['stocks_value'] = value
+                b['net_worth'] += value
+            if getattr(self, 'corporate_enabled', False):
+                for b in board:
+                    b['status'] = self.corporate.status(b['agent_id'])
+            board.sort(key=lambda x: x['net_worth'], reverse=True)
+            return board
 
     def stock_marks(self, base_net_worth: Dict[str, float]) -> Dict[str, Dict[str, Any]]:
         """Per fleet stock: NAV per share from the issuer's net worth before

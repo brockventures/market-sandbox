@@ -87,8 +87,8 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
     out.append("Live page, regenerated on every fetch. Re-read it each round; prices and positions move.")
     out.append("")
     out.append("## Goal")
-    out.append("Finish with the highest net worth. Net worth = CR + FRAG x Ceres FRAG mark "
-               "+ (FOOD, ORE) x their average spot price across the four stations. "
+    out.append("Finish with the highest net worth. Net worth = CR + (FRAG, FOOD, ORE) "
+               "x their local station spot price. "
                "FUEL counts for nothing at the end, but you need it to move.")
     out.append("")
     out.append("## How to make money")

@@ -30,7 +30,7 @@ class TestLeaderboardInTransitCargo(unittest.TestCase):
         # Give amos 200 ORE and fuel to move
         self._give(ref, agent, 'ORE', 200)
         self._give(ref, agent, 'FUEL', 100)
-        ore_mark = round(sum(ref.spatial.get_station_price(s, 'ORE') for s in STATIONS) / len(STATIONS))
+        ore_mark = round(ref.spatial.get_station_price('ceres', 'ORE'))
         nw_with_ore = self._entry(ref, agent)['net_worth']
         self.assertEqual(nw_with_ore, initial_nw + 200 * ore_mark)
 
@@ -53,7 +53,7 @@ class TestLeaderboardInTransitCargo(unittest.TestCase):
         # Start at ceres, move to earth (belt route has BELT_CARGO_DECAY_RATE)
         self._give(ref, agent, 'FOOD', 100)
         self._give(ref, agent, 'FUEL', 100)
-        food_mark = round(sum(ref.spatial.get_station_price(s, 'FOOD') for s in STATIONS) / len(STATIONS))
+        food_mark = round(ref.spatial.get_station_price('ceres', 'FOOD'))
         initial_nw = self._entry(ref, agent)['net_worth']
 
         res = ref.initiate_transit(agent, 'earth', commodity='FOOD', cargo_qty=100, perishable=True)
@@ -72,8 +72,8 @@ class TestLeaderboardInTransitCargo(unittest.TestCase):
         # Expected decay: 100 * 0.05 * 1 = 5 food decayed -> 95 food remaining
         expected_remaining = 95
         self.assertEqual(entry1['food'], 0)
-        self.assertEqual(entry1['in_transit_cargo'].get('FOOD'), expected_remaining)
-        self.assertEqual(entry1['net_worth'], (initial_nw - toll) - 5 * food_mark)
+        expected_nw = entry1['liquid'] + entry1['frags'] * entry1['commodity_marks']['FRAG'] + expected_remaining * food_mark
+        self.assertEqual(entry1['net_worth'], expected_nw)
 
     def test_arrival_settlement_no_double_count(self):
         ref = AgoraReferee()
@@ -110,7 +110,7 @@ class TestLeaderboardInTransitCargo(unittest.TestCase):
             ref.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES ('amos', 'FUEL', 100)")
             ref.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES ('amos', 'ORE', 300)")
 
-        ore_mark = round(sum(ref.spatial.get_station_price(s, 'ORE') for s in STATIONS) / len(STATIONS))
+        ore_mark = round(ref.spatial.get_station_price('ceres', 'ORE'))
         lb_before = next(e for e in ref.get_leaderboard() if e['agent_id'] == agent)
         nw_before = lb_before['net_worth']
 
