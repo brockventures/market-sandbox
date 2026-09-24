@@ -14,28 +14,30 @@ Lanes and the institution that cares about each:
     market_making   Station Authorities    ('market_house')    Licensed Market House / Chartered House
     covert          The Belt syndicates    ('belt_syndicate')  Syndicate Associate / Syndicate Made
 
-Tiers (checked once a round, in step_round):
+One number per institution (Ryan, 2026-09-23: players must see their goal
+and their progress toward it). Each lane keeps a single counter, the corp's
+lifetime net realized profit in that lane, and the tiers are fixed CR marks
+on it:
 
-    tier 1   >= 50% of the corp's trailing 50-round lane income from the lane
-             AND >= 40,000 CR of profit earned in that lane since the game began
-    tier 2   >= 75%                                          AND >= 120,000 CR
+    tier 1   40,000 CR of lane profit
+    tier 2   120,000 CR (80,000 for market making)
 
-"Share" is the lane's trailing-50-round profit over the sum of the corp's
-*positive* lane profits in that window (a lane that lost money counts 0 in
-the share, it does not shrink the others). The CR floor is cumulative so
-deep tech cannot unlock on turn 2 (Ryan 15:08).
+Earned standing is permanent for the game. Losses in a lane reduce the
+counter (it is net lane profit), but never take back a tier already earned.
+GalNet reports each admission and promotion, and the round a corp's counter
+first passes half of its next tier ("ZERO HALFWAY TO GUILD MEMBER"); the
+halfway story is skipped when it lands in the same round as an admission.
 
-Hysteresis (Zero 15:01, perk flicker): a tier, once earned, is lost only
-after LAPSE_ROUNDS (25) consecutive rounds with the lane's share below
-T1_KEEP (35%) for tier 1, or T2_KEEP (60%) for tier 2. Losing tier 1 also
-loses tier 2. Admissions, promotions, demotions and revocations are GalNet
-stories.
+This replaced #207's trailing-share rule (50%/75% of the last 50 rounds'
+lane profit, kept at 35%/60%, lapsing after 25 rounds). A database written
+under that rule keeps its unused columns (below1, below2, share, trailing)
+and loses its standing_income window table; a tier it had earned and then
+lapsed is restored, because earned standing is now permanent.
 
-Standing only opens the catalog: members still pay for the tech, and tech
-already bought is kept if standing later lapses (allows() is checked at
-purchase time only, never on the effect paths). allows() also answers the
-named lane-tech capabilities in TECH, which the feature PRs gate on (#164,
-#165, #175 ships 4 and 5).
+Standing only opens the catalog: members still pay for the tech
+(allows() is checked at purchase time only, never on the effect paths).
+allows() also answers the named lane-tech capabilities in TECH, which the
+feature PRs gate on (#164, #165, #175 ships 4 and 5).
 
 Lane attribution, from the ledger's txn_id prefixes
 ---------------------------------------------------
@@ -90,18 +92,22 @@ from agora.spatial import STATIONS
 
 LANES = ('hauling', 'trading', 'market_making', 'covert')
 
-WINDOW = 50
-T1_SHARE, T1_FLOOR = 0.50, 40_000
-T2_SHARE, T2_FLOOR = 0.75, 120_000
+T1_FLOOR = 40_000
+T2_FLOOR = 120_000
 # Market makers earn ~93k in their lane by round 300 (styles, seeds 1-40), so the
-# default 120k tier-2 floor was reachable in 2 of 40 games; their floor is 80k.
+# default 120k tier-2 mark was reachable in 2 of 40 games; theirs is 80k.
 T2_FLOOR_BY_LANE: Dict[str, int] = {'market_making': 80_000}
+HALFWAY = 0.5  # GalNet reports the round a counter first passes this share of the next tier
 
 
 def t2_floor(lane: Optional[str] = None) -> int:
     return T2_FLOOR_BY_LANE.get(lane, T2_FLOOR) if lane else T2_FLOOR
-T1_KEEP, T2_KEEP = 0.35, 0.60
-LAPSE_ROUNDS = 25
+
+
+def threshold(lane: Optional[str], tier: int) -> int:
+    """The lane profit (CR) tier `tier` (1 or 2) of `lane` needs."""
+    return T1_FLOOR if tier == 1 else t2_floor(lane)
+
 
 INSTITUTIONS: Dict[str, Dict[str, Any]] = {
     'hauling': {
@@ -131,8 +137,8 @@ INSTITUTIONS: Dict[str, Dict[str, Any]] = {
 }
 CAP_LANE = {v['cap']: lane for lane, v in INSTITUTIONS.items()}
 
-# Lane tech a tier opens. Standing opens the catalog; the tech is still bought,
-# and kept if standing lapses. (institution capability, tier needed)
+# Lane tech a tier opens. Standing opens the catalog; the tech is still bought.
+# (institution capability, tier needed)
 TECH: Dict[str, Tuple[str, int]] = {
     'ship_4': ('freight_guild', 1),
     'ship_5': ('freight_guild', 2),
@@ -155,18 +161,36 @@ VICTIM_GOODS_LOSS = ('sabotage-dock-', 'sabotage-fuel-')
 MARKET = ('trade-', 'flow-', 'auction-', 'trd-auc-')
 
 SCHEMA = [
-    """CREATE TABLE IF NOT EXISTS standing_income (
-        agent_id TEXT NOT NULL, tick INTEGER NOT NULL, lane TEXT NOT NULL, cr INTEGER NOT NULL,
-        PRIMARY KEY (agent_id, tick, lane))""",
     """CREATE TABLE IF NOT EXISTS standing_lanes (
         agent_id TEXT NOT NULL, lane TEXT NOT NULL,
         cum_profit INTEGER NOT NULL DEFAULT 0, tier INTEGER NOT NULL DEFAULT 0,
-        below1 INTEGER NOT NULL DEFAULT 0, below2 INTEGER NOT NULL DEFAULT 0,
-        first_t1 INTEGER, first_t2 INTEGER, share REAL NOT NULL DEFAULT 0, trailing INTEGER NOT NULL DEFAULT 0,
+        first_t1 INTEGER, first_t2 INTEGER,
+        half1 INTEGER NOT NULL DEFAULT 0, half2 INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (agent_id, lane))""",
     """CREATE TABLE IF NOT EXISTS standing_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)""",
 ]
-TABLES = ('standing_income', 'standing_lanes', 'standing_meta')
+TABLES = ('standing_lanes', 'standing_meta')
+
+
+def _migrate(conn) -> None:
+    """Bring a #207-era database to the one-number rule. Its extra columns
+    (below1, below2, share, trailing) all carry NOT NULL defaults, so they are
+    left in place unused; its trailing-window table is dropped."""
+    conn.execute("DROP TABLE IF EXISTS standing_income")
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(standing_lanes)")}
+    if 'half1' in cols:
+        return
+    conn.execute("ALTER TABLE standing_lanes ADD COLUMN half1 INTEGER NOT NULL DEFAULT 0")
+    conn.execute("ALTER TABLE standing_lanes ADD COLUMN half2 INTEGER NOT NULL DEFAULT 0")
+    # Earned standing is permanent now: a tier lapsed under the old rule comes back.
+    conn.execute("""UPDATE standing_lanes SET tier = MAX(tier, CASE WHEN first_t2 IS NOT NULL THEN 2
+                    WHEN first_t1 IS NOT NULL THEN 1 ELSE 0 END)""")
+    # No burst of halfway stories on the first round after the upgrade.
+    for agent, lane, cum, tier in conn.execute("SELECT agent_id, lane, cum_profit, tier FROM standing_lanes").fetchall():
+        h1 = int(tier >= 1 or cum >= HALFWAY * threshold(lane, 1))
+        h2 = int(tier >= 2 or cum >= HALFWAY * threshold(lane, 2))
+        conn.execute("UPDATE standing_lanes SET half1 = ?, half2 = ? WHERE agent_id = ? AND lane = ?",
+                     (h1, h2, agent, lane))
 
 
 def env_standing() -> bool:
@@ -176,69 +200,59 @@ def env_standing() -> bool:
 # ------------------------------------------------------------ pure rules
 
 def new_lane_state() -> Dict[str, Any]:
-    return {'tier': 0, 'below1': 0, 'below2': 0, 'first_t1': None, 'first_t2': None}
+    return {'tier': 0, 'first_t1': None, 'first_t2': None, 'half1': False, 'half2': False}
 
 
-def advance(state: Dict[str, Any], share: float, cum_profit: int, round_num: int,
-            tier2_floor: int = T2_FLOOR) -> Tuple[Dict[str, Any], List[Tuple[str, int]]]:
-    """One round of one lane's standing. Returns (new state, transitions),
-    transitions being ('earn', tier) or ('lapse', tier) in the order they
-    happened. Pure: the threshold and hysteresis rules live here only."""
+def advance(state: Dict[str, Any], lane_profit: int, round_num: int,
+            lane: Optional[str] = None) -> Tuple[Dict[str, Any], List[Tuple[str, int]]]:
+    """One round of one lane's standing. Returns (new state, moves), moves
+    being ('earn', tier) for each tier reached this round, or ('halfway',
+    next tier) the first round the counter passes half of the next tier and
+    no tier was earned. Tiers never go down. Pure: the rule lives here only."""
     s = dict(state)
     moves: List[Tuple[str, int]] = []
-    earned_now = False
-    if s['tier'] < 1 and share >= T1_SHARE and cum_profit >= T1_FLOOR:
-        s['tier'], s['below1'], earned_now = 1, 0, True
-        moves.append(('earn', 1))
-        if s['first_t1'] is None:
-            s['first_t1'] = round_num
-    if s['tier'] == 1 and share >= T2_SHARE and cum_profit >= tier2_floor:
-        s['tier'], s['below2'], earned_now = 2, 0, True
-        moves.append(('earn', 2))
-        if s['first_t2'] is None:
-            s['first_t2'] = round_num
-    if earned_now:
-        return s, moves
-    if s['tier'] >= 2:
-        s['below2'] = s['below2'] + 1 if share < T2_KEEP else 0
-        if s['below2'] >= LAPSE_ROUNDS:
-            s['tier'], s['below2'] = 1, 0
-            moves.append(('lapse', 2))
-    if s['tier'] >= 1:
-        s['below1'] = s['below1'] + 1 if share < T1_KEEP else 0
-        if s['below1'] >= LAPSE_ROUNDS:
-            s['tier'], s['below1'], s['below2'] = 0, 0, 0
-            moves.append(('lapse', 1))
-    else:
-        s['below1'] = s['below2'] = 0
+    for t in (1, 2):
+        if s['tier'] == t - 1 and lane_profit >= threshold(lane, t):
+            s['tier'], s[f'half{t}'] = t, True
+            moves.append(('earn', t))
+            if s[f'first_t{t}'] is None:
+                s[f'first_t{t}'] = round_num
+    nxt = s['tier'] + 1
+    if nxt <= 2 and not s[f'half{nxt}'] and lane_profit >= HALFWAY * threshold(lane, nxt):
+        s[f'half{nxt}'] = True
+        if not moves:
+            moves.append(('halfway', nxt))
     return s, moves
 
 
-def shares(trailing: Dict[str, int]) -> Dict[str, float]:
-    """Each lane's share of the corp's positive trailing lane profit."""
-    pos = {l: max(0, int(trailing.get(l, 0))) for l in LANES}
-    total = sum(pos.values())
-    return {l: (pos[l] / total if total > 0 else 0.0) for l in LANES}
+def progress(lane: str, tier: int, lane_profit: int) -> Dict[str, Any]:
+    """The next tier and how far along the counter is: next_tier is None (and
+    progress_pct 100) once tier 2 is held. progress_pct is floored, so it
+    reads 100 only when the tier is actually reached."""
+    if tier >= 2:
+        return {'next_tier': None, 'next_title': None, 'next_threshold_cr': None, 'progress_pct': 100}
+    need = threshold(lane, tier + 1)
+    pct = max(0, min(100, int(lane_profit) * 100 // need))
+    return {'next_tier': tier + 1, 'next_title': INSTITUTIONS[lane]['titles'][tier],
+            'next_threshold_cr': need, 'progress_pct': pct}
 
 
-def news(agent: str, lane: str, move: str, tier: int) -> Tuple[str, str]:
+def news(agent: str, lane: str, move: str, tier: int, lane_profit: Optional[int] = None) -> Tuple[str, str]:
     """(headline, body) of the GalNet story for one standing change."""
     inst = INSTITUTIONS[lane]
     title = inst['titles'][tier - 1]
     who = agent.upper()
+    need = threshold(lane, tier)
     if move == 'earn':
-        need = (T1_SHARE, T1_FLOOR) if tier == 1 else (T2_SHARE, t2_floor(lane))
         head = (f"{inst['short']} ADMITS {who}" if tier == 1 else f"{who} NAMED {title.upper()}")
-        body = (f"{inst['name']} has recognised {agent} as {title}: {int(need[0] * 100)}% or more of its trailing "
-                f"income is {inst['lane_label'].lower()} and it has earned over {need[1]:,} CR in the lane. "
-                f"{inst['why']} Opens: {inst['opens'][tier - 1]}.")
+        body = (f"{inst['name']} has recognised {agent} as {title}: it has earned {need:,} CR in "
+                f"{inst['lane_label'].lower()}. {inst['why']} Opens: {inst['opens'][tier - 1]}. "
+                f"The standing is {agent}'s for the rest of the game.")
     else:
-        keep = T1_KEEP if tier == 1 else T2_KEEP
-        head = (f"{inst['short']} SUSPENDS {who}: {inst['lane_label'].upper()} UNDER {int(keep * 100)}% "
-                f"FOR {LAPSE_ROUNDS} ROUNDS")
-        body = (f"{inst['name']} has lapsed {agent}'s standing as {title}: its {inst['lane_label'].lower()} share "
-                f"stayed below {int(keep * 100)}% for {LAPSE_ROUNDS} rounds running. Tech already fitted is "
-                f"kept; the catalog closes to new purchases until the standing is earned back.")
+        head = f"{who} HALFWAY TO {title.upper()}"
+        have = f"{lane_profit:,} of " if lane_profit is not None else "half of "
+        body = (f"{agent} is halfway to {title} with {inst['name']}: {have}{need:,} CR earned in "
+                f"{inst['lane_label'].lower()}. At {need:,} CR it opens {inst['opens'][tier - 1]}.")
     return head, body
 
 
@@ -251,6 +265,7 @@ class StandingDesk:
         with ref.lock, ref.conn:
             for s in SCHEMA:
                 ref.conn.execute(s)
+            _migrate(ref.conn)
             if ref.conn.execute("SELECT 1 FROM standing_meta WHERE key = 'ledger_cursor'").fetchone() is None:
                 # First boot against a database with history: start from its end.
                 top = ref.conn.execute("SELECT COALESCE(MAX(entry_id), 0) FROM ledger_entries").fetchone()[0]
@@ -549,42 +564,32 @@ class StandingDesk:
         corps = self._corps()
         income = self._ingest(set(corps))
         self.tick += 1
-        for agent, lanes in income.items():
-            for lane, v in lanes.items():
-                v = int(round(v))
-                if v:
-                    conn.execute("INSERT INTO standing_income (agent_id, tick, lane, cr) VALUES (?, ?, ?, ?)",
-                                 (agent, self.tick, lane, v))
-        conn.execute("DELETE FROM standing_income WHERE tick <= ?", (self.tick - WINDOW,))
-        trailing: Dict[str, Dict[str, int]] = {}
-        for a, lane, v in conn.execute("SELECT agent_id, lane, SUM(cr) FROM standing_income GROUP BY agent_id, lane"):
-            trailing.setdefault(a, {})[lane] = int(v)
         changes = []
         for agent in corps:
-            sh = shares(trailing.get(agent, {}))
             for lane in LANES:
                 row = conn.execute("SELECT * FROM standing_lanes WHERE agent_id = ? AND lane = ?", (agent, lane)).fetchone()
-                st = {k: row[k] for k in ('tier', 'below1', 'below2', 'first_t1', 'first_t2')} if row else new_lane_state()
+                st = ({'tier': row['tier'], 'first_t1': row['first_t1'], 'first_t2': row['first_t2'],
+                       'half1': bool(row['half1']), 'half2': bool(row['half2'])} if row else new_lane_state())
                 cum = (row['cum_profit'] if row else 0) + int(round(income.get(agent, {}).get(lane, 0)))
-                st, moves = advance(st, sh[lane], cum, round_num, t2_floor(lane))
+                st, moves = advance(st, cum, round_num, lane)
                 conn.execute("""INSERT OR REPLACE INTO standing_lanes
-                    (agent_id, lane, cum_profit, tier, below1, below2, first_t1, first_t2, share, trailing)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                             (agent, lane, cum, st['tier'], st['below1'], st['below2'], st['first_t1'],
-                              st['first_t2'], sh[lane], trailing.get(agent, {}).get(lane, 0)))
+                    (agent_id, lane, cum_profit, tier, first_t1, first_t2, half1, half2)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                             (agent, lane, cum, st['tier'], st['first_t1'], st['first_t2'],
+                              int(st['half1']), int(st['half2'])))
                 for move, tier in moves:
-                    self._post_news(agent, lane, move, tier, round_num)
+                    self._post_news(agent, lane, move, tier, round_num, cum)
                     changes.append({'agent_id': agent, 'lane': lane, 'institution': INSTITUTIONS[lane]['cap'],
                                     'move': move, 'tier': tier})
         self._save_meta({'ledger_cursor': self.ledger_cursor, 'trade_cursor': self.trade_cursor, 'tick': self.tick,
                          'book': self.book})
         return {'changes': changes} if changes else None
 
-    def _post_news(self, agent: str, lane: str, move: str, tier: int, round_num: int) -> None:
+    def _post_news(self, agent: str, lane: str, move: str, tier: int, round_num: int, lane_profit: int) -> None:
         """GalNet story, the upgrades.step_locked pattern: no station, no drift,
         no corp event (the exchange's shocks read those)."""
         from agora.galnet import GalNetNewsEvent
-        head, body = news(agent, lane, move, tier)
+        head, body = news(agent, lane, move, tier, lane_profit)
         ev = GalNetNewsEvent(id=f"gn-standing-{agent}-{INSTITUTIONS[lane]['cap']}-{move}{tier}-r{round_num}",
                              round=round_num, timestamp=time.time(), station_id='', commodity='',
                              headline=head, body=body, drift_bias=0.0, duration_rounds=0)
@@ -627,7 +632,8 @@ class StandingDesk:
         return [INSTITUTIONS[CAP_LANE[c]]['titles'][t - 1] for c, t in self.tiers(corp).items() if t]
 
     def report(self, corp: Optional[str] = None) -> Dict[str, Any]:
-        """GET /referee/standing: thresholds, institutions and every corp's lane mix."""
+        """GET /referee/standing: the marks, the institutions, and every corp's
+        counter, tier and progress toward the next tier in each lane."""
         with self.ref.lock:
             corps = [corp] if corp else self._corps()
             rows = {(r['agent_id'], r['lane']): r for r in self.ref.conn.execute("SELECT * FROM standing_lanes")}
@@ -636,22 +642,18 @@ class StandingDesk:
                 lanes = {}
                 for lane in LANES:
                     r = rows.get((a, lane))
-                    lanes[lane] = {'institution': INSTITUTIONS[lane]['cap'],
-                                   'share': round(r['share'], 4) if r else 0.0,
-                                   'trailing_cr': r['trailing'] if r else 0,
-                                   'lane_profit_cr': r['cum_profit'] if r else 0,
-                                   'tier': r['tier'] if r else 0,
-                                   'rounds_below_keep': (max(r['below1'], r['below2']) if r else 0),
+                    cum, tier = (int(r['cum_profit']), int(r['tier'])) if r else (0, 0)
+                    lanes[lane] = {'institution': INSTITUTIONS[lane]['cap'], 'lane_profit_cr': cum, 'tier': tier,
+                                   **progress(lane, tier, cum),
                                    'first_tier1_round': r['first_t1'] if r else None,
                                    'first_tier2_round': r['first_t2'] if r else None}
                 out[a] = {'lanes': lanes, 'tiers': self.tiers(a), 'titles': self.titles(a)}
         return {
             'enabled': self.enabled, 'round': self.ref.current_round,
-            'rules': {'window_rounds': WINDOW,
-                      'tier1': {'share': T1_SHARE, 'lane_profit_cr': T1_FLOOR, 'keep_share': T1_KEEP},
-                      'tier2': {'share': T2_SHARE, 'lane_profit_cr': T2_FLOOR, 'keep_share': T2_KEEP,
-                                'lane_profit_cr_by_lane': {l: t2_floor(l) for l in LANES}},
-                      'lapse_rounds': LAPSE_ROUNDS},
+            'rules': {'counter': 'lifetime net realized profit in the lane',
+                      'tier1': {'lane_profit_cr': T1_FLOOR, 'lane_profit_cr_by_lane': {l: threshold(l, 1) for l in LANES}},
+                      'tier2': {'lane_profit_cr': T2_FLOOR, 'lane_profit_cr_by_lane': {l: threshold(l, 2) for l in LANES}},
+                      'permanent': True, 'halfway_news_pct': int(HALFWAY * 100)},
             'institutions': {lane: {'capability': v['cap'], 'name': v['name'], 'titles': list(v['titles']),
                                     'opens': list(v['opens']), 'why': v['why']} for lane, v in INSTITUTIONS.items()},
             'tech': {k: {'institution': i, 'tier': t} for k, (i, t) in TECH.items()},
