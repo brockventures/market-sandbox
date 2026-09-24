@@ -132,7 +132,7 @@ class TestDiscordUpgradesAndCommodities(unittest.TestCase):
         self.assertEqual(CATALOG["priority_slips"]["prices"], [8_000])
         self.assertEqual(CATALOG["priority_slips"]["unlocks"], [25])
         self.assertEqual(CATALOG["bulk_storage"]["prices"], [10_000])
-        self.assertEqual(CATALOG["bulk_storage"]["unlocks"], [50])
+        self.assertEqual(CATALOG["bulk_storage"]["unlocks"], [35])
         self.assertEqual(CATALOG["refinery_loop"]["prices"], [12_000])
         self.assertEqual(CATALOG["refinery_loop"]["unlocks"], [80])
 
@@ -166,7 +166,7 @@ class TestDiscordUpgradesAndCommodities(unittest.TestCase):
         base_cap = ref.fleet.capacity("zero/1")
         self.assertEqual(base_cap, 1000)
 
-        ref.current_round = 50
+        ref.current_round = 35
         ref.conn.execute("UPDATE accounts SET balance = balance + 50000 WHERE agent_id = 'zero' AND instrument = 'CR'")
         res_bulk = ref.upgrades.buy("zero", "bulk_storage")
         self.assertEqual(res_bulk.get("kind"), "upgrade_ok")

@@ -62,7 +62,7 @@ CATALOG: Dict[str, Dict[str, Any]] = {
                   "what": "gives real-time Level 2 depth telemetry and visibility into resting order books across all stations without visiting them"},
     "priority_slips": {"prices": [8_000], "factors": [1.0], "unlocks": [25],
                       "what": "priority docking slips waive all docked idle fees across Sol stations"},
-    "bulk_storage":   {"prices": [10_000], "factors": [1.0], "unlocks": [50],
+    "bulk_storage":   {"prices": [10_000], "factors": [1.0], "unlocks": [35],
                       "what": "bulk warehouse storage increases ship hold capacity by +500 cargo units per tier"},
     "refinery_loop":  {"prices": [12_000], "factors": [0.80], "unlocks": [80],
                       "what": "catalytic refinery loop cuts transit propellant burn by an additional 20% on top of engine upgrades"},
