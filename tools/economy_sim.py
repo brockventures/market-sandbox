@@ -2265,6 +2265,8 @@ def main() -> int:
     ap.add_argument("--table", action="store_true", help="print only the markdown headline table")
     ap.add_argument("--styles", action="store_true",
                     help="print only the per-style table: median, p10, p90 of P&L incl. rival shares at NAV (#162)")
+    ap.add_argument("--shelf-skew", type=float, default=None,
+                    help="depot shelf price elasticity (#188, default 0.20; damps restock waiting exploit)")
     ap.add_argument("--hauler-rest", choices=["ask", "wait", "off"], default="ask",
                     help="bot behaviour (#180): haulers and privateers rest cargo at the ask for NPC buyers (default), "
                          "wait the same rounds without an ask (control), or sell at the bid at once")
@@ -2285,6 +2287,8 @@ def main() -> int:
         overrides[k] = _parse_value(v)
     if args.depot_model:
         overrides["depot_model"] = args.depot_model
+    if args.shelf_skew is not None:
+        overrides["shelf_skew"] = args.shelf_skew
     if args.band_pct is not None:
         overrides["band_pct"] = args.band_pct
     if args.fog:

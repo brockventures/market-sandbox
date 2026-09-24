@@ -62,7 +62,8 @@ DEPOT_MODELS = ("static", "reactive")
 REACTIVE_TARGET = 2000        # shelf capacity and hold capacity, units
 REACTIVE_MAIN_DRIP = 100      # per-round restock (cheapest station) / consumption (dearest station)
 REACTIVE_SIDE_DRIP = 20       # per-round restock / consumption everywhere else
-REACTIVE_SKEW = 0.5           # price elasticity to shelf / hold fill
+REACTIVE_SKEW = 0.5           # price elasticity to hold fill (depot bid)
+REACTIVE_SHELF_SKEW = 0.20    # price elasticity to shelf depletion (depot ask; damped per #188)
 
 
 # Static depot model: (bid, ask) offsets from round(base price) for the
@@ -86,6 +87,14 @@ def _env_band_pct() -> float:
         return DEFAULT_BAND_PCT
 
 
+def _env_shelf_skew() -> float:
+    try:
+        v = float(os.environ.get("AGORA_SHELF_SKEW", ""))
+        return v if 0 < v < 1 else REACTIVE_SHELF_SKEW
+    except ValueError:
+        return REACTIVE_SHELF_SKEW
+
+
 class AgoraReferee:
     def __init__(
         self,
@@ -98,6 +107,7 @@ class AgoraReferee:
         depot_model: Optional[str] = None,
         band_pct: Optional[float] = None,
         reactive_bands: bool = True,
+        shelf_skew: Optional[float] = None,
         peer_trades: Optional[bool] = None,
         fog: Any = None,
         idle_fee: Optional[int] = None,
@@ -146,6 +156,7 @@ class AgoraReferee:
         self.peer_trades = env_peer_trades() if peer_trades is None else bool(peer_trades)
         self.depot_model = depot_model if depot_model in DEPOT_MODELS else _env_depot_model()
         self.band_pct = band_pct if band_pct is not None else _env_band_pct()
+        self.shelf_skew = shelf_skew if shelf_skew is not None else _env_shelf_skew()
         # Keep reactive quotes inside the circuit-breaker band (True), or let
         # them float freely and trip halts (False).
         self.reactive_bands = reactive_bands
@@ -691,6 +702,7 @@ class AgoraReferee:
         spawn_map: Optional[Dict[str, str]] = None,
         depot_model: Optional[str] = None,
         band_pct: Optional[float] = None,
+        shelf_skew: Optional[float] = None,
         peer_trades: Optional[bool] = None,
         fog: Any = None,
         idle_fee: Optional[int] = None,
@@ -716,6 +728,8 @@ class AgoraReferee:
             self.depot_model = depot_model
         if band_pct is not None and 0 < float(band_pct) < 1:
             self.band_pct = float(band_pct)
+        if shelf_skew is not None:
+            self.shelf_skew = float(shelf_skew)
         if depots is not None:
             self.depots_enabled = depots
         if peer_trades is not None:
@@ -782,6 +796,7 @@ class AgoraReferee:
         spawn_map: Optional[Dict[str, str]] = None,
         depot_model: Optional[str] = None,
         band_pct: Optional[float] = None,
+        shelf_skew: Optional[float] = None,
         peer_trades: Optional[bool] = None,
         fog: Any = None,
         idle_fee: Optional[int] = None,
@@ -808,6 +823,8 @@ class AgoraReferee:
             self.depot_model = depot_model
         if band_pct is not None and 0 < float(band_pct) < 1:
             self.band_pct = float(band_pct)
+        if shelf_skew is not None:
+            self.shelf_skew = float(shelf_skew)
         if depots is not None:
             self.depots_enabled = depots
         if peer_trades is not None:
@@ -3264,7 +3281,8 @@ class AgoraReferee:
 
                 spot = self.spatial.get_station_price(st, comm) if self.spatial else BASE_PRICES[st][comm]
                 shelf_ratio = REACTIVE_TARGET / max(rx["shelf"][key], REACTIVE_TARGET * 0.05)
-                ask = max(2, int(round(spot * 1.03 * min(3.0, shelf_ratio ** REACTIVE_SKEW))))
+                shelf_skew = getattr(self, "shelf_skew", REACTIVE_SHELF_SKEW)
+                ask = max(2, int(round(spot * 1.03 * min(3.0, shelf_ratio ** shelf_skew))))
                 bid = int(round(spot * 0.97 * (REACTIVE_TARGET / (REACTIVE_TARGET + rx["hold"][key])) ** REACTIVE_SKEW))
                 bid = max(1, min(ask - 1, bid))
 
@@ -3300,7 +3318,8 @@ class AgoraReferee:
     def get_depot_summary(self) -> Dict[str, Any]:
         """Return summary of all station depot quotes and depths."""
         res = {'depots_enabled': self.depots_enabled, 'depot_model': self.depot_model,
-               'band_pct': self.band_pct, 'stations': {}}
+               'band_pct': self.band_pct, 'shelf_skew': getattr(self, 'shelf_skew', REACTIVE_SHELF_SKEW),
+               'stations': {}}
         for st in STATIONS:
             res['stations'][st] = {}
             for comm in COMMODITIES:

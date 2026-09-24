@@ -21,7 +21,7 @@ import urllib.parse
 import uuid
 from http.server import ThreadingHTTPServer, HTTPServer, BaseHTTPRequestHandler
 from typing import Optional, Dict
-from agora.referee import AgoraReferee
+from agora.referee import AgoraReferee, REACTIVE_SHELF_SKEW
 from agora.exchange import DEFAULT_VOL
 from agora.hazards import DEFAULT_P_DELAY, DEFAULT_P_LOSS
 from agora import piracy as _piracy
@@ -2017,6 +2017,7 @@ def build_referee_from_env(db_path: str = 'agora.db', **overrides) -> AgoraRefer
       AGORA_ASYMMETRIC=1       fleets start at different stations
       AGORA_DEPOT_MODEL=reactive
       AGORA_BAND_PCT=0.25      circuit-breaker band
+      AGORA_SHELF_SKEW=0.20    depot shelf price elasticity (damps restock waiting exploit, #188)
       AGORA_PEER_TRADES=1      remote fleet-to-fleet goods trades
       AGORA_FOG=3,0.15         fog of war (lag rounds, noise); 0 turns it off
       AGORA_IDLE_FEE=10        CR per round for a docked fleet that did nothing; 0 = off
@@ -2048,7 +2049,8 @@ def build_referee_from_env(db_path: str = 'agora.db', **overrides) -> AgoraRefer
         band_pct = 0.25
     kwargs = dict(depots=_on('AGORA_DEPOTS'), asymmetric=_on('AGORA_ASYMMETRIC'),
                         depot_model=os.environ.get('AGORA_DEPOT_MODEL', 'reactive').strip().lower(),
-                        band_pct=band_pct, peer_trades=_on('AGORA_PEER_TRADES'),
+                        band_pct=band_pct, shelf_skew=_float_env('AGORA_SHELF_SKEW', REACTIVE_SHELF_SKEW),
+                        peer_trades=_on('AGORA_PEER_TRADES'),
                         fog=_fog_from_env(), idle_fee=_int_env('AGORA_IDLE_FEE', 10),
                         rival_shares=_int_env('AGORA_RIVAL_SHARES', 100),
                         exchange_shares=_int_env('AGORA_EXCHANGE_SHARES', 100),
