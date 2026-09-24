@@ -2437,11 +2437,11 @@ class AgoraReferee:
                 'agent_id': r['agent_id'],
                 'net_worth': net_worth,
                 'liquid': r['liquid'],
-                'frags': total_frags,
+                'frags': r['frags'],
                 'fuel': r['fuel'],
-                'food': total_food,
-                'ore': total_ore,
-                'bananas': total_frags,  # backward compatibility alias
+                'food': r['food'] if 'food' in r.keys() else 0,
+                'ore': r['ore'] if 'ore' in r.keys() else 0,
+                'bananas': r['frags'],  # backward compatibility alias
                 'mark_price': mark,
                 'commodity_marks': commodity_marks,
                 'upgrades_value': fitted,

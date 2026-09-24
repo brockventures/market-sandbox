@@ -39,9 +39,10 @@ class TestLeaderboardInTransitCargo(unittest.TestCase):
         self.assertEqual(res['status'], 'in_transit')
         toll = res['payload']['toll_paid']
 
-        # Leaderboard should still count the 200 ORE in transit!
+        # Leaderboard should reflect in-transit cargo in net_worth and in_transit_cargo,
+        # but keep docked holdings (ore) as docked accounts only (#202 review).
         entry = self._entry(ref, agent)
-        self.assertEqual(entry['ore'], 200)
+        self.assertEqual(entry['ore'], 0)
         self.assertEqual(entry['in_transit_cargo'].get('ORE'), 200)
         # Net worth reflects held cargo, minus the toll paid in liquid cash
         self.assertEqual(entry['net_worth'], nw_with_ore - toll)
@@ -61,7 +62,7 @@ class TestLeaderboardInTransitCargo(unittest.TestCase):
 
         # Round 0: 0 decay elapsed
         entry0 = self._entry(ref, agent)
-        self.assertEqual(entry0['food'], 100)
+        self.assertEqual(entry0['food'], 0)
         self.assertEqual(entry0['in_transit_cargo'].get('FOOD'), 100)
         self.assertEqual(entry0['net_worth'], initial_nw - toll)
 
@@ -70,7 +71,7 @@ class TestLeaderboardInTransitCargo(unittest.TestCase):
         entry1 = self._entry(ref, agent)
         # Expected decay: 100 * 0.05 * 1 = 5 food decayed -> 95 food remaining
         expected_remaining = 95
-        self.assertEqual(entry1['food'], expected_remaining)
+        self.assertEqual(entry1['food'], 0)
         self.assertEqual(entry1['in_transit_cargo'].get('FOOD'), expected_remaining)
         self.assertEqual(entry1['net_worth'], (initial_nw - toll) - 5 * food_mark)
 
