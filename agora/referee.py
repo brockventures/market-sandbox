@@ -2536,11 +2536,36 @@ class AgoraReferee:
                 for b in board:
                     b['status'] = self.corporate.status(b['agent_id'])
                     try:
-                        row = self.conn.execute(
-                            "SELECT COALESCE(SUM(escrow_cr), 0) AS escrow FROM corp_tender_offers WHERE raider = ? AND status = 'open'",
+                        # 1. Tender offer escrow (remaining unspent escrow)
+                        t_row = self.conn.execute(
+                            "SELECT COALESCE(SUM((shares_wanted - shares_filled) * price), 0) AS escrow "
+                            "FROM corp_tender_offers WHERE raider = ? AND status = 'open'",
                             (b['agent_id'],)).fetchone()
-                        if row and row['escrow']:
-                            b['net_worth'] += int(row['escrow'])
+                        if t_row and t_row['escrow']:
+                            b['net_worth'] += int(t_row['escrow'])
+
+                        # 2. Loan offers escrowed in SYSTEM
+                        l_escrow = self.conn.execute(
+                            "SELECT COALESCE(SUM(principal), 0) AS escrow "
+                            "FROM corp_loan_offers WHERE lender = ? AND status = 'open'",
+                            (b['agent_id'],)).fetchone()
+                        if l_escrow and l_escrow['escrow']:
+                            b['net_worth'] += int(l_escrow['escrow'])
+
+                        # 3. Active predatory loans: lender receivable (+) and borrower payable (-)
+                        rec = self.conn.execute(
+                            "SELECT COALESCE(SUM(due_amount), 0) AS receivable "
+                            "FROM corp_predatory_loans WHERE lender = ? AND status = 'active'",
+                            (b['agent_id'],)).fetchone()
+                        if rec and rec['receivable']:
+                            b['net_worth'] += int(rec['receivable'])
+
+                        pay = self.conn.execute(
+                            "SELECT COALESCE(SUM(due_amount), 0) AS payable "
+                            "FROM corp_predatory_loans WHERE borrower = ? AND status = 'active'",
+                            (b['agent_id'],)).fetchone()
+                        if pay and pay['payable']:
+                            b['net_worth'] -= int(pay['payable'])
                     except Exception:
                         pass
             board.sort(key=lambda x: x['net_worth'], reverse=True)

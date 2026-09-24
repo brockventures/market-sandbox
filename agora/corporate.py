@@ -44,6 +44,39 @@ def _reject(reason: str, detail: str) -> Dict[str, Any]:
     return {"v": 1, "kind": "reject", "payload": {"reason": reason, "detail": detail}}
 
 
+def _safe_int(val: Any, name: str, min_val: Optional[int] = None, max_val: int = 2**62) -> int:
+    if val is None:
+        raise ValueError(f"{name} is required")
+    if isinstance(val, float):
+        if math.isnan(val) or math.isinf(val):
+            raise ValueError(f"{name} must be a finite number")
+    try:
+        res = int(val)
+    except (ValueError, TypeError, OverflowError) as e:
+        raise ValueError(f"{name} must be a valid integer: {e}")
+    if abs(res) > max_val:
+        raise ValueError(f"{name} exceeds maximum allowed value")
+    if min_val is not None and res < min_val:
+        raise ValueError(f"{name} must be at least {min_val}")
+    return res
+
+
+def _safe_float(val: Any, name: str, min_val: Optional[float] = None, max_val: Optional[float] = None) -> float:
+    if val is None:
+        raise ValueError(f"{name} is required")
+    try:
+        res = float(val)
+    except (ValueError, TypeError, OverflowError) as e:
+        raise ValueError(f"{name} must be a valid number: {e}")
+    if math.isnan(res) or math.isinf(res):
+        raise ValueError(f"{name} must be a finite number")
+    if min_val is not None and res < min_val:
+        raise ValueError(f"{name} must be at least {min_val}")
+    if max_val is not None and res > max_val:
+        raise ValueError(f"{name} must be at most {max_val}")
+    return res
+
+
 SCHEMA = [
     """CREATE TABLE IF NOT EXISTS corp_status (
         agent_id        TEXT PRIMARY KEY,
@@ -65,7 +98,8 @@ SCHEMA = [
         status          TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'filled', 'cancelled'))
     )""",
     """CREATE TABLE IF NOT EXISTS corp_poison_pills (
-        target          TEXT PRIMARY KEY,
+        pill_id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        target          TEXT NOT NULL,
         trigger_raider  TEXT NOT NULL,
         activated_round INTEGER NOT NULL,
         rights_price    INTEGER NOT NULL,
@@ -101,6 +135,16 @@ class CorporateDesk:
     def __init__(self, ref):
         self.ref = ref
         with ref.conn:
+            try:
+                cols = [c[1] for c in ref.conn.execute("PRAGMA table_info(corp_poison_pills)").fetchall()]
+                if cols and "pill_id" not in cols:
+                    ref.conn.execute("ALTER TABLE corp_poison_pills RENAME TO corp_poison_pills_old")
+                    ref.conn.execute(SCHEMA[2])
+                    ref.conn.execute("INSERT INTO corp_poison_pills (target, trigger_raider, activated_round, rights_price, rights_issued, rights_exercised, status) "
+                                     "SELECT target, trigger_raider, activated_round, rights_price, rights_issued, rights_exercised, status FROM corp_poison_pills_old")
+                    ref.conn.execute("DROP TABLE corp_poison_pills_old")
+            except Exception:
+                pass
             for q in SCHEMA:
                 ref.conn.execute(q)
 
@@ -137,6 +181,24 @@ class CorporateDesk:
         from agora.equity import FLEET_EQUITIES
         return FLEET_EQUITIES.get(agent, {}).get("symbol")
 
+    def _resolve_creditor(self, agent: str) -> str:
+        """Resolve the active recipient for payments owed to an agent.
+        If agent is active: returns agent.
+        If agent was absorbed: follows absorption chain to active raider.
+        If agent is bankrupt or has no active successor: returns SYSTEM."""
+        curr = agent
+        seen = set()
+        while curr and curr not in seen:
+            seen.add(curr)
+            r = self._row(curr)
+            if r.get('status') == 'active':
+                return curr
+            if r.get('status') == 'absorbed' and r.get('absorbed_by'):
+                curr = r['absorbed_by']
+            else:
+                return 'SYSTEM'
+        return 'SYSTEM'
+
     def _cancel_all(self, agent: str) -> None:
         for books in self.ref.books.values():
             for b in books.values():
@@ -145,12 +207,14 @@ class CorporateDesk:
                         self.ref._cancel_order_locked(agent, o.order_id)
         # Cancel any open tender offers from agent or targeting agent
         for off in self.ref.conn.execute("SELECT offer_id FROM corp_tender_offers WHERE raider = ? AND status = 'open'", (agent,)).fetchall():
-            self.cancel_tender_offer(agent, off['offer_id'])
+            self._cancel_tender_offer_locked(agent, off['offer_id'])
         for off in self.ref.conn.execute("SELECT offer_id, raider FROM corp_tender_offers WHERE target = ? AND status = 'open'", (agent,)).fetchall():
-            self.cancel_tender_offer(off['raider'], off['offer_id'])
-        # Cancel any open loan offers from agent
+            self._cancel_tender_offer_locked(off['raider'], off['offer_id'])
+        # Cancel any open loan offers where agent is lender OR borrower
         for off in self.ref.conn.execute("SELECT offer_id FROM corp_loan_offers WHERE lender = ? AND status = 'open'", (agent,)).fetchall():
-            self.cancel_loan_offer(agent, off['offer_id'])
+            self._cancel_loan_offer_locked(agent, off['offer_id'])
+        for off in self.ref.conn.execute("SELECT offer_id, lender FROM corp_loan_offers WHERE borrower = ? AND status = 'open'", (agent,)).fetchall():
+            self._cancel_loan_offer_locked(off['lender'], off['offer_id'])
 
     def _settle_transits(self, src: str, dst: str) -> None:
         """Cargo still in flight for a corp that is out. Reassigning the trip
@@ -367,10 +431,10 @@ class CorporateDesk:
         raider = (raider or '').strip().lower()
         target = (target or '').strip().lower()
         try:
-            price = int(price)
-            shares = int(shares)
-        except (ValueError, TypeError):
-            return _reject('invalid_parameters', "Price and shares must be valid integers")
+            price = _safe_int(price, 'Price', min_val=1)
+            shares = _safe_int(shares, 'Shares', min_val=1)
+        except ValueError as e:
+            return _reject('invalid_parameters', str(e))
 
         if raider not in self.active():
             return _reject('invalid_raider', f"Unknown or inactive raider '{raider}'")
@@ -378,10 +442,11 @@ class CorporateDesk:
             return _reject('invalid_target', f"Unknown or inactive target '{target}'")
         if raider == target:
             return _reject('self_tender', "Cannot launch a tender offer against your own fleet")
-        if price <= 0 or shares <= 0:
-            return _reject('invalid_parameters', "Price and shares must be positive integers")
 
         escrow = price * shares
+        if escrow > 2**62:
+            return _reject('invalid_parameters', "Tender escrow exceeds maximum allowed value")
+
         with ref.lock, ref.conn:
             avail = ref.peer._available(raider, 'CR') if hasattr(ref, 'peer') else ref.get_balance(raider, 'CR')
             if avail < escrow:
@@ -408,13 +473,10 @@ class CorporateDesk:
         ref = self.ref
         seller = (seller or '').strip().lower()
         try:
-            offer_id = int(offer_id)
-            shares = int(shares)
-        except (ValueError, TypeError):
-            return _reject('invalid_parameters', "Offer ID and shares must be valid integers")
-
-        if shares <= 0:
-            return _reject('invalid_shares', "Shares to tender must be positive")
+            offer_id = _safe_int(offer_id, 'Offer ID', min_val=1)
+            shares = _safe_int(shares, 'Shares', min_val=1)
+        except ValueError as e:
+            return _reject('invalid_parameters', str(e))
 
         with ref.lock, ref.conn:
             offer = ref.conn.execute("SELECT * FROM corp_tender_offers WHERE offer_id = ? AND status = 'open'", (offer_id,)).fetchone()
@@ -438,52 +500,58 @@ class CorporateDesk:
 
             payout = shares * offer['price']
             new_filled = offer['shares_filled'] + shares
+            remaining_after = offer['shares_wanted'] - new_filled
+            new_escrow = remaining_after * offer['price']
             self._move(f"tender-fill-{offer_id}-{seller}-{new_filled}-r{ref.current_round}", (
                 (seller, sym, -shares),
                 (offer['raider'], sym, shares),
                 ('SYSTEM', 'CR', -payout),
                 (seller, 'CR', payout),
             ))
-            new_status = 'filled' if new_filled >= offer['shares_wanted'] else 'open'
-            ref.conn.execute("UPDATE corp_tender_offers SET shares_filled = ?, status = ? WHERE offer_id = ?",
-                             (new_filled, new_status, offer_id))
+            new_status = 'filled' if remaining_after <= 0 else 'open'
+            ref.conn.execute("UPDATE corp_tender_offers SET shares_filled = ?, escrow_cr = ?, status = ? WHERE offer_id = ?",
+                             (new_filled, new_escrow, new_status, offer_id))
             self._event("tender_accepted", seller,
                         f"{seller} tendered {shares} shares of {sym} to {offer['raider']} at {offer['price']} CR (#{offer_id})",
                         victim=offer['target'])
             self._takeovers()
             return {'v': 1, 'kind': 'tender_accept_ok', 'payload': {
                 'offer_id': offer_id, 'seller': seller, 'shares_tendered': shares,
-                'payout': payout, 'remaining_shares': offer['shares_wanted'] - new_filled,
+                'payout': payout, 'remaining_shares': remaining_after,
                 'status': new_status
             }}
 
+    def _cancel_tender_offer_locked(self, caller: str, offer_id: int) -> Dict[str, Any]:
+        ref = self.ref
+        caller = (caller or '').strip().lower()
+        try:
+            offer_id = _safe_int(offer_id, 'Offer ID', min_val=1)
+        except ValueError as e:
+            return _reject('invalid_parameters', str(e))
+
+        offer = ref.conn.execute("SELECT * FROM corp_tender_offers WHERE offer_id = ? AND status = 'open'", (offer_id,)).fetchone()
+        if not offer:
+            return _reject('offer_not_found', f"Active tender offer #{offer_id} not found")
+        offer = dict(offer)
+        if caller != offer['raider'] and caller != 'admin':
+            return _reject('unauthorized', "Only the offering raider can cancel this tender offer")
+
+        remaining = offer['shares_wanted'] - offer['shares_filled']
+        refund = remaining * offer['price']
+        if refund > 0:
+            recipient = self._resolve_creditor(offer['raider'])
+            self._move(f"tender-refund-{offer_id}-r{ref.current_round}",
+                       (('SYSTEM', 'CR', -refund), (recipient, 'CR', refund)))
+        ref.conn.execute("UPDATE corp_tender_offers SET escrow_cr = 0, status = 'cancelled' WHERE offer_id = ?", (offer_id,))
+        self._event("tender_cancelled", offer['raider'],
+                    f"{offer['raider']} cancelled tender offer #{offer_id}; refunded {refund} CR",
+                    victim=offer['target'])
+        return {'v': 1, 'kind': 'tender_cancel_ok', 'payload': {'offer_id': offer_id, 'refund_cr': refund}}
+
     def cancel_tender_offer(self, raider: str, offer_id: int) -> Dict[str, Any]:
         """Cancel an open tender offer and refund unspent escrow (#164)."""
-        ref = self.ref
-        raider = (raider or '').strip().lower()
-        try:
-            offer_id = int(offer_id)
-        except (ValueError, TypeError):
-            return _reject('invalid_parameters', "Offer ID must be an integer")
-
-        with ref.lock, ref.conn:
-            offer = ref.conn.execute("SELECT * FROM corp_tender_offers WHERE offer_id = ? AND status = 'open'", (offer_id,)).fetchone()
-            if not offer:
-                return _reject('offer_not_found', f"Active tender offer #{offer_id} not found")
-            offer = dict(offer)
-            if raider != offer['raider'] and raider != 'admin':
-                return _reject('unauthorized', "Only the offering raider can cancel this tender offer")
-
-            remaining = offer['shares_wanted'] - offer['shares_filled']
-            refund = remaining * offer['price']
-            if refund > 0:
-                self._move(f"tender-refund-{offer_id}-r{ref.current_round}",
-                           (('SYSTEM', 'CR', -refund), (offer['raider'], 'CR', refund)))
-            ref.conn.execute("UPDATE corp_tender_offers SET status = 'cancelled' WHERE offer_id = ?", (offer_id,))
-            self._event("tender_cancelled", offer['raider'],
-                        f"{offer['raider']} cancelled tender offer #{offer_id}; refunded {refund} CR",
-                        victim=offer['target'])
-            return {'v': 1, 'kind': 'tender_cancel_ok', 'payload': {'offer_id': offer_id, 'refund_cr': refund}}
+        with self.ref.lock, self.ref.conn:
+            return self._cancel_tender_offer_locked(raider, offer_id)
 
     # ------------------------------------------------------------ Defensive Governance: Poison Pills (#164)
 
@@ -518,6 +586,7 @@ class CorporateDesk:
             if not raiders:
                 return _reject('no_hostile_stake', f"No outside rival holds >30% stake in {target} (float {live_float})")
 
+            raiders.sort(key=lambda x: -x[1])
             trigger_raider = raiders[0][0]
             base = {e["agent_id"]: e["net_worth"] - e.get("stocks_value", 0) for e in ref.get_leaderboard()}
             marks = ref.stock_marks(base).get(sym, {})
@@ -525,12 +594,11 @@ class CorporateDesk:
             rights_price = max(1, int(round(nav * 0.50)))  # 50% discount to NAV
             rights_issued = min(500, max(50, live_float // 2))
 
-            ref.conn.execute(
+            cur = ref.conn.execute(
                 "INSERT INTO corp_poison_pills (target, trigger_raider, activated_round, rights_price, rights_issued, rights_exercised, status) "
-                "VALUES (?, ?, ?, ?, ?, 0, 'active') "
-                "ON CONFLICT(target) DO UPDATE SET trigger_raider = excluded.trigger_raider, activated_round = excluded.activated_round, "
-                "rights_price = excluded.rights_price, rights_issued = excluded.rights_issued, rights_exercised = 0, status = 'active'",
+                "VALUES (?, ?, ?, ?, ?, 0, 'active')",
                 (target, trigger_raider, ref.current_round, rights_price, rights_issued))
+            pill_id = cur.lastrowid
 
             self._event("poison_pill_activated", target,
                         f"{target} enacted Poison Pill against {trigger_raider} (holding {raiders[0][1]}/{live_float} shares). "
@@ -538,6 +606,7 @@ class CorporateDesk:
                         victim=trigger_raider)
 
             return {'v': 1, 'kind': 'poison_pill_ok', 'payload': {
+                'pill_id': pill_id,
                 'target': target, 'trigger_raider': trigger_raider,
                 'rights_price': rights_price, 'rights_issued': rights_issued,
                 'round': ref.current_round
@@ -549,18 +618,18 @@ class CorporateDesk:
         agent = (agent or '').strip().lower()
         target = (target or '').strip().lower()
         try:
-            qty = int(qty)
-        except (ValueError, TypeError):
-            return _reject('invalid_parameters', "Rights quantity must be an integer")
-
-        if qty <= 0:
-            return _reject('invalid_qty', "Rights quantity must be positive")
+            qty = _safe_int(qty, 'Rights quantity', min_val=1)
+        except ValueError as e:
+            return _reject('invalid_parameters', str(e))
 
         with ref.lock, ref.conn:
-            pill = ref.conn.execute("SELECT * FROM corp_poison_pills WHERE target = ? AND status = 'active'", (target,)).fetchone()
+            pill = ref.conn.execute(
+                "SELECT * FROM corp_poison_pills WHERE target = ? AND status = 'active' ORDER BY pill_id DESC",
+                (target,)).fetchone()
             if not pill:
                 return _reject('no_active_pill', f"No active poison pill rights offering for '{target}'")
             pill = dict(pill)
+            pill_id = pill.get('pill_id', 0)
 
             if agent == target:
                 return _reject('target_excluded', f"Target corporation '{target}' cannot purchase its own discounted rights")
@@ -580,17 +649,20 @@ class CorporateDesk:
             sym = self._sym(target)
             new_exercised = pill['rights_exercised'] + qty
             # Mint new shares: SYSTEM balance debited -qty (float expands), agent credited +qty
-            self._move(f"poison-exercise-{target}-{agent}-{new_exercised}-r{ref.current_round}", (
+            self._move(f"poison-exercise-{pill_id}-{target}-{agent}-{new_exercised}-r{ref.current_round}", (
                 (agent, 'CR', -cost),
                 (target, 'CR', cost),
                 ('SYSTEM', sym, -qty),
                 (agent, sym, qty),
             ))
 
-            new_exercised = pill['rights_exercised'] + qty
             new_status = 'expired' if new_exercised >= pill['rights_issued'] else 'active'
-            ref.conn.execute("UPDATE corp_poison_pills SET rights_exercised = ?, status = ? WHERE target = ?",
-                             (new_exercised, new_status, target))
+            if 'pill_id' in pill and pill['pill_id']:
+                ref.conn.execute("UPDATE corp_poison_pills SET rights_exercised = ?, status = ? WHERE pill_id = ?",
+                                 (new_exercised, new_status, pill['pill_id']))
+            else:
+                ref.conn.execute("UPDATE corp_poison_pills SET rights_exercised = ?, status = ? WHERE target = ?",
+                                 (new_exercised, new_status, target))
 
             new_float = self.live_shares(sym)
             self._event("poison_pill_exercised", agent,
@@ -610,25 +682,18 @@ class CorporateDesk:
         lender = (lender or '').strip().lower()
         borrower = (borrower or '').strip().lower()
         try:
-            principal = int(principal)
-            interest_rate = float(interest_rate)
-            due_rounds = int(due_rounds)
-        except (ValueError, TypeError):
-            return _reject('invalid_parameters', "Principal, interest rate, and due rounds must be valid numbers")
+            principal = _safe_int(principal, 'Principal', min_val=1)
+            interest_rate = _safe_float(interest_rate, 'Interest rate', min_val=0.0, max_val=0.50)
+            due_rounds = _safe_int(due_rounds, 'Due rounds', min_val=3, max_val=1000)
+        except ValueError as e:
+            return _reject('invalid_parameters', str(e))
 
-        if principal <= 0:
-            return _reject('invalid_principal', "Principal must be positive")
         if lender not in self.active():
             return _reject('invalid_lender', f"Unknown or inactive lender '{lender}'")
         if borrower not in self.active():
             return _reject('invalid_borrower', f"Unknown or inactive borrower '{borrower}'")
         if lender == borrower:
             return _reject('self_loan', "Cannot issue loan to yourself")
-
-        if interest_rate < 0.0 or interest_rate > 0.50:
-            return _reject('invalid_rate', "Interest rate must be between 0% and 50%")
-        if due_rounds < 3:
-            return _reject('invalid_term', "Loan term must be at least 3 rounds")
 
         due_amount = int(round(principal * (1.0 + interest_rate)))
 
@@ -656,14 +721,14 @@ class CorporateDesk:
                 'principal': principal, 'due_amount': due_amount, 'due_rounds': due_rounds
             }}
 
-    def accept_loan_offer(self, borrower: str, offer_id: int) -> Dict[str, Any]:
+    def accept_loan_offer(self, caller: str, offer_id: int) -> Dict[str, Any]:
         """Accept a loan offer, disbursing escrowed funds (#164)."""
         ref = self.ref
-        borrower = (borrower or '').strip().lower()
+        caller = (caller or '').strip().lower()
         try:
-            offer_id = int(offer_id)
-        except (ValueError, TypeError):
-            return _reject('invalid_parameters', "Offer ID must be an integer")
+            offer_id = _safe_int(offer_id, 'Offer ID', min_val=1)
+        except ValueError as e:
+            return _reject('invalid_parameters', str(e))
 
         with ref.lock, ref.conn:
             offer = ref.conn.execute("SELECT * FROM corp_loan_offers WHERE offer_id = ? AND status = 'open'", (offer_id,)).fetchone()
@@ -671,9 +736,15 @@ class CorporateDesk:
                 return _reject('offer_not_found', f"Active loan offer #{offer_id} not found")
             offer = dict(offer)
 
-            if borrower != offer['borrower'] and borrower != 'admin':
+            if caller != offer['borrower'] and caller != 'admin':
                 return _reject('unauthorized', f"Only borrower {offer['borrower']} can accept this loan offer")
 
+            if offer['borrower'] not in self.active():
+                return _reject('inactive_borrower', f"Borrower '{offer['borrower']}' is no longer an active corporation")
+            if offer['lender'] not in self.active():
+                return _reject('inactive_lender', f"Lender '{offer['lender']}' is no longer an active corporation")
+
+            borrower = offer['borrower']
             sym = self._sym(borrower)
             due_round = ref.current_round + offer['due_rounds']
 
@@ -697,30 +768,34 @@ class CorporateDesk:
                 'principal': offer['principal'], 'due_amount': offer['due_amount'], 'due_round': due_round
             }}
 
+    def _cancel_loan_offer_locked(self, caller: str, offer_id: int) -> Dict[str, Any]:
+        ref = self.ref
+        caller = (caller or '').strip().lower()
+        try:
+            offer_id = _safe_int(offer_id, 'Offer ID', min_val=1)
+        except ValueError as e:
+            return _reject('invalid_parameters', str(e))
+
+        offer = ref.conn.execute("SELECT * FROM corp_loan_offers WHERE offer_id = ? AND status = 'open'", (offer_id,)).fetchone()
+        if not offer:
+            return _reject('offer_not_found', f"Active loan offer #{offer_id} not found")
+        offer = dict(offer)
+
+        if caller != offer['lender'] and caller != 'admin':
+            return _reject('unauthorized', f"Only lender {offer['lender']} can cancel this loan offer")
+
+        recipient = self._resolve_creditor(offer['lender'])
+        self._move(f"loan-refund-{offer_id}-{offer['lender']}-r{ref.current_round}", (
+            ('SYSTEM', 'CR', -offer['principal']),
+            (recipient, 'CR', offer['principal']),
+        ))
+        ref.conn.execute("UPDATE corp_loan_offers SET status = 'cancelled' WHERE offer_id = ?", (offer_id,))
+        return {'v': 1, 'kind': 'loan_cancel_ok', 'payload': {'offer_id': offer_id, 'refund_cr': offer['principal']}}
+
     def cancel_loan_offer(self, lender: str, offer_id: int) -> Dict[str, Any]:
         """Cancel an open loan offer and refund escrowed principal (#164)."""
-        ref = self.ref
-        lender = (lender or '').strip().lower()
-        try:
-            offer_id = int(offer_id)
-        except (ValueError, TypeError):
-            return _reject('invalid_parameters', "Offer ID must be an integer")
-
-        with ref.lock, ref.conn:
-            offer = ref.conn.execute("SELECT * FROM corp_loan_offers WHERE offer_id = ? AND status = 'open'", (offer_id,)).fetchone()
-            if not offer:
-                return _reject('offer_not_found', f"Active loan offer #{offer_id} not found")
-            offer = dict(offer)
-
-            if lender != offer['lender'] and lender != 'admin':
-                return _reject('unauthorized', f"Only lender {offer['lender']} can cancel this loan offer")
-
-            self._move(f"loan-refund-{offer_id}-{lender}-r{ref.current_round}", (
-                ('SYSTEM', 'CR', -offer['principal']),
-                (offer['lender'], 'CR', offer['principal']),
-            ))
-            ref.conn.execute("UPDATE corp_loan_offers SET status = 'cancelled' WHERE offer_id = ?", (offer_id,))
-            return {'v': 1, 'kind': 'loan_cancel_ok', 'payload': {'offer_id': offer_id, 'refund_cr': offer['principal']}}
+        with self.ref.lock, self.ref.conn:
+            return self._cancel_loan_offer_locked(lender, offer_id)
 
     def issue_predatory_loan(self, lender: str, borrower: str, principal: int, interest_rate: float = 0.20, due_rounds: int = 5) -> Dict[str, Any]:
         """Backward-compatible helper creating a loan offer (#164)."""
@@ -732,12 +807,10 @@ class CorporateDesk:
         buyer = (buyer or '').strip().lower()
         debtor = (debtor or '').strip().lower()
         try:
-            amount = int(amount)
-        except (ValueError, TypeError):
-            return _reject('invalid_parameters', "Amount must be an integer")
+            amount = _safe_int(amount, 'Amount', min_val=1)
+        except ValueError as e:
+            return _reject('invalid_parameters', str(e))
 
-        if amount <= 0:
-            return _reject('invalid_amount', "Amount must be positive")
         if buyer not in self.active():
             return _reject('invalid_buyer', f"Unknown or inactive buyer '{buyer}'")
         if debtor not in self.active():
@@ -757,7 +830,7 @@ class CorporateDesk:
                 return _reject('insufficient_credits', f"Requires {buy_amount} CR; available {avail}")
 
             self._set(debtor, debt=debt - buy_amount)
-            due_amount = int(round(buy_amount * 1.25))  # 25% raider surcharge
+            due_amount = buy_amount  # 0% surcharge; debtor owes exactly what buyer paid to retire referee debt
             due_round = ref.current_round + 5
             sym = self._sym(debtor)
             cur = ref.conn.execute(
@@ -784,9 +857,9 @@ class CorporateDesk:
         ref = self.ref
         borrower = (borrower or '').strip().lower()
         try:
-            loan_id = int(loan_id)
-        except (ValueError, TypeError):
-            return _reject('invalid_parameters', "Loan ID must be an integer")
+            loan_id = _safe_int(loan_id, 'Loan ID', min_val=1)
+        except ValueError as e:
+            return _reject('invalid_parameters', str(e))
 
         with ref.lock, ref.conn:
             loan = ref.conn.execute("SELECT * FROM corp_predatory_loans WHERE loan_id = ? AND status = 'active'", (loan_id,)).fetchone()
@@ -797,17 +870,19 @@ class CorporateDesk:
                 return _reject('unauthorized', f"Only borrower {loan['borrower']} can repay this loan")
 
             due = loan['due_amount']
-            avail = ref.peer._available(borrower, 'CR') if hasattr(ref, 'peer') else ref.get_balance(borrower, 'CR')
+            actual_borrower = loan['borrower']
+            avail = ref.peer._available(actual_borrower, 'CR') if hasattr(ref, 'peer') else ref.get_balance(actual_borrower, 'CR')
             if avail < due:
                 return _reject('insufficient_credits', f"Repaying loan #{loan_id} requires {due} CR; available {avail}")
 
+            recipient = self._resolve_creditor(loan['lender'])
             self._move(f"loan-repay-{loan_id}-r{ref.current_round}", (
-                (borrower, 'CR', -due),
-                (loan['lender'], 'CR', due),
+                (actual_borrower, 'CR', -due),
+                (recipient, 'CR', due),
             ))
             ref.conn.execute("UPDATE corp_predatory_loans SET status = 'repaid' WHERE loan_id = ?", (loan_id,))
-            self._event("loan_repaid", borrower,
-                        f"{borrower} repaid loan #{loan_id} ({due} CR) to {loan['lender']}")
+            self._event("loan_repaid", actual_borrower,
+                        f"{actual_borrower} repaid loan #{loan_id} ({due} CR) to {recipient}")
             return {'v': 1, 'kind': 'loan_repaid_ok', 'payload': {'loan_id': loan_id, 'amount': due}}
 
     def _check_loan_maturities(self, round_num: int) -> None:
@@ -822,10 +897,11 @@ class CorporateDesk:
             due = loan["due_amount"]
             avail = ref.peer._available(borrower, "CR") if hasattr(ref, 'peer') else ref.get_balance(borrower, "CR")
             if avail >= due:
+                recipient = self._resolve_creditor(lender)
                 self._move(f"loan-repay-auto-{loan_id}-r{round_num}",
-                           ((borrower, "CR", -due), (lender, "CR", due)))
+                           ((borrower, "CR", -due), (recipient, "CR", due)))
                 ref.conn.execute("UPDATE corp_predatory_loans SET status = 'repaid' WHERE loan_id = ?", (loan_id,))
-                self._event("loan_repaid", borrower, f"{borrower} auto-repaid predatory loan #{loan_id} ({due} CR) to {lender}")
+                self._event("loan_repaid", borrower, f"{borrower} auto-repaid predatory loan #{loan_id} ({due} CR) to {recipient}")
             else:
                 ref.conn.execute("UPDATE corp_predatory_loans SET status = 'defaulted' WHERE loan_id = ?", (loan_id,))
                 # Route unpaid amount to corporate debt so it follows fair auction caps instead of instant takeover
