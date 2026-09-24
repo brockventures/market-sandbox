@@ -246,6 +246,9 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
                 tag = 'exposed' if e['exposed'] else e['visibility']
                 out.append(f"- round {e['round']} ({tag}): {who} -> {e['victim'] or '-'}: {e['detail']}")
         out.append("")
+    standing = getattr(ref, 'standing', None)
+    if standing is not None and standing.enabled:
+        out.extend(_standing_section(standing))
     if getattr(ref, 'upgrades_enabled', False):
         out.append("## Ship upgrades")
         out.append("Fitted while docked at any station, paid in CR, permanent for the game, one tier at a time. "
@@ -421,3 +424,49 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
         out.append(f"Same data as JSON: {base_url.rstrip('/')}/referee/briefing?format=json")
         out.append(f"Full rules: {base_url.rstrip('/')}/referee/rules?format=text")
     return "\n".join(out) + "\n"
+
+
+def _standing_section(standing) -> List[str]:
+    """## Institutional standing (#187 track 2): who each institution admits,
+    every threshold, and each corp's lane mix as progress toward the next tier."""
+    from agora import standing as S
+    rep = standing.report()
+    out = ["## Institutional standing",
+           f"Sol's institutions back corps that live by their line of business. Every round the referee books your "
+           f"realized profit to a lane: freight (goods sold away from where you bought them, contracts, tolls, fuel), "
+           f"trading (stock round trips and borrow fees), market making (goods bought and sold at the same station) "
+           f"or covert (privateer loot and ransoms, sabotage and wiretaps). Earn a lane's standing with "
+           f"{S.T1_SHARE:.0%} of your last {S.WINDOW} rounds' lane profit from it and {S.T1_FLOOR:,} CR earned in it "
+           f"all game; {S.T2_SHARE:.0%} and {S.T2_FLOOR:,} CR for the second tier ({S.t2_floor('market_making'):,} CR for market making). Membership lapses after "
+           f"{S.LAPSE_ROUNDS} rounds below {S.T1_KEEP:.0%} ({S.T2_KEEP:.0%} for the second tier), and GalNet reports "
+           f"every admission and lapse. Standing opens the institution's lane tech for purchase; tech you already "
+           f"bought is yours to keep if standing lapses. `GET /referee/standing`",
+           "",
+           "| Institution | Lane | Tier 1 / tier 2 | Why they care | Opens (t1; t2) |",
+           "|---|---|---|---|---|"]
+    for lane, inst in S.INSTITUTIONS.items():
+        out.append(f"| {inst['name']} (`{inst['cap']}`) | {inst['lane_label']} | {inst['titles'][0]} / "
+                   f"{inst['titles'][1]} | {inst['why']} | {inst['opens'][0]}; {inst['opens'][1]} |")
+    out.append("")
+    out.append("| Corp | Lane mix (last %d rounds) | Standing | Next tier |" % S.WINDOW)
+    out.append("|---|---|---|---|")
+    for a, c in sorted(rep['corps'].items()):
+        mix = ", ".join(f"{S.INSTITUTIONS[l]['lane_label']} {v['share']:.0%}" for l, v in c['lanes'].items()
+                        if v['share'] > 0) or "no lane profit yet"
+        nxt = []
+        for l, v in c['lanes'].items():
+            inst = S.INSTITUTIONS[l]
+            if v['tier'] == 0 and v['share'] >= 0.25:
+                nxt.append(f"{inst['lane_label']} {v['share']:.0%} / {v['lane_profit_cr']:,} CR: {inst['titles'][0]} "
+                           f"at {S.T1_SHARE:.0%} and {S.T1_FLOOR:,} CR")
+            elif v['tier'] == 1:
+                nxt.append(f"{inst['lane_label']} {v['share']:.0%} / {v['lane_profit_cr']:,} CR: {inst['titles'][1]} "
+                           f"at {S.T2_SHARE:.0%} and {S.t2_floor(l):,} CR")
+            if v['tier'] and v['rounds_below_keep']:
+                keep = S.T2_KEEP if v['tier'] == 2 else S.T1_KEEP
+                nxt.append(f"{inst['titles'][v['tier'] - 1]} lapses in "
+                           f"{S.LAPSE_ROUNDS - v['rounds_below_keep']} rounds unless {inst['lane_label'].lower()} "
+                           f"is back over {keep:.0%}")
+        out.append(f"| {a} | {mix} | {', '.join(c['titles']) or '-'} | {'; '.join(nxt) or '-'} |")
+    out.append("")
+    return out

@@ -37,6 +37,7 @@ from agora.equity import (
 from agora.salvage import DerelictSalvageEngine
 from agora.circuit_breaker import CircuitBreakerEngine, DEFAULT_BAND_PCT
 from agora.hazards import HazardEngine, env_hazards, parse_hazards
+from agora.standing import StandingDesk, env_standing, TABLES as STANDING_TABLES
 from agora.piracy import PiracyDesk, env_piracy, parse_piracy, ESCORT_PCT as PIRACY_ESCORT_PCT
 from agora.piracy import cargo_value as piracy_cargo_value
 from agora.exchange import EquityExchange, EXCHANGE_ID, clamp_shares, DEFAULT_VOL
@@ -107,6 +108,7 @@ class AgoraReferee:
         piracy: Any = None,
         events: Optional[bool] = None,
         order_flow: Optional[bool] = None,
+        standing: Optional[bool] = None,
     ):
         self.db_path = db_path
         # Debt, distress sales, bankruptcy and takeovers (agora/corporate.py).
@@ -174,6 +176,8 @@ class AgoraReferee:
         self.corporate = CorporateDesk(self)
         self.covert = CovertDesk(self)
         self.upgrades = UpgradeDesk(self)
+        # Earned institutional standing by income lane (agora/standing.py, #187 track 2).
+        self.standing = StandingDesk(self, env_standing() if standing is None else standing)
         self.hazards = HazardEngine(self.conn, self._hazard_odds)
         self.piracy = PiracyDesk(self, self._piracy_odds)
         # NPC buyers and sellers at each station that fill fleet quotes before the depot (agora/order_flow.py).
@@ -535,9 +539,10 @@ class AgoraReferee:
                 'transits', 'vessel_locations', 'vessels', 'equity_loans', 'distress_beacons',
                 'rescue_rfqs', 'rescue_quotes', 'salvage_claims',
                 'circuit_breaker_halts', 'orders', 'station_escrow', 'station_contracts', 'transit_hazards', 'corp_status', 'corp_events', 'fleet_upgrades',
-                'piracy_raids', 'piracy_privateers',
+                'piracy_raids', 'piracy_privateers', *STANDING_TABLES,
             ):
                 self.conn.execute(f"DELETE FROM {table}")
+            self.standing.reset_locked()
             self.conn.execute(
                 "INSERT INTO book_events (seq, kind, payload) VALUES "
                 "(0, 'floor_open', ?)",
@@ -581,6 +586,7 @@ class AgoraReferee:
         piracy: Any = None,
         events: Optional[bool] = None,
         order_flow: Optional[bool] = None,
+        standing: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Full clean-slate reset, callable live via POST /referee/admin/reset:
@@ -618,6 +624,8 @@ class AgoraReferee:
             self.events_enabled = bool(events)
         if order_flow is not None:
             self.order_flow.enabled = bool(order_flow)
+        if standing is not None:
+            self.standing.enabled = bool(standing)
         self._active_this_round = set()
         self.asymmetric_enabled = asymmetric
         if asymmetric or spawn_map:
@@ -666,6 +674,7 @@ class AgoraReferee:
         piracy: Any = None,
         events: Optional[bool] = None,
         order_flow: Optional[bool] = None,
+        standing: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Wipes the board exactly like reset_to_genesis(), but rolls a genuinely
@@ -704,6 +713,8 @@ class AgoraReferee:
             self.events_enabled = bool(events)
         if order_flow is not None:
             self.order_flow.enabled = bool(order_flow)
+        if standing is not None:
+            self.standing.enabled = bool(standing)
         self._active_this_round = set()
         self.asymmetric_enabled = asymmetric
         if asymmetric or spawn_map:
@@ -1500,6 +1511,8 @@ class AgoraReferee:
                     self.upgrades.step_locked(new_round)
                 # Leak rolls for secrets and 20% stake disclosures (agora/events.py).
                 events_report = self.events.step_locked(new_round) if self.events_enabled else None
+                # Earned standing from this round's realized P&L by lane (agora/standing.py).
+                standing_report = self.standing.step_locked(new_round)
 
             # Distribute bilateral borrow fees & audit maintenance margin
             borrow_fee_reports = self.equity.step_borrow_fees(new_round)
@@ -1524,6 +1537,7 @@ class AgoraReferee:
                 'events': events_report,
                 'idle_fees': idle_fees,
                 'order_flow': order_flow_report,
+                'standing': standing_report,
             }
 
     def get_equity_summary(self) -> Dict[str, Any]:

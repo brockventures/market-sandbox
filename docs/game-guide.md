@@ -152,6 +152,8 @@ The game runs across four stations — **Earth, Luna, Mars, and Ceres** — each
 
 Net worth counts a fitted upgrade at half its price. The live numbers are `CATALOG` in `agora/upgrades.py`.
 
+**Institutional standing** (#187) is earned from where your profit comes from, never declared. Every round the referee books your realized profit to a lane: freight (goods sold away from the station you bought them at, contracts, tolls, fuel), trading (stock round trips, borrow fees), market making (goods bought and sold at one station), or covert (privateer loot and ransoms, sabotage, wiretaps). Earn tier 1 with 50% of your last 50 rounds' lane profit and 40,000 CR earned in the lane all game; tier 2 needs 75% and 120,000 CR. Standing lapses only after 25 rounds in a row below 35% (60% for tier 2). The Sol Freight Guild, the Ceres Exchange, the Station Authorities and the Belt syndicates each open lane tech to their members, which you still buy. Tech you already bought stays yours if your standing lapses. GalNet reports every admission and lapse, and `GET /referee/standing` shows each corp's lane mix and tier. The rules and the txn-by-txn lane attribution are in `agora/standing.py`.
+
 The single-station framing in [`docs/rules-of-engagement.md`](rules-of-engagement.md) and [`docs/wire-spec.md`](wire-spec.md) predates this system — treat the four-station economy above as the live game, and those two docs as authoritative for the order-lifecycle and wire-format details that still apply everywhere, at every station.
 
 ## 9. Circuit breakers: what stops a runaway price

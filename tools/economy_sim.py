@@ -1492,6 +1492,16 @@ def covert_report(ref: AgoraReferee) -> Optional[dict]:
     }
 
 
+def standing_report(ref: AgoraReferee) -> Optional[dict]:
+    """Earned standing (agora/standing.py, #187 track 2) per fleet: final lane
+    shares, lane profit and tier, and the round each tier was first earned."""
+    st = getattr(ref, "standing", None)
+    if st is None or not st.enabled:
+        return None
+    return {a: {lane: {k: v[k] for k in ("share", "lane_profit_cr", "tier", "first_tier1_round", "first_tier2_round")}
+                for lane, v in c["lanes"].items()} for a, c in st.report()["corps"].items()}
+
+
 # ------------------------------------------------------------ run
 
 def _set_constants(constants: Optional[Dict[str, Any]]) -> Dict[tuple, Any]:
@@ -1661,6 +1671,7 @@ def _run(scenario, genesis, seed, rounds, mode, check_every, overrides, equity_m
         "fog": [ref.fog.lag, ref.fog.noise] if ref.fog else None,
         "peer": peer_report(ref, pmarket),
         "covert": covert_report(ref),
+        "standing": standing_report(ref),
         "depot_cr_end": {st: ref.get_balance(f"depot_{st}", "CR") for st in STATIONS},
         "seconds": round(elapsed, 2),
         "fleets": {a: {"strategy": kinds[a], "start": round(start[a]), "end": round(end[a]),

@@ -753,7 +753,7 @@ class Fuzzer:
     READS = ["/referee/health", "/referee/book", "/referee/book?station_id={loc}&instrument=FRAG", "/referee/accounts",
              "/referee/leaderboard", "/referee/briefing", "/referee/vessels", "/referee/vessels?agent_id={agent}",
              "/referee/fleets", "/referee/peer/offers?status=accepted", "/referee/contracts?status=lapsed",
-             "/referee/piracy", "/referee/corporate", "/referee/corporate/events", "/referee/upgrades",
+             "/referee/piracy", "/referee/corporate", "/referee/corporate/events", "/referee/upgrades", "/referee/standing", "/referee/standing?agent_id={agent}",
              "/referee/order-flow", "/referee/ticks?since_seq=0", "/referee/depots", "/referee/covert/wiretaps",
              "/referee/covert/intel?target={other}", "/equity/summary", "/salvage/summary",
              "/circuit_breaker/halts", "/circuit_breaker/bands", "/stations/prices?station_id={loc}",

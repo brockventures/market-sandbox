@@ -60,6 +60,18 @@ ENGINE_CUTS = [(3, 1), (0, 0)]
 # engines: share of a trip's FUEL burn cut, by tier held (tier 0 first) (#189).
 ENGINE_FUEL_CUT = [0.0, 0.0, 0.4]
 
+# Lane tech (#187 track 2): an entry may carry "standing": one capability per
+# tier (or None), checked with ref.standing.allows() at purchase time only. A
+# tier bought while the corp held that standing is kept if the standing later
+# lapses: factor() and the other effect paths never look at standing.
+
+
+def standing_gate(kind: str, tier: int):
+    """The standing capability tier `tier` (1-based) of `kind` needs, or None."""
+    gates = CATALOG[kind].get("standing") or []
+    return gates[tier - 1] if tier - 1 < len(gates) else None
+
+
 NEWS_NOUN = {"shielding": "SHIELDING", "hold": "HARDENED HOLDS", "armor": "ARMOR PLATING", "engines": "ENGINES"}
 
 
@@ -154,7 +166,8 @@ class UpgradeDesk:
         out = []
         for k, v in CATALOG.items():
             tiers = [{"tier": i + 1, "price": p, "factor": v["factors"][i], "unlock_round": v["unlocks"][i],
-                      "locked": v["unlocks"][i] > r} for i, p in enumerate(v["prices"])]
+                      "locked": v["unlocks"][i] > r, "standing": standing_gate(k, i + 1)}
+                     for i, p in enumerate(v["prices"])]
             out.append({"kind": k, "tiers": len(v["prices"]), "prices": v["prices"], "factors": v["factors"],
                         "unlock_rounds": v["unlocks"], "what": v["what"], "tier_detail": tiers,
                         "unlock_round": v["unlocks"][0], "locked": tiers[0]["locked"]})
@@ -209,6 +222,11 @@ class UpgradeDesk:
                 return _reject('upgrade_locked', f"{kind} tier {t + 1} is not on sale until round {unlock}: the "
                                                  f"shipyards are retooling (round now {ref.current_round}). "
                                                  f"GalNet will announce it.")
+            gate = standing_gate(kind, t + 1)
+            standing = getattr(ref, 'standing', None)
+            if gate and standing is not None and not standing.allows(agent, gate):
+                return _reject('standing_required', f"{kind} tier {t + 1} is lane tech: it needs {gate} standing "
+                                                    f"(GET /referee/standing)")
             price = prices[t]
             avail = ref.peer._available(agent, 'CR')
             if avail < price:
