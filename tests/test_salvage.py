@@ -384,3 +384,153 @@ class TestSalvageDocksStrandedFleet(unittest.TestCase):
         self.assertEqual((v['station_id'], v['status']), (dest, 'docked'))
         valid, errors = ref.verify_ledger_invariants()
         self.assertTrue(valid, errors)
+
+
+class TestSalvageBountyCappedAndEscrowReturned(unittest.TestCase):
+    """#205: salvage bounty capped at transit cargo; leftover escrow returned to stranded fleet."""
+
+    def test_claim_caps_bounty_at_transit_escrow_and_returns_leftover(self):
+        ref = AgoraReferee(':memory:')
+        origin = ref.get_vessel_location('marvin')['station_id']
+        dest = 'mars' if origin != 'mars' else 'luna'
+
+        # Record initial balances
+        marvin_initial = ref.get_balance('marvin', 'FRAG')
+        zero_initial = ref.get_balance('zero', 'FRAG')
+        sys_initial = ref.get_balance('SYSTEM', 'FRAG')
+
+        # Marvin departs with 100 FRAG
+        t = ref.initiate_transit('marvin', dest, commodity='FRAG', cargo_qty=100)
+        self.assertEqual(t['status'], 'in_transit')
+        tid = t['payload']['transit_id']
+
+        self.assertEqual(ref.get_balance('marvin', 'FRAG'), marvin_initial - 100)
+        self.assertEqual(ref.get_balance('SYSTEM', 'FRAG'), sys_initial + 100)
+
+        # Marvin declares distress offering 40 FRAG bounty out of the 100 aboard
+        d = ref.broadcast_distress(
+            agent_id='marvin',
+            location='in_transit',
+            cargo_bounty={'FRAG': 40},
+            transit_id=tid,
+            fuel_needed=15
+        )
+        self.assertTrue(d['ok'], d)
+        self.assertEqual(d['cargo_bounty'], {'FRAG': 40})
+
+        # Zero claims salvage
+        c = ref.claim_salvage(salvager_id='zero', beacon_id=d['beacon_id'])
+        self.assertTrue(c['ok'], c)
+        self.assertEqual(c['cargo_claimed'], {'FRAG': 40})
+
+        # Zero receives 40 FRAG bounty
+        self.assertEqual(ref.get_balance('zero', 'FRAG'), zero_initial + 40)
+        # Marvin receives leftover 60 FRAG refunded
+        self.assertEqual(ref.get_balance('marvin', 'FRAG'), marvin_initial - 40)
+        # SYSTEM escrow is completely cleared back to initial baseline
+        self.assertEqual(ref.get_balance('SYSTEM', 'FRAG'), sys_initial)
+
+        # Transit cancelled and vessel docked at origin
+        self.assertEqual(ref.conn.execute("SELECT status FROM transits WHERE transit_id = ?", (tid,)).fetchone()[0], 'cancelled')
+        self.assertEqual(ref.get_vessel_location('marvin')['station_id'], origin)
+        self.assertEqual(ref.get_vessel_location('marvin')['status'], 'docked')
+
+        valid, errors = ref.verify_ledger_invariants()
+        self.assertTrue(valid, errors)
+
+    def test_declared_bounty_exceeding_transit_cargo_is_capped_at_cargo(self):
+        ref = AgoraReferee(':memory:')
+        origin = ref.get_vessel_location('marvin')['station_id']
+        dest = 'mars' if origin != 'mars' else 'luna'
+
+        marvin_initial = ref.get_balance('marvin', 'FRAG')
+        zero_initial = ref.get_balance('zero', 'FRAG')
+        sys_initial = ref.get_balance('SYSTEM', 'FRAG')
+
+        # Marvin departs with 50 FRAG
+        t = ref.initiate_transit('marvin', dest, commodity='FRAG', cargo_qty=50)
+        tid = t['payload']['transit_id']
+
+        # Stranded fleet tries to offer 200 FRAG and 100 FOOD when transit only has 50 FRAG
+        d = ref.broadcast_distress(
+            agent_id='marvin',
+            cargo_bounty={'FRAG': 200, 'FOOD': 100},
+            transit_id=tid,
+            fuel_needed=15
+        )
+        self.assertTrue(d['ok'], d)
+        # Capped to 50 FRAG at broadcast
+        self.assertEqual(d['cargo_bounty'], {'FRAG': 50})
+
+        c = ref.claim_salvage(salvager_id='zero', beacon_id=d['beacon_id'])
+        self.assertTrue(c['ok'], c)
+        self.assertEqual(c['cargo_claimed'], {'FRAG': 50})
+
+        # Zero receives 50 FRAG, not 200
+        self.assertEqual(ref.get_balance('zero', 'FRAG'), zero_initial + 50)
+        # Marvin has 0 refund (all 50 went to bounty)
+        self.assertEqual(ref.get_balance('marvin', 'FRAG'), marvin_initial - 50)
+        # SYSTEM escrow is completely restored
+        self.assertEqual(ref.get_balance('SYSTEM', 'FRAG'), sys_initial)
+
+        valid, errors = ref.verify_ledger_invariants()
+        self.assertTrue(valid, errors)
+
+    def test_default_bounty_claims_all_transit_cargo_cleanly(self):
+        ref = AgoraReferee(':memory:')
+        origin = ref.get_vessel_location('marvin')['station_id']
+        dest = 'mars' if origin != 'mars' else 'luna'
+
+        marvin_initial = ref.get_balance('marvin', 'FRAG')
+        zero_initial = ref.get_balance('zero', 'FRAG')
+        sys_initial = ref.get_balance('SYSTEM', 'FRAG')
+
+        # Marvin departs with 70 FRAG
+        t = ref.initiate_transit('marvin', dest, commodity='FRAG', cargo_qty=70)
+        tid = t['payload']['transit_id']
+
+        # Omitting cargo_bounty defaults to all transit cargo
+        d = ref.broadcast_distress(agent_id='marvin', transit_id=tid, cargo_bounty=None)
+        self.assertTrue(d['ok'], d)
+        self.assertEqual(d['cargo_bounty'], {'FRAG': 70})
+
+        c = ref.claim_salvage(salvager_id='zero', beacon_id=d['beacon_id'])
+        self.assertTrue(c['ok'], c)
+        self.assertEqual(c['cargo_claimed'], {'FRAG': 70})
+
+        self.assertEqual(ref.get_balance('zero', 'FRAG'), zero_initial + 70)
+        self.assertEqual(ref.get_balance('marvin', 'FRAG'), marvin_initial - 70)
+        self.assertEqual(ref.get_balance('SYSTEM', 'FRAG'), sys_initial)
+
+        valid, errors = ref.verify_ledger_invariants()
+        self.assertTrue(valid, errors)
+
+    def test_zero_bounty_declared_refunds_all_escrow_to_stranded_agent(self):
+        ref = AgoraReferee(':memory:')
+        origin = ref.get_vessel_location('marvin')['station_id']
+        dest = 'mars' if origin != 'mars' else 'luna'
+
+        marvin_initial = ref.get_balance('marvin', 'FRAG')
+        zero_initial = ref.get_balance('zero', 'FRAG')
+        sys_initial = ref.get_balance('SYSTEM', 'FRAG')
+
+        # Marvin departs with 85 FRAG
+        t = ref.initiate_transit('marvin', dest, commodity='FRAG', cargo_qty=85)
+        tid = t['payload']['transit_id']
+
+        # Zero bounty declared
+        d = ref.broadcast_distress(agent_id='marvin', transit_id=tid, cargo_bounty={'FRAG': 0})
+        self.assertTrue(d['ok'], d)
+        self.assertEqual(d['cargo_bounty'], {})
+
+        c = ref.claim_salvage(salvager_id='zero', beacon_id=d['beacon_id'])
+        self.assertTrue(c['ok'], c)
+        self.assertEqual(c['cargo_claimed'], {})
+
+        # Zero receives 0, Marvin receives full 85 refund
+        self.assertEqual(ref.get_balance('zero', 'FRAG'), zero_initial)
+        self.assertEqual(ref.get_balance('marvin', 'FRAG'), marvin_initial)
+        self.assertEqual(ref.get_balance('SYSTEM', 'FRAG'), sys_initial)
+
+        valid, errors = ref.verify_ledger_invariants()
+        self.assertTrue(valid, errors)
