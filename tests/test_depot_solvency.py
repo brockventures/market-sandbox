@@ -12,6 +12,8 @@ from agora.referee import AgoraReferee
 
 class TestDepotSolvency(unittest.TestCase):
     def _move(self, ref, frm, to, inst, qty):
+        # A fleet's goods are on its ship 1 (#175).
+        frm, to = [f"{a}/1" if inst != 'CR' and ref.fleet.is_corp(a) else a for a in (frm, to)]
         with ref.conn:
             for acct, d in ((frm, -qty), (to, qty)):
                 ref.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, ?, 0)", (acct, inst))

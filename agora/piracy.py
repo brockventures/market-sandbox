@@ -77,7 +77,9 @@ import os
 import random
 from typing import Any, Dict, List, Optional, Tuple
 
-from agora.bag import Bags
+from fractions import Fraction
+
+from agora.bag import Bags, MAX_N
 from agora.galnet import GalNetNewsEvent
 from agora.spatial import STATIONS, COMMODITIES, BASE_PRICES
 
@@ -86,6 +88,14 @@ DEFAULT_P_INNER = 0.04
 HOT_EVERY, HOT_MULT = 20, 2.0
 VALUE_REF = 10_000
 VALUE_MULT = (0.5, 2.0)
+# The cargo-value multiplier is rounded to this step (#175), so every trip's
+# raid odds are one of a small set and each set of conditions has a bag of
+# fixed odds (see raid_key).
+VALUE_STEP = 0.25
+# Raid odds are drawn as the nearest k/n with n <= MAX_N (a marble bag) when
+# that is within this share of the exact odds; otherwise at the exact odds
+# from the key's luck credit (agora/bag.py draw_varying).
+BAG_ROUND_TOL = 0.01
 ESCORT_PCT, ESCORT_CUT = 0.04, 0.75
 RANSOM_PCT = 0.15
 SURRENDER_PCT = 0.25
@@ -260,6 +270,7 @@ class PiracyDesk:
         hot = self.hot_station(round_num) in (origin, dest)
         value = cargo_value(commodity, qty)
         vm = min(VALUE_MULT[1], max(VALUE_MULT[0], value / VALUE_REF))
+        vm = min(VALUE_MULT[1], max(VALUE_MULT[0], round(vm / VALUE_STEP) * VALUE_STEP))
         p = base * (HOT_MULT if hot else 1.0) * vm
         priv = self.active_contract(agent, round_num) is not None
         if priv:
@@ -268,9 +279,33 @@ class PiracyDesk:
             p *= 1 - ESCORT_CUT
         # Armor (ship upgrades, #143 / PR #149); 1.0 on builds without them.
         armor = self.ref.upgrades.factor(agent, 'armor') if hasattr(self.ref, 'upgrades') else 1.0
+        armor_tier = self.ref.upgrades.tier(agent, 'armor') if hasattr(self.ref, 'upgrades') else 0
         p *= armor
-        return {'odds': round(min(1.0, p), 4), 'base': base, 'hot': hot, 'value': value,
-                'value_mult': round(vm, 3), 'privateers': priv, 'escort': bool(escort), 'armor': armor}
+        return {'odds': round(min(1.0, p), 4), 'exact_odds': min(1.0, p), 'base': base, 'hot': hot, 'value': value,
+                'value_mult': round(vm, 3), 'privateers': priv, 'escort': bool(escort), 'armor': armor,
+                'armor_tier': armor_tier, 'tolled': bool(tolled)}
+
+    @staticmethod
+    def raid_key(vessel_id: str, c: Dict[str, Any]) -> str:
+        """The bag a trip's raid is drawn from (#175, Ryan: escorts and armor
+        are the ship's): one per ship per protection level (armor tier,
+        escort or not) and per trip conditions (belt or inner route, hot
+        station, cargo-value step, privateers on it). Within a key the odds
+        are fixed, so its bag's rate is exact, and luck built up on one kind
+        of trip never lands on another: an escorted trip draws only from its
+        ship's escorted bag."""
+        return (f"{vessel_id}|{'belt' if c.get('tolled') else 'inner'}|{'hot' if c.get('hot') else 'cool'}"
+                f"|v{c.get('value_mult')}|{'priv' if c.get('privateers') else 'free'}"
+                f"|a{c.get('armor_tier', 0)}|{'escort' if c.get('escort') else 'bare'}")
+
+    @staticmethod
+    def bag_odds(p: float) -> float:
+        """p as a marble bag's k/n (n <= MAX_N) when that is within
+        BAG_ROUND_TOL of p; else p itself (drawn from the key's luck credit)."""
+        if p <= 0 or p >= 1:
+            return p
+        q = float(Fraction(p).limit_denominator(MAX_N))
+        return q if q > 0 and abs(q - p) <= BAG_ROUND_TOL * p else p
 
     @property
     def _secrecy(self) -> bool:
@@ -295,18 +330,20 @@ class PiracyDesk:
 
     def roll_departure_locked(self, transit_id: str, agent: str, origin: str, dest: str, tolled: bool,
                               commodity: str, qty: int, escort: bool, escort_fee: int,
-                              round_num: int) -> Optional[Dict[str, Any]]:
+                              round_num: int, vessel_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Called from initiate_transit under ref.lock inside its transaction,
-        after the transit row is written. The raid is a draw from this
-        fleet's luck (#214), so one trip's outcome does not shift another
-        fleet's."""
+        after the transit row is written. The raid is a marble from the
+        flying ship's bag for this kind of trip (raid_key: #214, per ship and
+        protection level since #175), so one trip's outcome does not shift
+        another ship's, and an escorted trip's odds are its own."""
         if not self.odds:
             return None
         c = self.chance(agent, origin, dest, tolled, commodity, qty, escort, round_num)
         out = {'odds': c['odds'], 'hot_station': self.hot_station(round_num), 'hot_route': c['hot'],
                'cargo_value': c['value'], 'escort': bool(escort), 'escort_fee': escort_fee if escort else 0,
                'raided': False, 'demand': None}
-        if qty <= 0 or not self.bags.draw_varying('raid', agent, c['odds']):
+        key = self.raid_key(vessel_id or f"{agent}/1", c)
+        if qty <= 0 or not self.bags.draw('raid', key, self.bag_odds(c['exact_odds'])):
             return out
         ransom = int(c['value'] * RANSOM_PCT)
         surrender = int(qty * SURRENDER_PCT)
@@ -363,7 +400,12 @@ class PiracyDesk:
         fence = self._fence_account()
         legs = [('SYSTEM', comm, -(cut + (fence_qty if fence else 0)))]
         if cut:
-            legs.append((row['sponsor'], comm, cut))
+            # The sponsor's cut is delivered to its ship 1 (#175): the raiders
+            # carry it, as before ships, so #186's covert economics are unchanged.
+            sponsor = row['sponsor']
+            if self.ref.fleet.is_corp(sponsor):
+                sponsor = f"{sponsor}/1"
+            legs.append((sponsor, comm, cut))
         if fence and fence_qty:
             legs.append((fence, comm, fence_qty))
         self._move(f"piracy-loot-{tid}", legs)
@@ -396,7 +438,10 @@ class PiracyDesk:
             status = 'surrendered'
         else:
             d = self.rng.randint(*FIGHT_DELAY)
-            if self.bags.draw('escape', row['agent_id'], FIGHT_ESCAPE):
+            # The raided ship's own bag (#175).
+            ship = (transit['vessel_id'] if transit is not None and 'vessel_id' in transit.keys() else None) \
+                or f"{row['agent_id']}/1"
+            if self.bags.draw('escape', ship, FIGHT_ESCAPE):
                 status = 'escaped'
             else:
                 status = 'lost'

@@ -11,6 +11,9 @@ from agora.spatial import STATIONS
 
 class TestLeaderboardInTransitCargo(unittest.TestCase):
     def _give(self, ref, agent, inst, qty):
+        # A fleet's goods live on its ship 1 ('<agent>/1') since #175.
+        if inst != 'CR' and ref.fleet.is_corp(agent):
+            agent = f"{agent}/1"
         with ref.conn:
             ref.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES ('SYSTEM', ?, 0)", (inst,))
             ref.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id='SYSTEM' AND instrument=?", (qty, inst))
@@ -107,8 +110,8 @@ class TestLeaderboardInTransitCargo(unittest.TestCase):
         agent = 'amos'
         with ref.conn:
             ref.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES ('amos', 'CR', 5000)")
-            ref.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES ('amos', 'FUEL', 100)")
-            ref.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES ('amos', 'ORE', 300)")
+            ref.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES ('amos/1', 'FUEL', 100)")
+            ref.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES ('amos/1', 'ORE', 300)")
 
         ore_mark = round(ref.spatial.get_station_price('ceres', 'ORE'))
         lb_before = next(e for e in ref.get_leaderboard() if e['agent_id'] == agent)

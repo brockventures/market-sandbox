@@ -64,7 +64,12 @@ CREATE TABLE transits (
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 
--- Fleet vessels tracking per-ship state (ships 1-5).
+-- One row per ship (#175). A corp's goods and FUEL live on its ships'
+-- ledger accounts, named by vessel_id ('<corp>/<n>'); CR and shares stay on
+-- '<corp>'. station_id is a station or 'in_transit'; status is 'docked',
+-- 'in_transit' or 'scrap_pending' (an absorbed hull over the acquirer's cap,
+-- still flying; scrapped when it lands). cost is what was paid for it
+-- (0 for a corp's starting ship): net worth counts half, scrap pays half.
 CREATE TABLE vessels (
     vessel_id       TEXT PRIMARY KEY,
     agent_id        TEXT NOT NULL,
@@ -77,13 +82,32 @@ CREATE TABLE vessels (
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 
--- Current docked station or transit status per agent vessel (backward-compatible shim).
-CREATE TABLE vessel_locations (
-    agent_id        TEXT PRIMARY KEY,
-    station_id      TEXT NOT NULL,
-    docked_since    INTEGER NOT NULL DEFAULT 0,
-    updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-);
+-- Ship 1's row of `vessels`, under the pre-#175 name and shape. A view, not
+-- a table, so it can never disagree with `vessels` (#175 PR 2). Plain
+-- INSERT and UPDATE still work through the INSTEAD OF triggers below and
+-- land on `<agent>/1`; UPSERT (INSERT ... ON CONFLICT) cannot target a view.
+CREATE VIEW vessel_locations AS
+    SELECT agent_id, station_id, docked_since, created_at AS updated_at
+    FROM vessels WHERE vessel_id = agent_id || '/1';
+
+CREATE TRIGGER vessel_locations_insert INSTEAD OF INSERT ON vessel_locations BEGIN
+    INSERT INTO vessels (vessel_id, agent_id, name, station_id, docked_since, status)
+    VALUES (NEW.agent_id || '/1', NEW.agent_id, NEW.agent_id || ' Ship 1', NEW.station_id,
+            COALESCE(NEW.docked_since, 0),
+            CASE WHEN NEW.station_id = 'in_transit' THEN 'in_transit' ELSE 'docked' END)
+    ON CONFLICT(vessel_id) DO UPDATE SET station_id = excluded.station_id,
+        docked_since = excluded.docked_since, status = excluded.status;
+END;
+
+CREATE TRIGGER vessel_locations_update INSTEAD OF UPDATE ON vessel_locations BEGIN
+    UPDATE vessels SET station_id = NEW.station_id, docked_since = COALESCE(NEW.docked_since, 0),
+        status = CASE WHEN NEW.station_id = 'in_transit' THEN 'in_transit' ELSE 'docked' END
+    WHERE vessel_id = OLD.agent_id || '/1';
+END;
+
+CREATE TRIGGER vessel_locations_delete INSTEAD OF DELETE ON vessel_locations BEGIN
+    DELETE FROM vessels WHERE vessel_id = OLD.agent_id || '/1';
+END;
 
 -- Source of truth for which fleets exist and what they start a genesis
 -- reset with. A row here plus POST /referee/admin/reset is a complete
@@ -200,6 +224,7 @@ CREATE TABLE orders (
     status       TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','filled','cancelled')),
     filled_qty   INTEGER NOT NULL DEFAULT 0,
     station_id   TEXT NOT NULL DEFAULT 'ceres',
+    vessel_id    TEXT,                -- the ship whose hold the goods leg settles on (#175); NULL = '<agent>/1'
     PRIMARY KEY (agent_id, order_id)
 );
 

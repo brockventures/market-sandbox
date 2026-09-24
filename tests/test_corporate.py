@@ -90,22 +90,27 @@ class TestCorporate(unittest.TestCase):
         here = ref.get_vessel_location('marvin')['station_id']
         dest = 'mars' if here != 'mars' else 'luna'
         self.assertEqual(ref.initiate_transit('marvin', dest, commodity='FRAG', cargo_qty=frag)['status'], 'in_transit')
+        aboard = ref.conn.execute("SELECT cargo_qty FROM transits WHERE vessel_id = 'marvin/1' "
+                                  "AND status = 'in_transit'").fetchone()[0]  # net of any hazard loss
         z_frag, z_loc = ref.get_balance('zero', 'FRAG'), ref.get_vessel_location('zero')
         need = TAKEOVER_SHARES - ref.get_balance('zero', 'EQ_MARV')
         move(ref, 'test-buyup2', (('marvin', 'EQ_MARV', -need), ('zero', 'EQ_MARV', need)))
         ref.step_round()
         self.assertEqual(ref.corporate.status('marvin'), 'absorbed')
-        self.assertEqual(ref.get_balance('zero', 'FRAG'), z_frag + frag)
+        # #175: the ship is renamed into zero's fleet and keeps flying; its
+        # cargo lands in its own hold on arrival.
+        t = ref.conn.execute("SELECT agent_id, vessel_id, status FROM transits WHERE vessel_id = 'zero/2'").fetchone()
+        self.assertEqual((t['agent_id'], t['status']), ('zero', 'in_transit'))
+        self.assertEqual(ref.get_vessels('marvin'), [])
         for _ in range(12):
             ref.step_round()
         self.assertEqual(ref.get_balance('marvin', 'FRAG'), 0)
+        self.assertEqual(ref.get_balance('zero/2', 'FRAG'), aboard)
+        self.assertEqual(ref.get_balance('zero', 'FRAG'), z_frag + aboard)
         self.assertEqual(ref.get_vessel_location('zero').get('station_id'), z_loc.get('station_id'))
-        # The absorbed fleet's cancelled trip leaves its ship docked back at
-        # the origin, not stranded 'in_transit' (#198).
-        loc = ref.get_vessel_location('marvin')
-        self.assertEqual((loc['status'], loc['station_id']), ('docked', here))
-        v = ref.conn.execute("SELECT station_id, status FROM vessels WHERE vessel_id = 'marvin/1'").fetchone()
-        self.assertEqual((v['station_id'], v['status']), (here, 'docked'))
+        v = ref.conn.execute("SELECT station_id, status FROM vessels WHERE vessel_id = 'zero/2'").fetchone()
+        self.assertEqual((v['station_id'], v['status']), (dest, 'docked'))
+        self.assertEqual(ref.get_vessel_location('marvin')['status'], 'no_ship')
         clean(self, ref)
 
     def test_last_corp_standing_wins(self):

@@ -20,6 +20,15 @@ class Order:
     seq_seen: int
     submitted_at: float = field(default_factory=time.time)
     filled_qty: int = 0
+    # #175: the ledger account the goods leg settles on (a ship, '<corp>/<n>')
+    # and that ship's vessel_id. None: the agent's own account (depots,
+    # SYSTEM, stock orders), as before ships.
+    acct: Optional[str] = None
+    vessel_id: Optional[str] = None
+
+    @property
+    def goods_acct(self) -> str:
+        return self.acct or self.agent_id
 
     @property
     def remaining_qty(self) -> int:
@@ -42,6 +51,9 @@ class Trade:
     qty: int
     seq: int
     timestamp: float = field(default_factory=time.time)
+    # #175: the goods legs' accounts (the orders' ships); CR moves on buyer_id/seller_id.
+    buyer_acct: Optional[str] = None
+    seller_acct: Optional[str] = None
 
 
 class OrderBook:
@@ -78,7 +90,8 @@ class OrderBook:
                     'side': o.side,
                     'qty': o.remaining_qty,
                     'limit_price': o.limit_price,
-                    'seq_seen': o.seq_seen
+                    'seq_seen': o.seq_seen,
+                    'vessel_id': o.vessel_id,
                 }
                 for o in self.bids
             ],
@@ -89,7 +102,8 @@ class OrderBook:
                     'side': o.side,
                     'qty': o.remaining_qty,
                     'limit_price': o.limit_price,
-                    'seq_seen': o.seq_seen
+                    'seq_seen': o.seq_seen,
+                    'vessel_id': o.vessel_id,
                 }
                 for o in self.asks
             ]
@@ -123,7 +137,9 @@ class OrderBook:
                     instrument=self.instrument,
                     price=exec_price,
                     qty=match_qty,
-                    seq=current_seq
+                    seq=current_seq,
+                    buyer_acct=order.goods_acct,
+                    seller_acct=best_ask.goods_acct,
                 )
                 trades.append(trade)
 
@@ -160,7 +176,9 @@ class OrderBook:
                     instrument=self.instrument,
                     price=exec_price,
                     qty=match_qty,
-                    seq=current_seq
+                    seq=current_seq,
+                    buyer_acct=best_bid.goods_acct,
+                    seller_acct=order.goods_acct,
                 )
                 trades.append(trade)
 

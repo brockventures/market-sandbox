@@ -399,32 +399,81 @@ class StandingDesk:
         return None
 
     def _ingest(self, corps: set) -> Dict[str, Dict[str, float]]:
-        """Read ledger entries past the cursor; return corp -> lane -> CR."""
+        """Read ledger entries past the cursor; return corp -> lane -> CR.
+
+        Since #175 a corp's goods sit on its ships' accounts ('<corp>/<n>')
+        and station holds ('<corp>/@<st>'): legs are grouped by corp, so a
+        trade's CR (on the corp) and goods (on a ship) are one sale, while
+        cost-basis lots are kept per account, so a lot keeps the station it
+        was bought at and moves only with the goods. Goods moving between
+        two of one corp's accounts (a same-station transfer, two of its
+        ships crossing on a book, the one-time move onto ship 1) carry
+        their lots across and book no P&L."""
         stations = self._trade_stations()
         rows = self.ref.conn.execute(
             "SELECT entry_id, txn_id, agent_id, instrument, delta FROM ledger_entries WHERE entry_id > ? ORDER BY entry_id",
             (self.ledger_cursor,)).fetchall()
-        txns: Dict[str, Dict[str, Dict[str, int]]] = {}
+        txns: Dict[str, Dict[str, Dict[str, Any]]] = {}
         order: List[str] = []
         for eid, txn, agent, inst, d in rows:
             self.ledger_cursor = max(self.ledger_cursor, eid)
-            if agent not in corps:
+            corp = agent.split('/', 1)[0]
+            if corp not in corps:
                 continue
             if txn not in txns:
                 txns[txn] = {}
                 order.append(txn)
-            legs = txns[txn].setdefault(agent, {})
-            legs[inst] = legs.get(inst, 0) + d
+            e = txns[txn].setdefault(corp, {'legs': {}, 'accts': {}})
+            e['legs'][inst] = e['legs'].get(inst, 0) + d
+            per = e['accts'].setdefault(inst, {})
+            per[agent] = per.get(agent, 0) + d
         income: Dict[str, Dict[str, float]] = {}
         for txn in order:
-            for agent, legs in txns[txn].items():
-                self._book(txn, agent, legs, stations, income.setdefault(agent, {}))
+            for corp, e in txns[txn].items():
+                acct = self._internal_moves(e['accts'])
+                self._book(txn, corp, e['legs'], stations, income.setdefault(corp, {}), acct)
         return income
 
-    def _book(self, txn: str, agent: str, legs: Dict[str, int], stations: Dict[str, str], inc: Dict[str, float]) -> None:
+    def _internal_moves(self, accts: Dict[str, Dict[str, int]]) -> Dict[str, str]:
+        """Carry lots between a corp's own accounts for goods that left one
+        and arrived at another in the same txn; return, per instrument, the
+        account the txn's net leg is booked on."""
+        out: Dict[str, str] = {}
+        for inst, per in accts.items():
+            per = {a: d for a, d in per.items() if d}
+            neg = [[a, -d] for a, d in per.items() if d < 0]
+            pos = [[a, d] for a, d in per.items() if d > 0]
+            while neg and pos:
+                n = min(neg[0][1], pos[0][1])
+                for p in self._take(neg[0][0], inst, n):
+                    self._add(pos[0][0], inst, p[0], p[1], p[2], p[3])
+                neg[0][1] -= n
+                pos[0][1] -= n
+                if not neg[0][1]:
+                    neg.pop(0)
+                if not pos[0][1]:
+                    pos.pop(0)
+            rest = neg or pos
+            if rest:
+                out[inst] = rest[0][0]
+            elif per:
+                out[inst] = next(iter(per))
+        return out
+
+    def _book(self, txn: str, agent: str, legs: Dict[str, int], stations: Dict[str, str], inc: Dict[str, float],
+              accts: Optional[Dict[str, str]] = None) -> None:
+        """Book one txn's net legs for corp `agent`; lots move on the goods
+        account each instrument's leg is on (accts, from _internal_moves)."""
         cr = legs.get('CR', 0)
         goods = {i: d for i, d in legs.items() if i != 'CR' and d}
         pend = self.book['pending']
+        accts = accts or {}
+
+        def A(inst: str) -> str:
+            return accts.get(inst, agent)
+
+        def mine_of(entries):
+            return [p for p in entries if str(p[0]).split('/', 1)[0] == agent]
 
         if txn.startswith(MARKET):
             station = stations.get(txn[len('trade-'):] if txn.startswith('trade-') else txn)
@@ -433,47 +482,47 @@ class StandingDesk:
                 inst, d = next(iter(goods.items()))
                 if AGENT_BY_SYMBOL.get(inst) == agent:  # its own treasury stock: financing, not trading
                     if d > 0:
-                        self._add(agent, inst, None, 'neutral', d, 0.0)
+                        self._add(A(inst), inst, None, 'neutral', d, 0.0)
                     else:
-                        self._take(agent, inst, -d)
+                        self._take(A(inst), inst, -d)
                 elif d > 0:
-                    self._add(agent, inst, None if inst in EQUITY_SYMBOLS else station, 'bought', d, float(-cr))
+                    self._add(A(inst), inst, None if inst in EQUITY_SYMBOLS else station, 'bought', d, float(-cr))
                 else:
-                    self._sell(inc, agent, inst, -d, float(cr), station)
+                    self._sell(inc, A(inst), inst, -d, float(cr), station)
             return
         if txn.startswith('escrow-'):
             key = 'tx:' + txn[len('escrow-'):]
             for inst, d in goods.items():
                 if d < 0:
-                    pend.setdefault(key, []).extend([agent, inst, *p] for p in self._take(agent, inst, -d))
+                    pend.setdefault(key, []).extend([A(inst), inst, *p] for p in self._take(A(inst), inst, -d))
             return
         if txn.startswith(('release-', 'out-transit-')):
             key = 'tx:' + (txn[len('release-'):] if txn.startswith('release-') else txn[len('out-transit-'):])
             held = pend.pop(key, [])
             for inst, d in goods.items():
                 back = d
-                for p in [p for p in held if p[0] == agent and p[1] == inst]:
+                for p in [p for p in mine_of(held) if p[1] == inst]:
                     st, tag, q, c = p[2:]
                     n = min(q, max(0, back))
                     if n:
-                        self._add(agent, inst, st, tag, n, c * n / q)
+                        self._add(A(inst), inst, st, tag, n, c * n / q)
                     back -= n
                     if q - n > 0 and tag != 'neutral':
                         inc['hauling'] = inc.get('hauling', 0) - c * (q - n) / q
                 if back > 0:
-                    self._add(agent, inst, None, 'neutral', back, 0.0)
+                    self._add(A(inst), inst, None, 'neutral', back, 0.0)
             return
         if txn.startswith('fuel-') or txn.startswith(VICTIM_GOODS_LOSS):
             for inst, d in goods.items():
                 if d < 0:
-                    self._lose(inc, self._take(agent, inst, -d))
+                    self._lose(inc, self._take(A(inst), inst, -d))
             if txn.startswith('sabotage-') and cr:
                 self._cr(txn, cr, inc)
             return
         if txn.startswith('contract-deliver-'):
             for inst, d in goods.items():
                 if d < 0:
-                    self._sell(inc, agent, inst, -d, float(max(0, cr)), None, force='hauling')
+                    self._sell(inc, A(inst), inst, -d, float(max(0, cr)), None, force='hauling')
                     cr = min(0, cr)
             if cr:
                 inc['hauling'] = inc.get('hauling', 0) + cr
@@ -483,35 +532,35 @@ class StandingDesk:
             if txn.startswith('peer-offer-'):
                 for inst, d in goods.items():
                     if d < 0:
-                        pend.setdefault(eid, []).extend([agent, inst, *p] for p in self._take(agent, inst, -d))
+                        pend.setdefault(eid, []).extend([A(inst), inst, *p] for p in self._take(A(inst), inst, -d))
             elif txn.startswith('peer-accept-'):
                 if cr < 0:
                     self.book['paid'][eid] = [agent, -cr]
             else:
-                mine = [p for p in pend.get(eid, []) if p[0] == agent]
+                mine = mine_of(pend.get(eid, []))
                 if cr > 0 and mine:  # the seller is paid: its sale
                     self._sell(inc, agent, mine[0][1], 0, float(cr), None, force='hauling',
                                pieces=[p[2:] for p in mine])
-                    pend[eid] = [p for p in pend.get(eid, []) if p[0] != agent]
+                    pend[eid] = [p for p in pend.get(eid, []) if p not in mine]
                 elif cr > 0:  # a refund to the buyer
                     self.book['paid'].pop(eid, None)
                 for inst, d in goods.items():
                     if d > 0 and mine and all(p[1] == inst for p in mine):  # goods back to the seller
                         for p in mine:
-                            self._add(agent, inst, p[2], p[3], p[4], p[5])
-                        pend[eid] = [p for p in pend.get(eid, []) if p[0] != agent]
+                            self._add(A(inst), inst, p[2], p[3], p[4], p[5])
+                        pend[eid] = [p for p in pend.get(eid, []) if p not in mine]
                     elif d > 0:  # the buyer collects what it paid for
                         paid = self.book['paid'].pop(eid, [agent, 0])
-                        self._add(agent, inst, None, 'bought', d, float(paid[1]))
+                        self._add(A(inst), inst, None, 'bought', d, float(paid[1]))
                 if not pend.get(eid):
                     pend.pop(eid, None)
             return
         if txn.startswith(('piracy-loot-', 'sabotage-loot-')):
             for inst, d in goods.items():
                 if d > 0:
-                    self._add(agent, inst, None, 'loot', d, 0.0)
+                    self._add(A(inst), inst, None, 'loot', d, 0.0)
                 else:
-                    self._lose(inc, self._take(agent, inst, -d))
+                    self._lose(inc, self._take(A(inst), inst, -d))
             return
         if txn.startswith('piracy-ransom-'):
             lane = 'covert' if cr > 0 else 'hauling'
@@ -520,16 +569,16 @@ class StandingDesk:
         if txn.startswith('share-') or txn.startswith('ret-share-'):
             for inst, d in goods.items():
                 if d > 0 and txn.startswith('share-'):  # borrowed: a short sale books its proceeds
-                    self._add(agent, inst, None, 'bought', d, 0.0)
+                    self._add(A(inst), inst, None, 'bought', d, 0.0)
                 elif d < 0 and txn.startswith('ret-share-'):  # returned: the cover's cost
-                    self._lose(inc, self._take(agent, inst, -d), lane='trading')
+                    self._lose(inc, self._take(A(inst), inst, -d), lane='trading')
                 elif d < 0:  # lent out: held for the lender until it comes back
                     pend.setdefault('loan:' + txn[len('share-'):], []).extend(
-                        [agent, inst, *p] for p in self._take(agent, inst, -d))
+                        [A(inst), inst, *p] for p in self._take(A(inst), inst, -d))
                 else:  # lent shares come home
                     for p in pend.pop('loan:' + txn[len('ret-share-'):], []):
-                        if p[0] == agent:
-                            self._add(agent, inst, p[2], p[3], p[4], p[5])
+                        if str(p[0]).split('/', 1)[0] == agent:
+                            self._add(A(inst), inst, p[2], p[3], p[4], p[5])
             return
         # CR-only and neutral paths.
         if cr:
@@ -537,11 +586,11 @@ class StandingDesk:
         for inst, d in goods.items():
             if d > 0:
                 if inst in EQUITY_SYMBOLS and AGENT_BY_SYMBOL.get(inst) != agent and self._mark(inst):
-                    self._add(agent, inst, None, 'bought', d, d * self._mark(inst))
+                    self._add(A(inst), inst, None, 'bought', d, d * self._mark(inst))
                 else:
-                    self._add(agent, inst, None, 'neutral', d, 0.0)
+                    self._add(A(inst), inst, None, 'neutral', d, 0.0)
             else:
-                self._take(agent, inst, -d)
+                self._take(A(inst), inst, -d)
 
     @staticmethod
     def _cr(txn: str, cr: int, inc: Dict[str, float]) -> None:

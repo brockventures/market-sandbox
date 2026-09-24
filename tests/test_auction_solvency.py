@@ -25,6 +25,8 @@ def put(ref, agent, side, qty, price, tag):
 def drain(ref, agent, inst, keep):
     """Take everything above `keep` to SYSTEM in one balanced entry, the way
     a fine or a debt payment would."""
+    if inst != 'CR' and ref.fleet.is_corp(agent):
+        agent = f"{agent}/1"  # a fleet's goods are on its ship 1 (#175)
     gone = ref.get_balance(agent, inst) - keep
     with ref.conn:
         for acct, d in ((agent, -gone), ('SYSTEM', gone)):

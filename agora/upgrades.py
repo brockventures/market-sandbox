@@ -209,8 +209,8 @@ class UpgradeDesk:
         if kind not in CATALOG:
             return _reject('invalid_upgrade', f"Unknown upgrade '{kind}'. Options: {sorted(CATALOG)}")
         with ref.lock, ref.conn:
-            loc = ref.get_vessel_location(agent)
-            if loc.get('status') != 'docked':
+            # Fleet-wide upgrades (they fit every ship, #175): any ship docked will do.
+            if not ref.docked_stations(agent) and ref.get_vessel_location(agent).get('status') != 'docked':
                 return _reject('vessel_not_docked', 'Upgrades are fitted while docked at a station')
             t = self.tier(agent, kind)
             prices = CATALOG[kind]["prices"]

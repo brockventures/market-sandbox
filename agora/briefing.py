@@ -54,6 +54,27 @@ def _depots(ref, viewer):
     return ref.fog.depot_view(ref, viewer) if getattr(ref, 'fog', None) else ref.get_depot_summary()
 
 
+def _where(loc: Dict[str, Any]) -> str:
+    if loc.get('status') == 'in_transit' and loc.get('transit'):
+        t = loc['transit']
+        return (f"in transit to {t['destination'].capitalize()}, arrives round {t['arrival_round']}"
+                f" ({t['cargo_qty']} {t['commodity']} aboard)")
+    return f"docked at {str(loc.get('station_id', '?')).capitalize()}"
+
+
+def _ships(ref, agent: str) -> List[Dict[str, Any]]:
+    """Every ship of a fleet: where it is and what its hold carries (#175)."""
+    fleet = getattr(ref, 'fleet', None)
+    if fleet is None or not fleet.is_corp(agent):
+        return []
+    out = []
+    for loc in ref.fleet_locations(agent):
+        vid = loc['vessel_id']
+        out.append({'vessel_id': vid, 'where': _where(loc), 'location': loc,
+                    'hold': {c: ref.get_balance(vid, c) for c in ('FUEL', 'FRAG', 'FOOD', 'ORE')}})
+    return out
+
+
 def build_state(ref, viewer: Optional[str] = None) -> Dict[str, Any]:
     """Same live data as the markdown briefing, structured (?format=json)."""
     rnd = ref.current_round
@@ -70,7 +91,8 @@ def build_state(ref, viewer: Optional[str] = None) -> Dict[str, Any]:
     fleets = []
     for row in ref.get_leaderboard():
         fleets.append({k: row.get(k) for k in ('agent_id', 'net_worth', 'liquid', 'fuel', 'frags', 'food', 'ore')}
-                      | {'location': locs.get(row['agent_id']) or ref.get_vessel_location(row['agent_id'])})
+                      | {'location': locs.get(row['agent_id']) or ref.get_vessel_location(row['agent_id']),
+                         'ships': _ships(ref, row['agent_id'])})
     return {'round': rnd, 'viewer': viewer, 'depots': _depots(ref, viewer), 'routes': routes, 'fleets': fleets}
 
 
@@ -154,15 +176,14 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
     out.append("|---|---|---|---|---|---|---|---|")
     for row in board:
         loc = locs.get(row['agent_id']) or ref.get_vessel_location(row['agent_id'])
-        if loc.get('status') == 'in_transit' and loc.get('transit'):
-            t = loc['transit']
-            where = (f"in transit to {t['destination'].capitalize()}, arrives round {t['arrival_round']}"
-                     f" ({t['cargo_qty']} {t['commodity']} aboard)")
-        else:
-            where = f"docked at {str(loc.get('station_id', '?')).capitalize()}"
+        where = _where(loc)
+        n = row.get('ships') or 1
+        if n > 1:
+            where += f" (ship 1 of {n})"
         out.append(f"| {row['agent_id']} | {where} | {row['liquid']} | {row['fuel']} | {row['frags']} | "
                    f"{row.get('food') or 0} | {row.get('ore') or 0} | {row['net_worth']} |")
     out.append("")
+    out.extend(_ships_section(ref, board, viewer))
     if getattr(ref, 'rival_shares', 0):
         base = {r['agent_id']: r['net_worth'] - r.get('stocks_value', 0) for r in board}
         marks = ref.stock_marks(base)
@@ -468,5 +489,43 @@ def _standing_section(standing, viewer: Optional[str] = None) -> List[str]:
         out.append(f"**{a}**" + (" (you)" if a == viewer else ""))
         for lane, v in rep['corps'][a]['lanes'].items():
             out.append(f"- {_standing_line(lane, v)}")
+        out.append("")
+    return out
+
+
+def _ships_section(ref, board, viewer: Optional[str]) -> List[str]:
+    """## Ships: the rules for more than one ship, and every fleet's ships (#175)."""
+    from agora import fleet as F
+    if getattr(ref, 'fleet', None) is None:
+        return []
+    prices = ", ".join(f"ship {n}: {p:,} CR" for n, p in sorted(F.SHIP_PRICES.items()))
+    out = ["## Ships",
+           f"Every fleet starts with one ship and may own up to {F.BASE_SHIP_CAP}; a 4th and 5th need Sol Freight "
+           f"Guild standing (Guild Member, then Guild Master: see Standing). Prices: {prices}. Each ship beyond the "
+           f"first costs {F.SHIP_UPKEEP} CR a round in upkeep, and counts for {int(F.BOOK_PCT * 100)}% of its price "
+           "in net worth.",
+           "- Buy one while docked: `POST /referee/vessels/buy` (optional `vessel_id`: the ship that is buying; "
+           "the new ship appears where it is, with an empty hold and no FUEL).",
+           "- Goods and FUEL are carried by one ship. CR is the fleet's. Orders, MOVEs, offers and deliveries take "
+           "`vessel_id` (e.g. `amos/2`); without it they mean ship 1.",
+           "- A ship trades only at the station it is docked at, and each ship makes one trip at a time.",
+           "- Move goods between two of your ships docked at the same station: `POST /referee/vessels/transfer` "
+           "`{\"from\": \"amos/1\", \"to\": \"amos/2\", \"instrument\": \"ORE\", \"qty\": 100}`. "
+           "Goods left at a station with no ship of yours under them (a scrapped ship's cargo, a refunded offer) "
+           "wait in your station hold `@<station>` until a ship of yours docks there and loads them.",
+           f"- A bought ship you no longer want: `POST /referee/vessels/scrap` `{{\"vessel_id\": \"amos/2\"}}` "
+           f"while it is docked pays back {int(F.SCRAP_PCT * 100)}% of its price (what net worth already counts it at) "
+           "and ends its upkeep; its cargo stays in your station hold.",
+           "- `GET /referee/vessels?agent_id=<you>` lists your ships, holds and the next ship's price.",
+           ""]
+    multi = [r for r in board if (r.get('ships') or 1) > 1]
+    if multi:
+        out.append("| Fleet | Ship | Where | FUEL | FRAG | FOOD | ORE |")
+        out.append("|---|---|---|---|---|---|---|")
+        for r in multi:
+            for sh in _ships(ref, r['agent_id']):
+                h = sh['hold']
+                out.append(f"| {r['agent_id']} | {sh['vessel_id']} | {sh['where']} | {h['FUEL']} | {h['FRAG']} | "
+                           f"{h['FOOD']} | {h['ORE']} |")
         out.append("")
     return out

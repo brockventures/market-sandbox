@@ -16,6 +16,9 @@ from agora.referee import AgoraReferee
 
 class TestAuctionNewInstrumentCredit(unittest.TestCase):
     def _seed(self, ref, agent, inst, qty):
+        # A fleet's goods live on its ship 1 ('<agent>/1') since #175.
+        if inst != 'CR' and ref.fleet.is_corp(agent):
+            agent = f"{agent}/1"
         with ref.conn:
             ref.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES ('SYSTEM', ?, 0)", (inst,))
             ref.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id='SYSTEM' AND instrument=?", (qty, inst))

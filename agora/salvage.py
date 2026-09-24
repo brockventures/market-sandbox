@@ -283,13 +283,9 @@ class DerelictSalvageEngine:
 
         # Solvency check: ensure rescuer has enough available FUEL
         if self.referee:
-            fuel_bal = self.referee.get_balance(rescuer_id, 'FUEL')
-            committed_fuel = sum(
-                o.remaining_qty
-                for st_books in self.referee.books.values()
-                for o in st_books.get('FUEL', []).asks if hasattr(st_books.get('FUEL', []), 'asks')
-                if o.agent_id == rescuer_id
-            )
+            rescuer_hold = self._goods_acct(rescuer_id)
+            fuel_bal = self.referee._account_balance(rescuer_hold, 'FUEL')
+            committed_fuel = self.referee.committed(rescuer_id, 'FUEL', rescuer_hold)
             avail_fuel = fuel_bal - committed_fuel
             if avail_fuel < fuel_offered:
                 return {
@@ -387,13 +383,9 @@ class DerelictSalvageEngine:
                 }
 
             # Rescuer must have fuel_offered available
-            fuel_bal = self.referee.get_balance(rescuer_id, 'FUEL')
-            committed_fuel = sum(
-                o.remaining_qty
-                for st_books in self.referee.books.values()
-                for o in st_books.get('FUEL', []).asks if hasattr(st_books.get('FUEL', []), 'asks')
-                if o.agent_id == rescuer_id
-            )
+            rescuer_hold = self._goods_acct(rescuer_id)
+            fuel_bal = self.referee._account_balance(rescuer_hold, 'FUEL')
+            committed_fuel = self.referee.committed(rescuer_id, 'FUEL', rescuer_hold)
             avail_fuel = fuel_bal - committed_fuel
             if avail_fuel < fuel_offered:
                 return {
@@ -413,12 +405,13 @@ class DerelictSalvageEngine:
                 self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, 'CR', ?)", (txn_id, next_seq, agent_id, -price_cr))
                 self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, 'CR', ?)", (txn_id, next_seq, rescuer_id, price_cr))
 
-            # 3. Settle Fuel: rescuer -> stranded agent
-            self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = ? AND instrument = 'FUEL'", (fuel_offered, rescuer_id))
-            self.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, 'FUEL', 0)", (agent_id,))
-            self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = 'FUEL'", (fuel_offered, agent_id))
-            self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, 'FUEL', ?)", (txn_id, next_seq, rescuer_id, -fuel_offered))
-            self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, 'FUEL', ?)", (txn_id, next_seq, agent_id, fuel_offered))
+            # 3. Settle Fuel: rescuer's ship 1 -> the stranded ship (#175)
+            src, dst = self._goods_acct(rescuer_id), self._goods_acct(agent_id, transit_id)
+            self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = ? AND instrument = 'FUEL'", (fuel_offered, src))
+            self.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, 'FUEL', 0)", (dst,))
+            self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = 'FUEL'", (fuel_offered, dst))
+            self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, 'FUEL', ?)", (txn_id, next_seq, src, -fuel_offered))
+            self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, 'FUEL', ?)", (txn_id, next_seq, dst, fuel_offered))
 
             # 4. Update status
             self.conn.execute("UPDATE rescue_quotes SET status = 'accepted' WHERE quote_id = ?", (quote_id,))
@@ -455,6 +448,18 @@ class DerelictSalvageEngine:
             'price_paid_cr': price_cr,
             'status': 'rescued'
         }
+
+    def _goods_acct(self, agent: str, transit_id: Optional[str] = None) -> str:
+        """The hold FUEL or cargo moves in or out of for `agent` (#175): the
+        ship flying `transit_id`, else ship 1; a non-roster agent's own account."""
+        ref = self.referee
+        if ref is None or not ref.fleet.is_corp(agent):
+            return agent
+        if transit_id:
+            row = self.conn.execute("SELECT vessel_id FROM transits WHERE transit_id = ?", (transit_id,)).fetchone()
+            if row and row[0]:
+                return row[0]
+        return f"{agent}/1"
 
     def claim_salvage(
         self,
@@ -498,6 +503,9 @@ class DerelictSalvageEngine:
 
         with self.conn:
             claimed_cargo = {}
+            # Goods move ship to ship (#175): the salvager's ship 1 takes the
+            # bounty; the stranded ship gets back what is left of its escrow.
+            salvager_hold = self._goods_acct(salvager_id)
             if transit_id:
                 # Fetch transit record
                 t_row = self.conn.execute(
@@ -524,16 +532,16 @@ class DerelictSalvageEngine:
                     # 1. Transfer capped cargo bounty to salvager from SYSTEM escrow
                     if bounty_to_pay > 0:
                         self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = 'SYSTEM' AND instrument = ?", (bounty_to_pay, comm))
-                        self.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, ?, 0)", (salvager_id, comm))
-                        self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?", (bounty_to_pay, salvager_id, comm))
+                        self.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, ?, 0)", (salvager_hold, comm))
+                        self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?", (bounty_to_pay, salvager_hold, comm))
                         self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, 'SYSTEM', ?, ?)", (txn_id, next_seq, comm, -bounty_to_pay))
-                        self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)", (txn_id, next_seq, salvager_id, comm, bounty_to_pay))
+                        self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)", (txn_id, next_seq, salvager_hold, comm, bounty_to_pay))
                         claimed_cargo[comm] = bounty_to_pay
 
-                    # 2. Return leftover escrow to the stranded fleet (#205)
-                    # Note: on main, goods return to the corp account; #175 PR 2 moves goods to ship accounts.
+                    # 2. Return leftover escrow to the stranded fleet (#205):
+                    # into the stranded ship's own hold, docked back at its origin (#175).
                     if leftover_escrow > 0:
-                        stranded_agent = t_row['agent_id']
+                        stranded_agent = self._goods_acct(t_row['agent_id'], transit_id)
                         refund_seq = self.referee._get_next_seq() if self.referee else next_seq
                         refund_txn = f"refund-{claim_id}"
                         self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = 'SYSTEM' AND instrument = ?", (leftover_escrow, comm))
@@ -545,12 +553,12 @@ class DerelictSalvageEngine:
                 for comm, qty in cargo_bounty.items():
                     if qty <= 0:
                         continue
-                    source_agent = beacon['agent_id']
+                    source_agent = self._goods_acct(beacon['agent_id'])
                     self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = ? AND instrument = ?", (qty, source_agent, comm))
-                    self.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, ?, 0)", (salvager_id, comm))
-                    self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?", (qty, salvager_id, comm))
+                    self.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, ?, 0)", (salvager_hold, comm))
+                    self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?", (qty, salvager_hold, comm))
                     self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)", (txn_id, next_seq, source_agent, comm, -qty))
-                    self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)", (txn_id, next_seq, salvager_id, comm, qty))
+                    self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)", (txn_id, next_seq, salvager_hold, comm, qty))
                     claimed_cargo[comm] = qty
 
             # Mark beacon salvaged

@@ -64,12 +64,12 @@ class TestCommoditiesEconomy(unittest.TestCase):
         # Give Zero 100 FOOD directly or buy from Earth Depot
         with ref.lock, ref.conn:
             ref.conn.execute(
-                "INSERT INTO accounts (agent_id, instrument, balance) VALUES ('zero', 'FOOD', 100) "
+                "INSERT INTO accounts (agent_id, instrument, balance) VALUES ('zero/1', 'FOOD', 100) "
                 "ON CONFLICT(agent_id, instrument) DO UPDATE SET balance = balance + 100"
             )
             ref.conn.execute(
                 "INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) "
-                "VALUES ('test-mint-food', 0, 'zero', 'FOOD', 100)"
+                "VALUES ('test-mint-food', 0, 'zero/1', 'FOOD', 100)"
             )
             ref.conn.execute(
                 "UPDATE accounts SET balance = balance - 100 WHERE agent_id = 'SYSTEM' AND instrument = 'FOOD'"
@@ -117,12 +117,12 @@ class TestCommoditiesEconomy(unittest.TestCase):
 
         with ref.lock, ref.conn:
             ref.conn.execute(
-                "INSERT INTO accounts (agent_id, instrument, balance) VALUES ('amos', 'ORE', 100) "
+                "INSERT INTO accounts (agent_id, instrument, balance) VALUES ('amos/1', 'ORE', 100) "
                 "ON CONFLICT(agent_id, instrument) DO UPDATE SET balance = balance + 100"
             )
             ref.conn.execute(
                 "INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) "
-                "VALUES ('test-mint-ore', 0, 'amos', 'ORE', 100)"
+                "VALUES ('test-mint-ore', 0, 'amos/1', 'ORE', 100)"
             )
             ref.conn.execute(
                 "UPDATE accounts SET balance = balance - 100 WHERE agent_id = 'SYSTEM' AND instrument = 'ORE'"
