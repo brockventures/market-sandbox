@@ -193,8 +193,14 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
         elif galnet.events:
             out.append("### Recent news dispatches")
             for ev in reversed(galnet.events[-3:]):
-                arrow = "▲" if ev.drift_bias > 0 else "▼"
-                out.append(f"- **{ev.headline}** ({ev.station_id.capitalize()} {ev.commodity} {arrow} {ev.pct_impact}, round {ev.round}): {ev.body}")
+                if ev.commodity and ev.drift_bias != 0:
+                    arrow = "▲" if ev.drift_bias > 0 else "▼"
+                    tag = f"{ev.station_id.capitalize()} {ev.commodity} {arrow} {ev.pct_impact}, round {ev.round}"
+                elif ev.commodity:
+                    tag = f"{ev.station_id.capitalize()} {ev.commodity}, round {ev.round}"
+                else:
+                    tag = f"{ev.station_id.capitalize()}, round {ev.round}"
+                out.append(f"- **{ev.headline}** ({tag}): {ev.body}")
             out.append("")
     history_engine = getattr(ref, 'history_engine', None)
     if history_engine:

@@ -1,3 +1,5 @@
+import os
+import math
 """
 agora.galnet - GalNet Breaking News Wire & Exogenous Drift Shock Engine.
 Generates narrative lore-aligned news dispatches and deterministic drift biases
@@ -288,6 +290,15 @@ class GalNetEngine:
             direction = "neutral"
             desc = "Stable mean-reversion drift; no active exogenous shock."
 
+        clean_fogged_spot = None
+        if fogged_spot is not None:
+            try:
+                f_val = float(fogged_spot)
+                if math.isfinite(f_val):
+                    clean_fogged_spot = f_val
+            except (ValueError, TypeError):
+                clean_fogged_spot = None
+
         return {
             "station_id": station_id,
             "commodity": commodity,
@@ -296,7 +307,7 @@ class GalNetEngine:
             "direction": direction,
             "description": desc,
             "active_stories": [ev.to_dict(self.current_round) for ev in active],
-            "fogged_spot": fogged_spot,
+            "fogged_spot": clean_fogged_spot,
         }
 
     def get_active_shocks(self) -> List[Dict[str, Any]]:
@@ -306,3 +317,6 @@ class GalNetEngine:
     def get_feed(self, limit: int = 15) -> List[Dict[str, Any]]:
         """Returns recent news feed in reverse chronological order."""
         return [ev.to_dict(self.current_round) for ev in reversed(self.events[-limit:])]
+
+def env_galnet_auto_step() -> bool:
+    return os.environ.get("AGORA_GALNET_AUTO_STEP", "").strip().lower() in ("1", "true", "yes", "on")

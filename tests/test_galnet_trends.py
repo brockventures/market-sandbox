@@ -98,19 +98,52 @@ class TestGalnetTrends(unittest.TestCase):
         self.assertIn("Upward", up["description"])
 
     def test_referee_step_round_advances_galnet(self):
-        """AgoraReferee.step_round() advances GalNet round in lockstep (#123)."""
-        ref = AgoraReferee(corporate=True, depots=True)
-        ref.new_game(seed=100, warmup_rounds=2)
-        self.assertEqual(ref.current_round, 0)
-        self.assertEqual(ref.galnet.current_round, 2)  # 2 warmup rounds stepped
+        """AgoraReferee.step_round() advances GalNet round only when galnet_auto_step=True (#123)."""
+        # Default: auto-step is off to preserve economic balance
+        ref_off = AgoraReferee(corporate=True, depots=True)
+        ref_off.new_game(seed=100, warmup_rounds=2)
+        self.assertFalse(ref_off.galnet_auto_step)
+        self.assertEqual(ref_off.galnet.current_round, 0)  # warmup did not step galnet
+        ref_off.step_round()
+        self.assertEqual(ref_off.galnet.current_round, 0)
 
-        ref.step_round()
-        self.assertEqual(ref.current_round, 1)
-        self.assertEqual(ref.galnet.current_round, 1)
+        # Explicitly enabled: advances in lockstep and records news
+        ref_on = AgoraReferee(corporate=True, depots=True, galnet_auto_step=True)
+        ref_on.new_game(seed=100, warmup_rounds=2)
+        self.assertTrue(ref_on.galnet_auto_step)
+        self.assertEqual(ref_on.galnet.current_round, 2)
+        ref_on.step_round()
+        self.assertEqual(ref_on.galnet.current_round, 1)
 
-        ref.step_round()
-        self.assertEqual(ref.current_round, 2)
-        self.assertEqual(ref.galnet.current_round, 2)
+    def test_galnet_seed_determinism(self):
+        """new_game seeds GalNet from the game seed (#123)."""
+        ref1 = AgoraReferee()
+        ref1.new_game(seed=1)
+        ref2 = AgoraReferee()
+        ref2.new_game(seed=2)
+        # Advance both with forced steps or auto-step to check headline RNG variance
+        ev1 = ref1.galnet.step_round(1)
+        ev2 = ref2.galnet.step_round(1)
+        # Seeds 1 and 2 start with different RNG states in GalNet
+        self.assertNotEqual(ref1.galnet.rng.getstate(), ref2.galnet.rng.getstate())
+
+    def test_briefing_piracy_notice_formatting(self):
+        """Briefing renders non-commodity events (like piracy) without broken arrows or 0% impact (#123)."""
+        ref = AgoraReferee(depots=True)
+        ref.new_game(seed=42)
+        ev = GalNetNewsEvent(
+            id="gn-piracy-1-mars", round=1, timestamp=1000.0,
+            station_id="mars", commodity="",
+            headline="RAIDERS SIGHTED ON THE MARS LANES",
+            body="Traffic control warns of piracy.",
+            drift_bias=0.0, duration_rounds=20
+        )
+        ref.galnet.events.append(ev)
+        briefing = build_briefing(ref, viewer="amos")
+        self.assertIn("RAIDERS SIGHTED ON THE MARS LANES", briefing)
+        self.assertIn("(Mars, round 1)", briefing)
+        self.assertNotIn("▼ 0%", briefing)
+        self.assertNotIn("Mars  ▼", briefing)
 
     def test_briefing_surfaces_galnet_trends_under_fog(self):
         """build_briefing() includes GalNet active market shocks and un-fogged guidance (#123)."""
