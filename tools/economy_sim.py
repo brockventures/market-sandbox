@@ -1484,8 +1484,8 @@ class Saboteur(Hauler):
     enough cash to pay the fee and withstand a potential trace fine, targeting
     the richest rival or a rival in flight with cargo."""
 
-    CASH_BUFFER = 25_000
-    STRIKE_COOLDOWN = 25
+    CASH_BUFFER = 8_000
+    STRIKE_COOLDOWN = 20
 
     def __init__(self, agent: str, tolerate_halts: bool = False):
         super().__init__(agent, tolerate_halts=tolerate_halts)
@@ -1528,10 +1528,10 @@ class Spy(Hauler):
     (GET /referee/covert/intel) to execute high-impact targeted sabotages
     against rivals when they are in flight with valuable cargo (#174)."""
 
-    WIRETAP_CASH_BUFFER = 25_000
-    SABOTAGE_CASH_BUFFER = 25_000
-    WIRETAP_COOLDOWN = 20
-    STRIKE_COOLDOWN = 25
+    WIRETAP_CASH_BUFFER = 8_000
+    SABOTAGE_CASH_BUFFER = 8_000
+    WIRETAP_COOLDOWN = 15
+    STRIKE_COOLDOWN = 20
 
     def __init__(self, agent: str, tolerate_halts: bool = False):
         super().__init__(agent, tolerate_halts=tolerate_halts)
