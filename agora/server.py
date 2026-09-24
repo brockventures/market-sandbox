@@ -1824,6 +1824,17 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                                   'contracts': ref.contract_desk.list(status=status, station_id=st, lot_type=lot_type)})
         elif path == '/referee/piracy':
             self._send_json(200, {'status': 'ok', **ref.piracy.status(self._reader())})
+        elif path == '/referee/hazards':
+            enabled = bool(ref.hazards and ref.hazards.odds)
+            odds = ref.hazards.odds if enabled else None
+            recent = ref.hazards.recent(max(0, ref.current_round - 20)) if ref.hazards else []
+            self._send_json(200, {
+                'status': 'ok',
+                'enabled': enabled,
+                'round': ref.current_round,
+                'odds': {'delay': odds[0], 'loss': odds[1]} if odds else None,
+                'recent': recent
+            })
         elif path == '/referee/piracy/tributes':
             self._send_json(200, {'status': 'ok', 'tributes': ref.piracy.tributes(self._reader())})
         elif path == '/referee/piracy/syndicate':
