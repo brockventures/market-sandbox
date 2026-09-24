@@ -1284,9 +1284,6 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 except (ValueError, TypeError, OverflowError) as e:
                     self._send_json(400, {'v': 1, 'kind': 'reject', 'payload': {'reason': 'invalid_parameters', 'detail': str(e)}})
                     return
-                except Exception as e:
-                    self._send_json(400, {'v': 1, 'kind': 'reject', 'payload': {'reason': 'invalid_parameters', 'detail': str(e)}})
-                    return
                 self._send_json(400 if result.get('kind') == 'reject' else 200, result)
                 return
 

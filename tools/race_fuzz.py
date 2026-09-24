@@ -562,7 +562,7 @@ class Fuzzer:
         ("order", 22), ("eq_order", 8), ("quick_order", 3), ("dup_order", 3), ("cancel", 6), ("cancel_all", 3),
         ("transit", 6), ("peer_offer", 5), ("peer_accept", 5), ("peer_cancel", 3), ("contract", 6),
         ("covert", 3), ("upgrade", 2), ("piracy", 3), ("equity", 5), ("salvage", 3), ("breaker", 1),
-        ("galnet", 2), ("admin_fleets", 2), ("reads", 12), ("junk", 5), ("locate", 4),
+        ("galnet", 2), ("admin_fleets", 2), ("corporate", 3), ("reads", 12), ("junk", 5), ("locate", 4),
         ("ship_buy", 2), ("ship_transfer", 3), ("ship_locate", 3), ("ship_scrap", 1),
     ]
 
@@ -910,6 +910,84 @@ class Fuzzer:
         path = rng.choice(self.READS).format(loc=loc, agent=agent, other=rng.choice(FLEETS))
         tok_who = rng.choice([who, agent, None, "admin"])
         self.call(w, "GET", path, tok_who)
+
+    def op_corporate(self, w, rng, who, agent, loc, mine):
+        target = rng.choice([f for f in FLEETS if f != agent] + ["nobody"])
+        k = rng.randrange(6)
+        if k == 0:
+            # Tender offer
+            body = {"target": target, "price": rng.randint(10, 200), "shares": rng.randint(5, 50)}
+            if who in ("admin", "combine"):
+                body["agent_id"] = agent
+            st, resp = self.call(w, "POST", "/referee/corporate/tender_offer", who, body)
+            if st == 200 and isinstance(resp, dict) and resp.get("payload", {}).get("offer_id"):
+                w.setdefault("tenders", collections.deque(maxlen=40)).append(resp["payload"]["offer_id"])
+        elif k == 1:
+            # Tender accept or cancel
+            tenders = w.get("tenders") or []
+            oid = rng.choice(list(tenders)) if tenders else rng.randint(1, 100)
+            if rng.random() < 0.5:
+                body = {"offer_id": oid, "shares": rng.randint(1, 20)}
+                if who in ("admin", "combine"):
+                    body["agent_id"] = agent
+                self.call(w, "POST", "/referee/corporate/tender_accept", who, body)
+            else:
+                body = {"offer_id": oid}
+                if who in ("admin", "combine"):
+                    body["agent_id"] = agent
+                self.call(w, "POST", "/referee/corporate/tender_cancel", who, body)
+        elif k == 2:
+            # Poison pill & rights exercise
+            if rng.random() < 0.3:
+                body = {"target": agent}
+                if who in ("admin", "combine"):
+                    body["agent_id"] = agent
+                self.call(w, "POST", "/referee/corporate/poison_pill", who, body)
+            else:
+                body = {"target": target, "qty": rng.randint(1, 30)}
+                if who in ("admin", "combine"):
+                    body["agent_id"] = agent
+                self.call(w, "POST", "/referee/corporate/rights_exercise", who, body)
+        elif k == 3:
+            # Loan offer
+            body = {"borrower": target, "principal": rng.randint(500, 3000), "interest_rate": 0.20, "due_rounds": rng.randint(3, 8)}
+            if who in ("admin", "combine"):
+                body["agent_id"] = agent
+            st, resp = self.call(w, "POST", "/referee/corporate/loan_offer", who, body)
+            if st == 200 and isinstance(resp, dict) and resp.get("payload", {}).get("offer_id"):
+                w.setdefault("corp_offers", collections.deque(maxlen=40)).append(resp["payload"]["offer_id"])
+        elif k == 4:
+            # Loan accept or cancel or repay
+            offers = w.get("corp_offers") or []
+            oid = rng.choice(list(offers)) if offers else rng.randint(1, 100)
+            x = rng.random()
+            if x < 0.4:
+                body = {"offer_id": oid}
+                if who in ("admin", "combine"):
+                    body["agent_id"] = agent
+                st, resp = self.call(w, "POST", "/referee/corporate/loan_accept", who, body)
+                if st == 200 and isinstance(resp, dict) and resp.get("payload", {}).get("loan_id"):
+                    w.setdefault("corp_loans", collections.deque(maxlen=40)).append(resp["payload"]["loan_id"])
+            elif x < 0.7:
+                body = {"offer_id": oid}
+                if who in ("admin", "combine"):
+                    body["agent_id"] = agent
+                self.call(w, "POST", "/referee/corporate/loan_cancel", who, body)
+            else:
+                loans = w.get("corp_loans") or []
+                lid = rng.choice(list(loans)) if loans else rng.randint(1, 100)
+                body = {"loan_id": lid}
+                if who in ("admin", "combine"):
+                    body["agent_id"] = agent
+                self.call(w, "POST", "/referee/corporate/loan_repay", who, body)
+        else:
+            # Debt buy
+            body = {"debtor": target, "amount": rng.randint(500, 2500)}
+            if who in ("admin", "combine"):
+                body["agent_id"] = agent
+            st, resp = self.call(w, "POST", "/referee/corporate/debt_buy", who, body)
+            if st == 200 and isinstance(resp, dict) and resp.get("payload", {}).get("loan_id"):
+                w.setdefault("corp_loans", collections.deque(maxlen=40)).append(resp["payload"]["loan_id"])
 
     def op_junk(self, w, rng, who, agent, loc, mine):
         k = rng.randrange(7)
