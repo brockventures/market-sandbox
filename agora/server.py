@@ -22,6 +22,7 @@ from http.server import ThreadingHTTPServer, HTTPServer, BaseHTTPRequestHandler
 from typing import Optional, Dict
 from agora.referee import AgoraReferee
 from agora.exchange import DEFAULT_VOL
+from agora.hazards import DEFAULT_P_DELAY, DEFAULT_P_LOSS
 from agora import piracy as _piracy
 from agora.galnet import GalNetEngine
 from agora.spatial import STATIONS, COMMODITIES, ROUTES, get_route, get_alignment_windows
@@ -1851,7 +1852,7 @@ def build_referee_from_env(db_path: str = 'agora.db', **overrides) -> AgoraRefer
       AGORA_CONTRACTS=1        owned, tradable station contracts (25% deposit, 50% lapse penalty; 25% for a corp's first)
       AGORA_CORPORATE=1        debt, distress share sales, bankruptcy, 51% takeovers
       AGORA_UPGRADES=1         ship upgrades (shielding, hold, armor, engines) that cut hazard/piracy odds
-      AGORA_HAZARDS=0.2,0.1    per-trip chance of a 1-3 round delay, and of losing 30-70% of the cargo; 0 = off
+      AGORA_HAZARDS=0.2,0.2    per-trip chance of a 1-3 round delay, and of losing 10-20% of the cargo; 0 = off
       AGORA_PIRACY=0.15,0.04   raid chance on belt (tolled) and inner routes, before hot-station and cargo-value scaling; 0 = off
       AGORA_EVENTS=1           secrecy and exposure: private/secret corp events, leak rolls, GalNet scandals
       AGORA_ORDER_FLOW=1       station order flow: NPC buyers and sellers fill fleet quotes before the depot
@@ -1877,7 +1878,7 @@ def build_referee_from_env(db_path: str = 'agora.db', **overrides) -> AgoraRefer
                         exchange_shares=_int_env('AGORA_EXCHANGE_SHARES', 100),
                         exchange_vol=_float_env('AGORA_EXCHANGE_VOL', DEFAULT_VOL),
                         contracts=_on('AGORA_CONTRACTS'),
-                        hazards=os.environ.get('AGORA_HAZARDS', '0.2,0.1'),
+                        hazards=os.environ.get('AGORA_HAZARDS', f'{DEFAULT_P_DELAY},{DEFAULT_P_LOSS}'),
                         corporate=_on('AGORA_CORPORATE'),
                         upgrades=_on('AGORA_UPGRADES'),
                         piracy=os.environ.get('AGORA_PIRACY', '0.15,0.04'),
