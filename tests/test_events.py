@@ -120,7 +120,7 @@ class TestLeaks(unittest.TestCase):
     def test_leak_roll_exposes_and_posts_scandal(self):
         ref = game(piracy=None)
         sec = record(ref, 'sabotage', 'secret', actor='zero', victim='amos', detail='a pump failed at amos')
-        ref.events.rng = Fixed(0.0)
+        ref.events.bags.force('leak', *[True] * 10)
         rep = ref.step_round()
         self.assertEqual(rep['events']['leaked'], [sec])
         ev = ref.events.visible_to(None)[0]
@@ -130,17 +130,17 @@ class TestLeaks(unittest.TestCase):
     def test_no_leak_on_high_roll_and_window_closes(self):
         ref = game(piracy=None)
         sec = record(ref, 'sabotage', 'secret', actor='zero', victim='amos', detail='x')
-        ref.events.rng = Fixed(0.99)
+        ref.events.bags.force('leak', *[False] * (E.LEAK_ROUNDS + 1))
         for _ in range(E.LEAK_ROUNDS + 1):
             ref.step_round()
-        ref.events.rng = Fixed(0.0)
+        ref.events.bags.force('leak', *[True] * 10)
         ref.step_round()  # the trail is cold: no more rolls
         self.assertNotIn(sec, {e['id'] for e in ref.events.visible_to(None)})
 
     def test_off_means_no_rolls(self):
         ref = game(events=False, piracy=None)
         sec = record(ref, 'sabotage', 'secret', actor='zero', victim='amos', detail='x')
-        ref.events.rng = Fixed(0.0)
+        ref.events.bags.force('leak', *[True] * 10)
         self.assertIsNone(ref.step_round()['events'])
         self.assertNotIn(sec, {e['id'] for e in ref.events.visible_to(None)})
 
@@ -174,7 +174,8 @@ class TestStakes(unittest.TestCase):
 
 class TestPrivateerSecrecy(unittest.TestCase):
     def raid(self, ref, trace):
-        ref.piracy.rng = Fixed(0.0, 0.0 if trace else 0.9)
+        ref.piracy.bags.force('raid', True)
+        ref.piracy.bags.force('trace', trace)
         return ref.initiate_transit('amos', 'mars', 'FRAG', CARGO)['payload']
 
     def test_contract_is_secret_raid_is_private(self):
@@ -221,7 +222,8 @@ class TestPrivateerSecrecy(unittest.TestCase):
         with ref.lock, ref.conn:
             ref.piracy._move('test-topup', (('SYSTEM', 'CR', -20_000), ('zero', 'CR', 20_000)))
         zc = ref.get_balance('zero', 'CR')
-        ref.piracy.rng = Fixed(0.0, 0.0)
+        ref.piracy.bags.force('raid', True)
+        ref.piracy.bags.force('trace', True)
         self.assertTrue(ref.initiate_transit('amos', 'earth', 'FRAG', 100)['payload']['piracy']['raided'])
         self.assertEqual(ref.conn.execute("SELECT COUNT(*) FROM piracy_raids WHERE traced = 1").fetchone()[0], 2)
         self.assertEqual(ref.get_balance('zero', 'CR'), zc - P.PRIV_COST * P.PRIV_FINE)
@@ -234,7 +236,7 @@ class TestPrivateerSecrecy(unittest.TestCase):
         ref.piracy.hire('zero', 'amos')
         self.raid(ref, trace=False)
         zc = ref.get_balance('zero', 'CR')
-        ref.events.rng = Fixed(0.0)
+        ref.events.bags.force('leak', *[True] * 10)
         ref.step_round()
         self.assertEqual(ref.piracy.active_contracts()[0]['sponsor'], 'zero')
         self.assertEqual(ref.piracy.status()['recent_raids'][0]['sponsor'], 'zero')
@@ -281,7 +283,8 @@ class TestFlagAndHTTP(unittest.TestCase):
     def test_endpoint_filters_by_token(self):
         ref = game()
         ref.piracy.hire('zero', 'amos')
-        ref.piracy.rng = Fixed(0.0, 0.9)
+        ref.piracy.bags.force('raid', True)
+        ref.piracy.bags.force('trace', False)
         ref.initiate_transit('amos', 'mars', 'FRAG', CARGO)
         server = HTTPServer(('127.0.0.1', 0), make_handler(
             ref, auth_tokens={'amos': 'ta', 'zero': 'tz', 'marvin': 'tm', 'admin': 'tadm', 'combine': 'tc'}))

@@ -23,8 +23,10 @@ import os
 import random
 from typing import Any, Dict, Optional, Tuple
 
+from agora.bag import Bags
+
 DEFAULT_P_DELAY = 0.20
-DEFAULT_P_LOSS = 0.10
+DEFAULT_P_LOSS = 0.20
 DELAY_ROUNDS = (1, 3)
 LOSS_FRACTION = (0.10, 0.20)
 
@@ -72,22 +74,25 @@ class HazardEngine:
         with conn:
             conn.execute(SCHEMA)
         self.odds = odds
-        self.reset(seed)
+        self.bags = Bags(conn, 'hazards')
+        self.rng = random.Random(f"hazards-{seed}")
 
     def reset(self, seed: int) -> None:
         self.rng = random.Random(f"hazards-{seed}")
+        self.bags.reset(seed)
 
     def roll(self, cargo_qty: int, delay_factor: float = 1.0, loss_factor: float = 1.0,
-             loss_size_factor: float = 1.0) -> Tuple[int, int, str]:
+             loss_size_factor: float = 1.0, agent_id: str = '') -> Tuple[int, int, str]:
         """(extra rounds, units lost, note). Always draws the same number of
         values so one trip's outcome does not shift the next trip's."""
         if not self.odds:
             return 0, 0, ''
         p_delay, p_loss = self.odds
-        a, d, b, f = self.rng.random(), self.rng.randint(*DELAY_ROUNDS), self.rng.random(), self.rng.uniform(*LOSS_FRACTION)
+        d, f = self.rng.randint(*DELAY_ROUNDS), self.rng.uniform(*LOSS_FRACTION)
         # *_factor: ship upgrades (agora/upgrades.py) scale the odds and the loss.
-        delay = d if a < p_delay * delay_factor else 0
-        lost = int(cargo_qty * f * loss_size_factor) if (cargo_qty > 0 and b < p_loss * loss_factor) else 0
+        # Whether it happens is a marble from this fleet's bag (#214).
+        delay = d if self.bags.draw('delay', agent_id, p_delay * delay_factor) else 0
+        lost = int(cargo_qty * f * loss_size_factor) if (cargo_qty > 0 and self.bags.draw('loss', agent_id, p_loss * loss_factor)) else 0
         notes = []
         if delay:
             notes.append(f"storm on the route: arrival {delay} round{'s' if delay > 1 else ''} late")
