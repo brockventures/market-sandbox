@@ -65,6 +65,7 @@ import contextlib
 import faulthandler
 import importlib
 import inspect
+import itertools
 import json
 import math
 import os
@@ -73,7 +74,7 @@ import statistics
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -138,6 +139,45 @@ SCENARIOS["hybrid"] = {"zero": "hauler", "amos": "privateer", "marvin": "saboteu
 ROTATING = {"styles", "styles_raider", "styles_novice", "styles_saboteur", "styles_spy", "styles_covert"}
 
 
+_ROTATION_CACHE: Dict[Tuple[str, ...], List[Tuple[str, ...]]] = {}
+
+
+def _rotation_table(styles: Tuple[str, ...]) -> List[Tuple[str, ...]]:
+    """Build a deterministic sequence of all 24 permutations arranged in 6
+    disjoint Latin-square blocks of 4 permutations (Issue #213).
+
+    Every 4-seed block visits all 4 home stations for every style, and across all
+    24 seeds every style visits every station and every relative move order
+    with equal frequency, eliminating the privateer-before-hauler seat bias.
+    """
+    all_perms = set(itertools.permutations(styles))
+    blocks = []
+    remaining = set(all_perms)
+    while remaining:
+        p0 = min(remaining)
+        found = False
+        for p1 in sorted(remaining):
+            if p1 == p0 or any(p1[i] == p0[i] for i in range(4)):
+                continue
+            for p2 in sorted(remaining):
+                if p2 in (p0, p1) or any(p2[i] in (p0[i], p1[i]) for i in range(4)):
+                    continue
+                for p3 in sorted(remaining):
+                    if p3 in (p0, p1, p2) or any(p3[i] in (p0[i], p1[i], p2[i]) for i in range(4)):
+                        continue
+                    block = [p0, p1, p2, p3]
+                    blocks.append(block)
+                    for p in block:
+                        remaining.remove(p)
+                    found = True
+                    break
+                if found:
+                    break
+            if found:
+                break
+    return [p for b in blocks for p in b]
+
+
 def scenario_kinds(scenario: str, seed: int) -> Dict[str, str]:
     """Which fleet plays which strategy in this seed's game."""
     kinds = SCENARIOS[scenario]
@@ -152,9 +192,10 @@ def scenario_kinds(scenario: str, seed: int) -> Dict[str, str]:
         return {a: styles[(i + k) % len(FLEETS)] for i, a in enumerate(FLEETS)}
     if scenario not in ROTATING:
         return dict(kinds)
-    styles = [kinds[a] for a in FLEETS]
-    k = seed % len(FLEETS)
-    return {a: styles[(i + k) % len(FLEETS)] for i, a in enumerate(FLEETS)}
+    styles = tuple(kinds[a] for a in FLEETS)
+    table = _ROTATION_CACHE.setdefault(styles, _rotation_table(styles))
+    perm = table[seed % len(table)]
+    return dict(zip(FLEETS, perm))
 
 # Strategies that fly goods, so the only ones that claim, buy or deliver
 # contracts and trade on the peer desk: an idler or a market maker never
