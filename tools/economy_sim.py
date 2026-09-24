@@ -84,6 +84,7 @@ from agora import piracy as piracy_mod  # noqa: E402
 from agora.referee import AgoraReferee  # noqa: E402
 from agora.server import build_referee_from_env  # noqa: E402
 from agora.spatial import STATIONS, BASE_PRICES, get_route  # noqa: E402
+from agora.equity import FLEET_EQUITIES  # noqa: E402
 from agora import upgrades as upgrades_mod  # noqa: E402
 from agora import fleet as fleet_mod  # noqa: E402
 from agora.upgrades import CATALOG as UPGRADES  # noqa: E402
@@ -619,6 +620,10 @@ class Hauler:
         # its own starts every round with none.
         self.claims: set = set()
         self.shared_claims = False
+        # CR a cargo purchase leaves untouched: 200 alone, more once the
+        # fleet pays ship upkeep (ShipFleet sets it), so upkeep never has to
+        # be borrowed against the corp's own shares.
+        self.cash_reserve = 200
 
     def _hauling_value(self, quotes, st: str, comm: str) -> int:
         """Best bid for `comm` at any other station."""
@@ -711,7 +716,7 @@ class Hauler:
                 fuel = trip_fuel(ref, self.agent, route)
                 fuel_cost = fuel * (quotes[st]["FUEL"]["best_ask"] or 20)
                 fuel_buy = max(0, fuel - inv["FUEL"]) * (quotes[st]["FUEL"]["best_ask"] or 20)
-                qty = min(quotes[st][comm]["ask_depth"] or 0, cap, max(0, (inv["CR"] - 200 - fuel_buy) // ask))
+                qty = min(quotes[st][comm]["ask_depth"] or 0, cap, max(0, (inv["CR"] - self.cash_reserve - fuel_buy) // ask))
                 if qty <= 0:
                     continue
                 profit = (bid - ask) * qty - fuel_cost - route.get("toll", 0)
@@ -1479,15 +1484,19 @@ class ShipFleet:
     earnings fall back after one whether or not it bought (measured: -699 CR
     a round over the next 60 rounds with no purchase, #175 PR).
 
-    Scraps its newest bought ship (POST /referee/vessels/scrap, at book
-    value) whenever the fleet falls into corporate debt: without that exit a
-    hull that did not pay drained a fleet into a takeover (3 of 160 fleets
-    out in the first sweep)."""
+    While it owns bought ships its haulers keep UPKEEP_ROUNDS rounds of
+    upkeep in CR when they buy cargo. Scraps its newest bought ship (POST
+    /referee/vessels/scrap, at book value) when the fleet is in distress: in
+    corporate debt, or its own treasury shares were auctioned since last
+    round (a step pays the debt from that auction before the bot looks).
+    Without the exit a hull that did not pay drained a fleet into a takeover
+    (3 of 160 fleets out in the first sweep)."""
 
     WINDOW = 60
     HAIRCUT = 0.5
     CASH_RESERVE = 8_000
     MIN_ROUNDS_LEFT = 40
+    UPKEEP_ROUNDS = 10
 
     def __init__(self, agent: str, first, make_extra, horizon: int = 300):
         self.agent = agent
@@ -1498,6 +1507,8 @@ class ShipFleet:
         self.book_loss = 0.0  # purchase prices not kept in net worth, added back to measure earnings
         self.last_buy = -10 ** 9
         self.bought_at: Dict[str, int] = {}
+        self.own_shares: Optional[int] = None
+        self.distress = False  # in debt, or shares auctioned, since the last hull was scrapped
 
     def __getattr__(self, name):  # stock_cash, stranded, ... of the fleet's own bot
         return getattr(self.__dict__["bots"][f"{self.__dict__['agent']}/1"], name)
@@ -1526,32 +1537,44 @@ class ShipFleet:
             stats["ships_bought"] = stats.get("ships_bought", 0) + 1
 
     def _cut(self, ref: AgoraReferee, stats) -> None:
-        if debt(ref, self.agent) <= 0:
+        # GET /referee/accounts: the fleet's own treasury shares only fall
+        # when a distress auction sells them (the bots trade rivals' stock).
+        sym = FLEET_EQUITIES.get(self.agent, {}).get("symbol") if ref.corporate_enabled else None
+        shares = ref.get_balance(self.agent, sym) if sym else None
+        if self.own_shares is not None and shares is not None and shares < self.own_shares:
+            self.distress = True  # held until a hull goes: the auction has usually cleared the debt
+        self.own_shares = shares
+        if debt(ref, self.agent) > 0:
+            self.distress = True
+        if not self.distress:
             return
-        ships = ref.fleet.ships(self.agent)
-        for v in sorted(ships, key=lambda v: -(fleet_mod.ship_number(v["vessel_id"]) or 0)):
-            vid = v["vessel_id"]
-            if fleet_mod.ship_number(vid) == 1:
-                continue
-            if v["status"] != "docked":
-                return  # again next round, once it docks
-            if ref.fleet.scrap(self.agent, vid).get("kind") == "ship_scrapped":
-                self.last_buy = ref.current_round  # no rebuy for a WINDOW
-                stats["ships_scrapped"] = stats.get("ships_scrapped", 0) + 1
-                stats.setdefault("ship_rounds_held", []).append(ref.current_round - self.bought_at.pop(vid, ref.current_round))
+        ships = [v for v in ref.fleet.ships(self.agent) if fleet_mod.ship_number(v["vessel_id"]) != 1]
+        if not ships:
+            self.distress = False
             return
+        v = max(ships, key=lambda v: fleet_mod.ship_number(v["vessel_id"]) or 0)
+        vid = v["vessel_id"]
+        if v["status"] != "docked":
+            return  # again next round, once it docks
+        if ref.fleet.scrap(self.agent, vid).get("kind") == "ship_scrapped":
+            self.distress = False
+            self.last_buy = ref.current_round  # no rebuy for a WINDOW
+            stats["ships_scrapped"] = stats.get("ships_scrapped", 0) + 1
+            stats.setdefault("ship_rounds_held", []).append(ref.current_round - self.bought_at.pop(vid, ref.current_round))
 
     def act(self, ref: AgoraReferee, quotes, stats) -> None:
         self.history.append(score(ref, self.agent) + self.book_loss)
         self._cut(ref, stats)
         self._buy(ref, stats)
         claims: set = set()  # buy legs taken this round, shared by the fleet's ships
+        reserve = 200 + ref.fleet.upkeep_due(self.agent) * self.UPKEEP_ROUNDS
         for v in ref.fleet.ships(self.agent):
             vid = v["vessel_id"]
             bot = self.bots.get(vid)
             if bot is None:
                 bot = self.bots[vid] = self.make_extra(vid)
             bot.claims, bot.shared_claims = claims, True
+            bot.cash_reserve = reserve
             bot.act(ref, quotes, stats)
 
 
