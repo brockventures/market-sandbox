@@ -735,6 +735,7 @@ class AgoraReferee:
         exchange_shares: Optional[int] = None,
         exchange_vol: Optional[float] = None,
         exchange_momentum: Optional[float] = None,
+        extended_shocks: Optional[bool] = None,
         contracts: Optional[bool] = None,
         hazards: Any = None,
         corporate: Optional[bool] = None,
@@ -773,10 +774,6 @@ class AgoraReferee:
             self.exchange_shares = clamp_shares(exchange_shares)
         if exchange_vol is not None:
             self.exchange.vol = max(0.0, float(exchange_vol))
-        if exchange_momentum is not None:
-            self.exchange.momentum = max(0.0, min(float(exchange_momentum), 0.5))
-        if extended_shocks is not None:
-            self.exchange.extended_shocks = bool(extended_shocks)
         if exchange_momentum is not None:
             self.exchange.momentum = max(0.0, min(float(exchange_momentum), 0.5))
         if extended_shocks is not None:
@@ -854,6 +851,7 @@ class AgoraReferee:
         exchange_shares: Optional[int] = None,
         exchange_vol: Optional[float] = None,
         exchange_momentum: Optional[float] = None,
+        extended_shocks: Optional[bool] = None,
         contracts: Optional[bool] = None,
         hazards: Any = None,
         corporate: Optional[bool] = None,
@@ -893,6 +891,10 @@ class AgoraReferee:
             self.exchange_shares = clamp_shares(exchange_shares)
         if exchange_vol is not None:
             self.exchange.vol = max(0.0, float(exchange_vol))
+        if exchange_momentum is not None:
+            self.exchange.momentum = max(0.0, min(float(exchange_momentum), 0.5))
+        if extended_shocks is not None:
+            self.exchange.extended_shocks = bool(extended_shocks)
         if contracts is not None:
             self.contracts_enabled = bool(contracts)
         if hazards is not None:
