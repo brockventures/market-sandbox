@@ -719,6 +719,7 @@ class AgoraReferee:
         rival_shares: Optional[int] = None,
         exchange_shares: Optional[int] = None,
         exchange_vol: Optional[float] = None,
+        exchange_momentum: Optional[float] = None,
         contracts: Optional[bool] = None,
         hazards: Any = None,
         corporate: Optional[bool] = None,
@@ -816,6 +817,7 @@ class AgoraReferee:
         rival_shares: Optional[int] = None,
         exchange_shares: Optional[int] = None,
         exchange_vol: Optional[float] = None,
+        exchange_momentum: Optional[float] = None,
         contracts: Optional[bool] = None,
         hazards: Any = None,
         corporate: Optional[bool] = None,
@@ -1717,7 +1719,6 @@ class AgoraReferee:
                 ev = self.galnet.step_round(new_round)
                 if ev:
                     self.record_news(ev.to_dict(new_round))
-
             # Advance prices with market drivers (inventory, deliveries, contract demand)
             depot_inv = dict(self._reactive['shelf']) if getattr(self, '_reactive', None) and 'shelf' in self._reactive else None
             deliveries_map = {}

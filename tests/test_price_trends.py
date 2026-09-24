@@ -61,8 +61,8 @@ class TestGoodsTrending(unittest.TestCase):
         st, comm = "mars", "ORE"
         base = BASE_PRICES[st][comm]
 
-        engine_delivery = StationPriceEngine(seed=42, vol=0.0, delivery_scale=1000.0)
-        engine_demand = StationPriceEngine(seed=42, vol=0.0, delivery_scale=1000.0)
+        engine_delivery = StationPriceEngine(seed=42, vol=0.0, delivery_scale=1000.0, flow_sensitivity=1.0)
+        engine_demand = StationPriceEngine(seed=42, vol=0.0, delivery_scale=1000.0, flow_sensitivity=1.0)
 
         # 500 units delivered
         engine_delivery.step_round(1, deliveries={(st, comm): 500})

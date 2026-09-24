@@ -1,3 +1,4 @@
+import os
 """
 agora.spatial - Sol System Multi-Station Spatial Economy & Orbital Route Physics.
 
@@ -197,6 +198,12 @@ class StationSpotPrice:
         return asdict(self)
 
 
+DEFAULT_GOODS_MOMENTUM = float(os.environ.get("AGORA_GOODS_MOMENTUM", "0.0"))
+DEFAULT_INVENTORY_SENSITIVITY = float(os.environ.get("AGORA_GOODS_INVENTORY_SENSITIVITY", "0.0"))
+DEFAULT_FLOW_SENSITIVITY = float(os.environ.get("AGORA_GOODS_FLOW_SENSITIVITY", "0.0"))
+DEFAULT_DELIVERY_SCALE = float(os.environ.get("AGORA_GOODS_DELIVERY_SCALE", "1000.0"))
+
+
 class StationPriceEngine:
     """
     Mean-reverting random walk engine generating price surfaces for Sol stations.
@@ -213,9 +220,10 @@ class StationPriceEngine:
         seed: int = 42,
         theta: float = 0.15,
         vol: float = 0.8,
-        momentum_factor: float = 0.20,
-        inventory_sensitivity: float = 0.05,
-        delivery_scale: float = 1000.0,
+        momentum_factor: float = DEFAULT_GOODS_MOMENTUM,
+        inventory_sensitivity: float = DEFAULT_INVENTORY_SENSITIVITY,
+        delivery_scale: float = DEFAULT_DELIVERY_SCALE,
+        flow_sensitivity: float = DEFAULT_FLOW_SENSITIVITY,
     ):
         self.seed = seed
         self.rng = random.Random(seed)
@@ -224,6 +232,7 @@ class StationPriceEngine:
         self.momentum_factor = momentum_factor
         self.inventory_sensitivity = inventory_sensitivity
         self.delivery_scale = delivery_scale
+        self.flow_sensitivity = flow_sensitivity
         self.current_round = 0
         self.spots: Dict[str, Dict[str, float]] = {
             st: {comm: BASE_PRICES[st][comm] for comm in COMMODITIES}
@@ -278,14 +287,15 @@ class StationPriceEngine:
 
                 # 4. Delivery & contract demand flow drivers
                 flow_nudge = 0.0
-                if deliveries and (st, comm) in deliveries:
-                    # Inflow of goods increases supply -> downward price pressure
-                    delivered = deliveries[(st, comm)]
-                    flow_nudge -= (delivered / self.delivery_scale) * base
-                if contract_demands and (st, comm) in contract_demands:
-                    # Demand for goods increases local bid -> upward price pressure
-                    demanded = contract_demands[(st, comm)]
-                    flow_nudge += (demanded / self.delivery_scale) * base
+                if self.flow_sensitivity > 0.0:
+                    if deliveries and (st, comm) in deliveries:
+                        # Inflow of goods increases supply -> downward price pressure
+                        delivered = deliveries[(st, comm)]
+                        flow_nudge -= (delivered / self.delivery_scale) * base * self.flow_sensitivity
+                    if contract_demands and (st, comm) in contract_demands:
+                        # Demand for goods increases local bid -> upward price pressure
+                        demanded = contract_demands[(st, comm)]
+                        flow_nudge += (demanded / self.delivery_scale) * base * self.flow_sensitivity
 
                 # 5. Ornstein-Uhlenbeck mean-reverting pull toward base
                 mean_pull = self.theta * (base - old_spot)
