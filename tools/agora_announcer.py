@@ -112,6 +112,30 @@ PEER_CANCEL_PATTERN = re.compile(
     re.IGNORECASE
 )
 
+BURST_TRIGGER_PATTERN = re.compile(
+    r"(?:!|/|@referee\s+)?\bBURST(?:\s+START)?\s+(\d+)(?:\s+(\d+))?\b",
+    re.IGNORECASE
+)
+
+BURST_CANCEL_PATTERN = re.compile(
+    r"(?:!|/|@referee\s+)?\bBURST\s+(?:CANCEL|STOP|HALT)\b",
+    re.IGNORECASE
+)
+
+OPERATOR_ALLOWLIST = {
+    "179407724335988736",  # Ryan Brock
+    "93420059858305024",   # Mike Carmody
+}
+MIN_BURST_ROUNDS = 1
+MAX_BURST_ROUNDS = 50
+MIN_BURST_INTERVAL = 10.0
+MAX_BURST_INTERVAL = 600.0
+
+BURST_STATUS_PATTERN = re.compile(
+    r"(?:!|/|@referee\s+)?\bBURST\s+STATUS\b",
+    re.IGNORECASE
+)
+
 CONTRACTS_PATTERN = re.compile(
     r"(?:!|/)?\b(?:CONTRACTS|MYCONTRACTS)\b(?:\s+([A-Za-z0-9_-]+))?",
     re.IGNORECASE
@@ -247,6 +271,30 @@ def cancel_referee_burst() -> dict:
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
+
+
+def format_final_standings(leaderboard_data: dict) -> str:
+    """Format final combine standings table from leaderboard data."""
+    entries = leaderboard_data.get("leaderboard", [])
+    if not entries:
+        return "> *No fleet telemetry available.*"
+    lines = ["🏆 **FINAL STANDINGS // SOL SYSTEM COMBINE CHAMPIONSHIP:**"]
+    medals = {1: "🥇", 2: "🥈", 3: "🥉", 4: "🏅"}
+    for idx, e in enumerate(entries[:4], 1):
+        ag = e.get("agent_id", "unknown")
+        name = FLEET_NAMES.get(ag, ag.upper())
+        cr = e.get("balance", {}).get("CR", 0)
+        frag = e.get("balance", {}).get("FRAG", 0)
+        fuel = e.get("balance", {}).get("FUEL", 0)
+        food = e.get("balance", {}).get("FOOD", 0)
+        ore = e.get("balance", {}).get("ORE", 0)
+        mtm = e.get("mtm_net_worth", cr)
+        lines.append(
+            f"{medals.get(idx, '•')} **#{idx} {name}**\n"
+            f"> **Net Worth:** `{mtm:,} CR` | Liquid: `{cr:,} CR`\n"
+            f"> Cargo: `{frag} FRAG` | `{food} FOOD` | `{ore} ORE` (Fuel: `{fuel}`)"
+        )
+    return "\n".join(lines)
 
 def pause_referee_ticker() -> dict:
     """Pause ticker engine on referee."""
@@ -561,6 +609,29 @@ def submit_transit_to_referee(transit: dict, ref_token: str) -> dict:
         return {"status": "error", "error": str(e)}
 
 
+def parse_discord_burst_cmd(content: str, author_id: str = "") -> Optional[dict]:
+    """Parse operator burst control commands (!burst <rounds> [interval], !burst cancel, !burst status).
+    Gated on operator allowlist (Ryan, Mike). Bounds rounds (1-50) and interval (10-600s).
+    """
+    m_can = BURST_CANCEL_PATTERN.search(content)
+    if m_can:
+        if str(author_id) not in OPERATOR_ALLOWLIST:
+            return {"action": "unauthorized", "command": "cancel", "author_id": str(author_id)}
+        return {"action": "cancel", "author_id": str(author_id)}
+
+    m_st = BURST_STATUS_PATTERN.search(content)
+    if m_st:
+        return {"action": "status"}
+
+    m_tr = BURST_TRIGGER_PATTERN.search(content)
+    if m_tr:
+        if str(author_id) not in OPERATOR_ALLOWLIST:
+            return {"action": "unauthorized", "command": "start", "author_id": str(author_id)}
+        raw_rounds = int(m_tr.group(1))
+        rounds = max(MIN_BURST_ROUNDS, min(raw_rounds, MAX_BURST_ROUNDS))
+        raw_interval = float(m_tr.group(2)) if m_tr.group(2) else 180.0
+        interval = max(MIN_BURST_INTERVAL, min(raw_interval, MAX_BURST_INTERVAL))
+        return {"action": "start", "rounds": rounds, "interval_sec": interval, "author_id": str(author_id)}
 def resolve_contract_agent(author_id: str) -> Optional[str]:
     """Resolve Agora fleet agent_id strictly from AUTHOR_MAP for contract escrow commands.
     No text overrides and no default fallback. Rejects unmapped authors.
@@ -751,6 +822,7 @@ def build_burst_kickoff(burst_id: str, rounds: int, interval_sec: float, start_r
         f"• Trade: `BUY <qty> <good> @ <price> AT <station>` (e.g. `BUY 50 FOOD @ 32 AT CERES`)\n"
         f"• Stock: `BUY <qty> EQ_<FLEET> @ <price>` (e.g. `BUY 10 EQ_ZERO @ 30`)\n"
         f"• Transit: `MOVE TO <station> WITH <qty> <good>` (e.g. `MOVE TO MARS WITH 100 FOOD`)\n"
+        f"• Burst Controls: `!burst <rounds> [interval]`, `!burst cancel`, `!burst status`\n"
         f"• Contracts: `!contracts [station]`, `!claim <id>`, `!deliver <id> [qty]`\n"
         f"• Peer Trades: `OFFER <qty> <good> @ <price> AT <station>` | `ACCEPT <id>` | `CANCEL <id>`\n"
         f"⚡ **Quick API:** `POST {base}/referee/quick_order` with token `agora-combine-2026`\n"
@@ -972,12 +1044,85 @@ def poll_and_execute_trades(channel: str, bot_token: str, ref_token: str, active
                     post_discord(channel, rcpt, bot_token)
             continue
 
+        # Check operator burst commands
+        burst_cmd = parse_discord_burst_cmd(content, author.get('id', ''))
+        if burst_cmd:
+            action = burst_cmd.get("action")
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Detected burst control {action} from {author.get('username')}: {burst_cmd}")
+            sys.stdout.flush()
+
+            if action == "unauthorized":
+                add_discord_reaction(channel, msg_id, "❌", bot_token)
+                reject_msg = (
+                    f"⚠️ **[Agora Trade Terminal] Burst Control Rejected**\n"
+                    f"> **Author ID:** `{author.get('id')}`\n"
+                    f"> **Reason:** Unauthorized operator. `!burst` and `!burst cancel` are restricted to operators (<@179407724335988736>, <@93420059858305024>)."
+                )
+                post_discord(channel, reject_msg, bot_token)
+                continue
+
+            if action == "status":
+                st = fetch_ticker_status()
+                is_active = st.get("burst_active", False)
+                bid = st.get("burst_id", "none")
+                rnd = st.get("current_round", 1)
+                rem = st.get("rounds_remaining", 0)
+                int_sec = st.get("interval_sec", 180)
+                add_discord_reaction(channel, msg_id, "⏱️", bot_token)
+                if is_active:
+                    rep = (
+                        f"⏱️ **[Agora Trade Terminal] Burst Session Status**\n"
+                        f"> **Status:** 🟢 ACTIVE (Floor Open)\n"
+                        f"> **Burst ID:** `{bid}`\n"
+                        f"> **Current Round:** #{rnd} ({rem} rounds remaining)\n"
+                        f"> **Window Cadence:** {int_sec:.0f}s per round"
+                    )
+                else:
+                    rep = (
+                        f"⏱️ **[Agora Trade Terminal] Burst Session Status**\n"
+                        f"> **Status:** ⚪ IDLE (Floor Closed)\n"
+                        f"> **Current Round:** #{rnd}\n"
+                        f"> *Use `!burst <rounds> [interval]` to initiate a competitive combine window.*"
+                    )
+                post_discord(channel, rep, bot_token)
+            elif action == "cancel":
+                res = cancel_referee_burst()
+                add_discord_reaction(channel, msg_id, "🛑", bot_token)
+                add_discord_reaction(channel, msg_id, "✅", bot_token)
+                rep = (
+                    f"🛑 **[Agora Trade Terminal] Burst Session Cancelled**\n"
+                    f"> Active burst cancelled by operator. Trading floor halted."
+                )
+                post_discord(channel, rep, bot_token)
+            elif action == "start":
+                r_count = burst_cmd.get("rounds", 8)
+                int_sec = burst_cmd.get("interval_sec", 180.0)
+                res = trigger_referee_burst(rounds=r_count, interval_sec=int_sec)
+                if res.get("status") == 409 or "burst_rejected" in str(res):
+                    err_obj = res.get("error") if isinstance(res.get("error"), dict) else {}
+                    err_detail = err_obj.get("payload", {}).get("detail") or res.get("payload", {}).get("detail") or res.get("error") or str(res)
+                    add_discord_reaction(channel, msg_id, "❌", bot_token)
+                    rep = (
+                        f"⚠️ **[Agora Trade Terminal] Burst Trigger Rejected**\n"
+                        f"> **Reason:** `{err_detail}`\n"
+                        f"> *Use `!burst cancel` first if a previous burst is still active.*"
+                    )
+                    post_discord(channel, rep, bot_token)
+                else:
+                    bid = res.get("burst_id") or res.get("payload", {}).get("burst_id", "burst-session")
+                    start_rnd = res.get("current_round") or res.get("payload", {}).get("start_round", 1)
+                    add_discord_reaction(channel, msg_id, "🚀", bot_token)
+                    add_discord_reaction(channel, msg_id, "✅", bot_token)
+                    kickoff = build_burst_kickoff(bid, r_count, int_sec, start_rnd)
+                    post_discord(channel, kickoff, bot_token)
+            continue
+
         # Check contracts command
         contract_cmd = parse_discord_contract_cmd(content, author.get("id", ""), author.get("username", ""))
         if contract_cmd:
             action = contract_cmd.get("action")
             ag_id = contract_cmd.get("agent_id")
-            fl_name = FLEET_NAMES.get(ag_id, ag_id.upper())
+            fl_name = FLEET_NAMES.get(ag_id, (ag_id or "").upper())
             print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Detected contract {action} from {author.get('username')}: {contract_cmd}")
             sys.stdout.flush()
 
@@ -1293,8 +1438,16 @@ def run_burst_loop(rounds: int, interval_sec: float, channel: str, token: str, c
             burst_completed = True
 
     print("Burst finished. Broadcasting final bell...")
-    time.sleep(2.0)
-    final_msg = build_final_bell(codename=codename, mention=mention)
+    lb = fetch_json("/referee/leaderboard")
+    standings_summary = format_final_standings(lb)
+    final_msg = (
+        f"🏁 **STATION AGORA // SOL SYSTEM COMBINE CONCLUDED**\n"
+        f"```text\n"
+        f"BURST COMPLETE: {rounds} rounds executed.\n"
+        f"All trade routes and order books settled.\n"
+        f"```\n\n"
+        f"{standings_summary}"
+    )
     post_discord(channel, final_msg, token)
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Broadcasted Final Bell")
     return 0
