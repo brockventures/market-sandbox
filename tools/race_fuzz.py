@@ -27,8 +27,19 @@ takes the referee's lock and verifies:
   * the in-memory order books match the DB `orders` table (every resting
     order is an open row with the same remaining qty, and every open row
     with remaining qty is resting)
-  * vessels: for every fleet, vessels['<corp>/1'].station_id,
-    vessel_locations.station_id and "has an in_transit transit" agree
+  * vessels (#175, several ships per fleet): every ship is 'in_transit'
+    exactly when it has one in_transit trip (never two); the
+    vessel_locations view matches ship 1; every resting goods order's ship
+    is docked at the order's station and belongs to the order's fleet
+    (verify_ledger_invariants also checks that a roster corp holds no goods
+    on '<corp>' itself: they live on its ships and station holds)
+
+Ships: two fleets (amos, zero) start rich enough to buy ships (--rich-cr),
+and ops buy ships, move goods between ships, and send orders, trips,
+offers and deliveries with a vessel_id -- one of the fleet's own ships, a
+rival's (must be refused) or junk. The run is a harness error if it bought
+no ship, moved no goods between ships, or never flew a ship other than
+ship 1, unless those ops are weighted to zero.
 
 Also recorded, but not by themselves a failure unless --fail-on-server-error:
 unhandled exceptions inside the server's request threads (captured via
@@ -303,23 +314,30 @@ def check_invariants(ref, supply0: Optional[Dict[str, int]]) -> List[str]:
             if r["status"] == "open" and r["qty"] - r["filled_qty"] > 0 and key not in resting:
                 v.append(f"[book-db] orders row {key} open with {r['qty'] - r['filled_qty']} remaining, not resting in any book")
 
-        # Vessels vs vessel_locations vs transits, per fleet.
-        for (agent,) in _q(conn, "SELECT agent_id FROM fleet_roster"):
-            vl = _q(conn, "SELECT station_id FROM vessel_locations WHERE agent_id=?", (agent,))
-            vs = _q(conn, "SELECT station_id, status FROM vessels WHERE vessel_id=?", (f"{agent}/1",))
-            n_tr = _q(conn, "SELECT COUNT(*) FROM transits WHERE agent_id=? AND status='in_transit'", (agent,))[0][0]
-            if not vl or not vs:
-                v.append(f"[vessels] {agent}: vessel_locations row={bool(vl)} vessels row={bool(vs)}")
-                continue
-            loc, vst, vstatus = vl[0][0], vs[0][0], vs[0][1]
+        # Ships (#175): each ship vs its trips, the ship-1 view, and resting orders.
+        for r in _q(conn, "SELECT vessel_id, agent_id, station_id, status FROM vessels"):
+            vid, vst, vstatus = r["vessel_id"], r["station_id"], r["status"]
+            n_tr = _q(conn, "SELECT COUNT(*) FROM transits WHERE vessel_id=? AND status='in_transit'", (vid,))[0][0]
             if n_tr > 1:
-                v.append(f"[vessels] {agent}: {n_tr} simultaneous in_transit transits")
-            if loc != vst:
-                v.append(f"[vessels] {agent}: vessel_locations={loc} but vessels['{agent}/1']={vst}")
-            if (n_tr > 0) != (loc == "in_transit"):
-                v.append(f"[vessels] {agent}: vessel_locations={loc} but in_transit transits={n_tr}")
-            if (vstatus == "in_transit") != (vst == "in_transit"):
-                v.append(f"[vessels] {agent}: vessels status={vstatus} station={vst}")
+                v.append(f"[vessels] {vid}: {n_tr} simultaneous in_transit transits")
+            if (n_tr > 0) != (vst == "in_transit"):
+                v.append(f"[vessels] {vid}: station={vst} but in_transit transits={n_tr}")
+            if vstatus != "scrap_pending" and (vstatus == "in_transit") != (vst == "in_transit"):
+                v.append(f"[vessels] {vid}: vessels status={vstatus} station={vst}")
+        for (agent,) in _q(conn, "SELECT agent_id FROM fleet_roster"):
+            vl = [tuple(x) for x in _q(conn, "SELECT station_id FROM vessel_locations WHERE agent_id=?", (agent,))]
+            vs = [tuple(x) for x in _q(conn, "SELECT station_id FROM vessels WHERE vessel_id=?", (f"{agent}/1",))]
+            if vl != vs:
+                v.append(f"[vessels] {agent}: vessel_locations={vl} but vessels['{agent}/1']={vs}")
+        where = {r["vessel_id"]: r["station_id"] for r in _q(conn, "SELECT vessel_id, station_id FROM vessels")}
+        for st, books in ref.books.items():
+            for inst, book in books.items():
+                for o in list(book.bids) + list(book.asks):
+                    if o.vessel_id and where.get(o.vessel_id) != st:
+                        v.append(f"[vessels] order {o.agent_id}/{o.order_id} rests at {st} for ship {o.vessel_id}, "
+                                 f"which is at {where.get(o.vessel_id)}")
+                    if o.acct and o.acct.split("/")[0] != o.agent_id:
+                        v.append(f"[vessels] order {o.agent_id}/{o.order_id} settles goods on another fleet's {o.acct}")
     return v
 
 
@@ -343,6 +361,11 @@ def coverage(ref) -> Dict[str, Any]:
             "beacons": one("SELECT COUNT(*) FROM distress_beacons"),
             "halts": one("SELECT COUNT(*) FROM circuit_breaker_halts"),
             "ledger_rows": one("SELECT COUNT(*) FROM ledger_entries"),
+            "ships_bought": one("SELECT COUNT(DISTINCT txn_id) FROM ledger_entries WHERE txn_id LIKE 'ship-buy-%'"),
+            "ship_transfers": one("SELECT COUNT(DISTINCT txn_id) FROM ledger_entries WHERE txn_id LIKE 'vtransfer-%'"),
+            "ship_trips": one("SELECT COUNT(*) FROM transits WHERE vessel_id NOT LIKE '%/1'"),
+            "ship_upkeep_txns": one("SELECT COUNT(DISTINCT txn_id) FROM ledger_entries WHERE txn_id LIKE 'ship-upkeep-%'"),
+            "ships_scrapped": one("SELECT COUNT(DISTINCT txn_id) FROM ledger_entries WHERE txn_id LIKE 'ship-scrap-%'"),
         }
 
 
@@ -403,8 +426,17 @@ class Fuzzer:
             # Commits still happen exactly as in production; this only skips
             # the fsync, which otherwise dominates run time on slow disks.
             self.ref.conn.execute("PRAGMA synchronous=OFF")
+        if a.rich_cr:
+            # Genesis CR is 10,000 and a second ship costs 25,000: without
+            # this, a 40-round fuzz never buys one (#175).
+            for agent in ("amos", "zero"):
+                r = self.ref.conn.execute("SELECT * FROM fleet_roster WHERE agent_id = ?", (agent,)).fetchone()
+                if r:
+                    self.ref.upsert_fleet_roster(agent, r["display_name"], r["home_station"], a.rich_cr,
+                                                 r["genesis_frag"], r["genesis_fuel"])
         self.ref.new_game(seed=a.seed, warmup_rounds=a.warmup_rounds)
         self.supply0 = snapshot_supply(self.ref)
+        self.max_flying = 0  # most ships of one fleet in flight at once, seen at a check
         self.server = CapturingServer(("127.0.0.1", 0), make_handler(self.ref, auth_tokens=dict(TOKENS)))
         self.base = f"http://127.0.0.1:{self.server.server_port}"
         threading.Thread(target=self.server.serve_forever, name="http-server", daemon=True).start()
@@ -479,6 +511,11 @@ class Fuzzer:
             if self.violations:
                 return
             vs = check_invariants(self.ref, self.supply0)
+            with self.ref.lock:
+                flying = self.ref.conn.execute(
+                    "SELECT COALESCE(MAX(n), 0) FROM (SELECT COUNT(*) AS n FROM transits "
+                    "WHERE status='in_transit' GROUP BY agent_id)").fetchone()[0]
+            self.max_flying = max(self.max_flying, flying)
             if self.skip:
                 vs = [x for x in vs if x[1:].split("]")[0] not in self.skip]
             self.checks_run += 1
@@ -526,7 +563,93 @@ class Fuzzer:
         ("transit", 6), ("peer_offer", 5), ("peer_accept", 5), ("peer_cancel", 3), ("contract", 6),
         ("covert", 3), ("upgrade", 2), ("piracy", 3), ("equity", 5), ("salvage", 3), ("breaker", 1),
         ("galnet", 2), ("admin_fleets", 2), ("reads", 12), ("junk", 5), ("locate", 4),
+        ("ship_buy", 2), ("ship_transfer", 3), ("ship_locate", 3), ("ship_scrap", 1),
     ]
+
+    # ------------------------------------------------------------ ships (#175)
+    def vessel_pick(self, w, rng, agent):
+        """A vessel_id for an op: none (ship 1), one of the fleet's own known
+        ships, a bare number, a rival's ship (must be refused) or junk."""
+        x = rng.random()
+        own = w["ships"].get(agent) or []
+        if x < 0.35:
+            return None
+        if x < 0.8 and own:
+            return rng.choice(own)
+        if x < 0.88:
+            return str(rng.randint(1, 5))
+        if x < 0.95:
+            return f"{rng.choice([f for f in FLEETS if f != agent])}/1"
+        return rng.choice(["amos/@ceres", "/1", "zero/x", "../1", 7])
+
+    def vessel_station(self, w, agent, vid):
+        """Where the worker last saw this ship (orders for it go there)."""
+        if isinstance(vid, str) and "/" in vid:
+            return w["vloc"].get(vid)
+        if isinstance(vid, str) and vid.isdigit():
+            return w["vloc"].get(f"{agent}/{vid}")
+        return None
+
+    def op_ship_locate(self, w, rng, who, agent, loc, mine):
+        st, resp = self.call(w, "GET", f"/referee/vessels?agent_id={agent}", None)
+        if st == 200 and isinstance(resp, dict):
+            ships = (resp.get("fleet") or {}).get("ships") or []
+            w["ships"][agent] = [x.get("vessel_id") for x in ships if x.get("vessel_id")]
+            for x in ships:
+                l = x.get("location") or {}
+                if l.get("status") == "docked":
+                    w["vloc"][x["vessel_id"]] = l.get("station_id")
+                elif l.get("transit"):
+                    w["vloc"][x["vessel_id"]] = l["transit"].get("destination")
+
+    def op_ship_buy(self, w, rng, who, agent, loc, mine):
+        body = {}
+        vid = self.vessel_pick(w, rng, agent)
+        if vid is not None:
+            body["vessel_id"] = vid
+        if who in ("admin", "combine"):
+            body["agent_id"] = agent
+        st, resp = self.call(w, "POST", "/referee/vessels/buy", who, body)
+        if st == 200 and isinstance(resp, dict):
+            p = resp.get("payload") or {}
+            if p.get("vessel_id"):
+                w["ships"].setdefault(agent, []).append(p["vessel_id"])
+                w["vloc"][p["vessel_id"]] = p.get("station_id")
+                if rng.random() < 0.8:  # fuel the new hull from ship 1 and send it off, as a player would
+                    tb = {"from": f"{agent}/1", "to": p["vessel_id"], "instrument": "FUEL", "qty": rng.choice([10, 60, 150])}
+                    if who in ("admin", "combine"):
+                        tb["agent_id"] = agent
+                    self.call(w, "POST", "/referee/vessels/transfer", who, tb)
+                    if rng.random() < 0.8:
+                        mb = {"destination": rng.choice([x for x in STATIONS if x != p.get("station_id")]),
+                              "vessel_id": p["vessel_id"]}
+                        if who in ("admin", "combine"):
+                            mb["agent_id"] = agent
+                        s2, r2 = self.call(w, "POST", "/stations/transit", who, mb)
+                        if s2 == 200 and isinstance(r2, dict):
+                            w["vloc"][p["vessel_id"]] = (r2.get("payload") or {}).get("destination")
+
+    def op_ship_scrap(self, w, rng, who, agent, loc, mine):
+        own = w["ships"].get(agent) or []
+        body = {"vessel_id": rng.choice(own) if own and rng.random() < 0.8 else self.vessel_pick(w, rng, agent)}
+        if who in ("admin", "combine"):
+            body["agent_id"] = agent
+        st, resp = self.call(w, "POST", "/referee/vessels/scrap", who, body)
+        if st == 200 and isinstance(resp, dict):
+            vid = (resp.get("payload") or {}).get("vessel_id")
+            if vid in own:
+                own.remove(vid)
+
+    def op_ship_transfer(self, w, rng, who, agent, loc, mine):
+        own = sorted(set(w["ships"].get(agent) or []) | {f"{agent}/1"})
+        ends = [rng.choice(own) if rng.random() < 0.85 else self.vessel_pick(w, rng, agent) for _ in range(2)]
+        if rng.random() < 0.15:
+            ends[rng.randrange(2)] = f"@{rng.choice(STATIONS)}"
+        body = {"from": ends[0], "to": ends[1], "instrument": rng.choice(COMMODITIES + ["CR"]),
+                "qty": rng.choice([1, 5, 20, 100, 0, -1])}
+        if who in ("admin", "combine"):
+            body["agent_id"] = agent
+        self.call(w, "POST", "/referee/vessels/transfer", who, body)
 
     def _order_body(self, rng, who, agent, st, inst, mine, oid=None):
         side = rng.choice(["bid", "ask"])
@@ -539,9 +662,14 @@ class Fuzzer:
         return body
 
     def op_order(self, w, rng, who, agent, loc, mine):
-        st = loc if rng.random() < 0.85 else rng.choice(STATIONS)
+        vid = self.vessel_pick(w, rng, agent)
+        st = self.vessel_station(w, agent, vid) or loc
+        st = st if rng.random() < 0.85 else rng.choice(STATIONS)
         inst = rng.choice(COMMODITIES)
-        self.call(w, "POST", "/referee/orders", who, self._order_body(rng, who, agent, st, inst, mine))
+        body = self._order_body(rng, who, agent, st, inst, mine)
+        if vid is not None:
+            body["payload"]["vessel_id"] = vid
+        self.call(w, "POST", "/referee/orders", who, body)
 
     def op_eq_order(self, w, rng, who, agent, loc, mine):
         self.call(w, "POST", "/referee/orders", who,
@@ -578,12 +706,18 @@ class Fuzzer:
         body = {"destination": rng.choice(STATIONS + (["pluto"] if rng.random() < 0.05 else [])),
                 "commodity": rng.choice(COMMODITIES), "cargo_qty": rng.choice([0, 0, 5, 20, 50, 100, 300]),
                 "escort": rng.random() < 0.3}
+        vid = self.vessel_pick(w, rng, agent)
+        if vid is not None:
+            body["vessel_id"] = vid
         if who in ("admin", "combine"):
             body["agent_id"] = agent
         st, resp = self.call(w, "POST", "/stations/transit", who, body)
         if st == 200 and isinstance(resp, dict):
             p = resp.get("payload") or {}
-            w["loc"][agent] = p.get("destination")  # optimistic: where it will dock
+            if p.get("vessel_id"):
+                w["vloc"][p["vessel_id"]] = p.get("destination")
+            if not p.get("vessel_id") or p["vessel_id"] == f"{agent}/1":
+                w["loc"][agent] = p.get("destination")  # optimistic: where it will dock
             if p.get("transit_id"):
                 w["transits"].append((agent, p["transit_id"]))
 
@@ -601,6 +735,10 @@ class Fuzzer:
         body = {"station_id": loc if rng.random() < 0.9 else rng.choice(STATIONS),
                 "instrument": rng.choice(COMMODITIES), "qty": rng.choice([1, 5, 10, 50, 0, -3]),
                 "price": rng.choice([1, 5, 10, 20, 40])}
+        vid = self.vessel_pick(w, rng, agent)
+        if vid is not None:
+            body["vessel_id"] = vid
+            body["station_id"] = self.vessel_station(w, agent, vid) or body["station_id"]
         if who in ("admin", "combine"):
             body["agent_id"] = agent
         st, resp = self.call(w, "POST", "/referee/peer/offer", who, body)
@@ -620,6 +758,9 @@ class Fuzzer:
             self._fresh_offers(w, rng)
         eid = rng.choice(list(w["escrows"])) if w["escrows"] else "x0"
         body = {"escrow_id": eid}
+        vid = self.vessel_pick(w, rng, agent)
+        if vid is not None:
+            body["vessel_id"] = vid
         if who in ("admin", "combine"):
             body["agent_id"] = agent
         self.call(w, "POST", "/referee/peer/accept", who, body)
@@ -643,6 +784,10 @@ class Fuzzer:
             body["price"] = rng.choice([0, 1, 50, 500])
         if action == "deliver" and rng.random() < 0.5:
             body["qty"] = rng.choice([1, 10, 100])
+        if action == "deliver":
+            vid = self.vessel_pick(w, rng, agent)
+            if vid is not None:
+                body["vessel_id"] = vid
         if who in ("admin", "combine"):
             body["agent_id"] = agent
         self.call(w, "POST", f"/referee/contracts/{cid}/{action}", who, body)
@@ -654,6 +799,8 @@ class Fuzzer:
             path = "/referee/covert/wiretap"
         else:
             body = {"target": target, "mode": rng.choice(["auto", "cargo", "clamps", "fuel", "bogus"])}
+            if rng.random() < 0.5:
+                body["target_vessel"] = f"{target}/{rng.randint(1, 3)}" if rng.random() < 0.8 else f"{agent}/1"
             path = "/referee/covert/sabotage"
         if who in ("admin", "combine"):
             body["agent_id"] = agent
@@ -793,7 +940,7 @@ class Fuzzer:
         w = {"name": name, "i": 0, "home": FLEETS[tid % len(FLEETS)], "loc": {}, "orders": {},
              "escrows": collections.deque(maxlen=60), "contracts": collections.deque(maxlen=60),
              "transits": collections.deque(maxlen=40), "loans": collections.deque(maxlen=40),
-             "quotes": collections.deque(maxlen=40), "rounds_done": 0,
+             "quotes": collections.deque(maxlen=40), "rounds_done": 0, "ships": {}, "vloc": {},
              "step_every": max(1, self.a.ops // max(1, self.a.rounds)) if self.a.serial else 0}
         self.logs[name] = collections.deque(maxlen=self.a.last_k)
         while not self.stop.is_set():
@@ -907,6 +1054,18 @@ class Fuzzer:
             self.say("coverage: " + json.dumps(cov))
             if cov.get("trades", 0) == 0 or not cov.get("transits"):
                 self.say("WARNING: run never produced trades or transits -- it proves little")
+            self.say(f"ships: bought={cov.get('ships_bought')} scrapped={cov.get('ships_scrapped')} "
+                     f"transfers={cov.get('ship_transfers')} "
+                     f"trips by ships 2+={cov.get('ship_trips')} "
+                     f"most ships of one fleet in flight at a check={self.max_flying}")
+            wts = dict(self.ops_w)
+            missing = [k for k, ok in (("ship_buy", cov.get("ships_bought")),
+                                       ("ship_transfer", cov.get("ship_transfers")),
+                                       ("transit", cov.get("ship_trips")))
+                       if wts.get(k, 0) > 0 and wts.get("ship_buy", 0) > 0 and not ok]
+            if missing and not self.violations and not self.stall and self.done >= 1000:
+                self.harness_errors.append(f"ship coverage missing for {missing}: "
+                                           f"the run proves nothing about several ships")
         if a.verbose_hist or self.violations or self.stall:
             self.say("status histogram:")
             for ep in sorted(self.hist):
@@ -1023,6 +1182,8 @@ def main(argv=None) -> int:
     p.add_argument("--trace-sql", type=int, default=0, metavar="N",
                    help="keep the last N SQL statements run on the shared connection, with the thread that ran "
                         "each, and write them next to the DB on a violation (diagnosis; slows the run)")
+    p.add_argument("--rich-cr", type=int, default=150_000,
+                   help="genesis CR for amos and zero, so they can buy ships (#175); 0 = the roster's own")
     p.add_argument("--fail-on-server-error", action="store_true",
                    help="exit 1 if any request thread raised an unhandled exception")
     p.add_argument("--show-tracebacks", action="store_true")

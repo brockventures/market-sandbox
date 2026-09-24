@@ -34,9 +34,11 @@ Deficit accumulator, for a p that varies per call (`draw_varying`)
     is under 2 / p_min draws, and a hit streak is under 2 / (1 - p_max) draws
     (at most 2 in a row while p <= 1/3; a raid at 0.6 odds can make 4).
     The random t keeps a hit's timing unpredictable within each unit of credit.
-    One side effect: the credit is the fleet's, not the trip's, so a raid can
-    land on an escorted trip; escorts, armor and cheap cargo still cut the
-    number of raids a fleet takes, in proportion.
+    Raids used to draw here from one credit per fleet, so luck built up on
+    unescorted trips could land on an escorted one; since #175 they draw from
+    a fixed-odds bag per ship, protection level and trip conditions
+    (agora/piracy.py raid_key), and only fall back to a credit (under that
+    same key) for odds no small bag holds.
 
 Both kinds draw their randomness from a Random seeded by (desk, game seed,
 event, fleet, refill number), so a game repeats per seed, and one fleet's

@@ -349,9 +349,11 @@ class CircuitBreakerEngine:
                     # silent no-op, so a first-time holder's credit vanished
                     # while the matching debit applied. Ensure all four rows
                     # exist first, same as the continuous-matching path.
+                    # Goods settle on each order's ship (#175), CR on its corp.
+                    bid_goods, ask_goods = best_bid.goods_acct, best_ask.goods_acct
                     for acct, acct_inst in (
                         (best_bid.agent_id, currency), (best_ask.agent_id, currency),
-                        (best_bid.agent_id, inst), (best_ask.agent_id, inst),
+                        (bid_goods, inst), (ask_goods, inst),
                     ):
                         self.conn.execute(
                             "INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, ?, 0)",
@@ -365,10 +367,10 @@ class CircuitBreakerEngine:
                     self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)", (txn_id, next_seq, best_ask.agent_id, currency, cost))
 
                     # Commodity deltas
-                    self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?", (qty, best_bid.agent_id, inst))
-                    self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = ? AND instrument = ?", (qty, best_ask.agent_id, inst))
-                    self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)", (txn_id, next_seq, best_bid.agent_id, inst, qty))
-                    self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)", (txn_id, next_seq, best_ask.agent_id, inst, -qty))
+                    self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?", (qty, bid_goods, inst))
+                    self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = ? AND instrument = ?", (qty, ask_goods, inst))
+                    self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)", (txn_id, next_seq, bid_goods, inst, qty))
+                    self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)", (txn_id, next_seq, ask_goods, inst, -qty))
 
                     # Update orders table
                     self.conn.execute("""
@@ -471,7 +473,7 @@ class CircuitBreakerEngine:
             cash = max(0, ref.get_balance(bid.agent_id, 'CR'))
             qty = min(qty, cash // price)
         if ask.agent_id != 'SYSTEM':
-            goods = max(0, ref.get_balance(ask.agent_id, inst))
+            goods = max(0, ref._account_balance(ask.goods_acct, inst))
             qty = min(qty, goods)
         if qty > 0:
             return qty, False

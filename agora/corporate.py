@@ -100,6 +100,11 @@ class CorporateDesk:
                         self.ref._cancel_order_locked(agent, o.order_id)
 
     def _settle_transits(self, src: str, dst: str) -> None:
+        """Bankruptcy only since #175: a takeover renames the ships instead
+        (FleetDesk.absorb_locked) and they keep flying."""
+        self._settle_transits_to(src, dst)
+
+    def _settle_transits_to(self, src: str, dst: str) -> None:
         """Cargo still in flight for a corp that is out. Reassigning the trip
         would move `dst`'s own ship when it lands, so cancel it instead and
         hand the escrowed cargo (held by SYSTEM) straight to `dst`: the raider
@@ -172,15 +177,24 @@ class CorporateDesk:
         return r["debt"] - pay
 
     def _sell_goods_to_depot(self, agent: str) -> None:
+        """Each docked ship sells to its own station's depot, then each
+        station hold (#175)."""
         ref = self.ref
-        loc = ref.get_vessel_location(agent)
-        if loc.get("status") != "docked":
-            return
-        st = loc.get("station_id")
+        from agora.fleet import hold_station
+        places = [(l["station_id"], l["vessel_id"]) for l in ref.fleet_locations(agent) if l.get("status") == "docked"]
+        places += [(hold_station(a), a) for a in ref.fleet.accounts_of(agent) if hold_station(a)]
+        if not ref.fleet.is_corp(agent):
+            loc = ref.get_vessel_location(agent)
+            places = [(loc.get("station_id"), agent)] if loc.get("status") == "docked" else []
+        for st, acct in places:
+            self._sell_account(agent, st, acct)
+
+    def _sell_account(self, agent: str, st: str, acct: str) -> None:
+        ref = self.ref
         depot = f"depot_{st}"
         for comm in ("FRAG", "FOOD", "ORE"):
             debt = self._row(agent)["debt"]
-            have = ref.peer._available(agent, comm)
+            have = ref.available_account(acct, comm)
             book = ref.books.get(st, {}).get(comm)
             bids = sorted((o for o in (book.bids if book else []) if o.agent_id == depot and o.remaining_qty > 0),
                           key=lambda o: -o.limit_price)
@@ -191,8 +205,8 @@ class CorporateDesk:
                       max(0, ref.get_balance(depot, "CR")) // o.limit_price)
             if qty <= 0:
                 continue
-            self._move(f"distress-goods-{agent}-{comm}-{ref.current_round}", (
-                (agent, comm, -qty), (depot, comm, qty), (depot, "CR", -qty * o.limit_price), (agent, "CR", qty * o.limit_price)))
+            self._move(f"distress-goods-{acct}-{comm}-{ref.current_round}", (
+                (acct, comm, -qty), (depot, comm, qty), (depot, "CR", -qty * o.limit_price), (agent, "CR", qty * o.limit_price)))
             # Consume the depot's resting bid so the same depth isn't sold twice.
             o.filled_qty += qty
             ref.conn.execute("UPDATE orders SET filled_qty = filled_qty + ? WHERE order_id = ?", (qty, o.order_id))
@@ -233,6 +247,7 @@ class CorporateDesk:
         self._cancel_all(agent)
         self._settle_transits(agent, "SYSTEM")
         self._sweep(agent, "SYSTEM", f"bankrupt-{agent}-{ref.current_round}")
+        ref.fleet.seize_locked(agent, f"bankrupt-ships-{agent}-{ref.current_round}")
         ref.conn.execute("UPDATE station_contracts SET owner = NULL, bond = 0, list_price = NULL "
                          "WHERE owner = ? AND status = 'open'", (agent,))
         debt = self._row(agent)["debt"]
@@ -251,7 +266,9 @@ class CorporateDesk:
                 if ref.get_balance(raider, sym) < TAKEOVER_SHARES:
                     continue
                 self._cancel_all(target)
-                self._settle_transits(target, raider)
+                # Ships (and their holds, and trips in flight) are renamed into
+                # the raider's fleet; over its cap they are scrapped (#164, #175).
+                fleet = ref.fleet.absorb_locked(target, raider)
                 self._sweep(target, raider, f"takeover-{raider}-{target}-{ref.current_round}")
                 ref.conn.execute("UPDATE station_contracts SET owner = ?, list_price = NULL "
                                  "WHERE owner = ? AND status = 'open'", (raider, target))
@@ -260,9 +277,12 @@ class CorporateDesk:
                     r = self._row(raider)
                     self._set(raider, debt=r["debt"] + debt)
                 self._set(target, status="absorbed", absorbed_by=raider, out_round=ref.current_round, debt=0)
+                ships = (f"; ships {', '.join(f'{a}->{b}' for a, b in fleet['renamed'])}" if fleet['renamed'] else "")
+                if fleet['scrapped'] or fleet['scrap_on_arrival']:
+                    ships += f" (scrapped: {', '.join(fleet['scrapped'] + fleet['scrap_on_arrival'])})"
                 self._event("takeover", raider, f"took over {target} holding {ref.get_balance(raider, sym)} "
-                                                f"{sym}; absorbed its assets" + (f" and {debt} CR of debt" if debt else ""),
-                            victim=target)
+                                                f"{sym}; absorbed its assets" + (f" and {debt} CR of debt" if debt else "")
+                            + ships, victim=target)
         act = self.active()
         if len(act) == 1 and len(self._fleets()) > 1:
             if not self.ref.conn.execute("SELECT 1 FROM corp_events WHERE kind = 'winner'").fetchone():

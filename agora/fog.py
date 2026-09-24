@@ -82,13 +82,24 @@ class FogEngine:
 
     @staticmethod
     def docked_at(ref, viewer: Optional[str]) -> Optional[str]:
+        """Ship 1's station (the one the old one-ship API reports)."""
         if viewer in (PUBLIC, ADMIN):
             return None
         loc = ref.get_vessel_location(viewer)
         return loc['station_id'] if loc.get('status') == 'docked' else None
 
+    @staticmethod
+    def docked_everywhere(ref, viewer: Optional[str]) -> set:
+        """Every station where one of the viewer's ships is docked: each
+        sees its own station live (#175)."""
+        if viewer in (PUBLIC, ADMIN):
+            return set()
+        here = set(ref.docked_stations(viewer)) if hasattr(ref, 'docked_stations') else set()
+        one = FogEngine.docked_at(ref, viewer)
+        return here | ({one} if one else set())
+
     def exact_station(self, ref, viewer: Optional[str], st: str) -> bool:
-        return viewer == ADMIN or self.docked_at(ref, viewer) == st
+        return viewer == ADMIN or st in self.docked_everywhere(ref, viewer)
 
     def depot_view(self, ref, viewer: Optional[str]) -> Dict[str, Any]:
         """Same shape as ref.get_depot_summary()."""
@@ -96,12 +107,13 @@ class FogEngine:
         if viewer == ADMIN or not self.snapshots:
             return live
         here, rnd = self.docked_at(ref, viewer), ref.current_round
+        live_at = self.docked_everywhere(ref, viewer)
         old = self._old(rnd)['depots']
         out = dict(live)
         out['stations'] = {}
         out['fog'] = {'lag': self.lag, 'noise': self.noise, 'exact_station': here}
         for st in STATIONS:
-            if st == here:
+            if st == here or st in live_at:
                 out['stations'][st] = live['stations'][st]
                 continue
             out['stations'][st] = {}
@@ -119,9 +131,10 @@ class FogEngine:
         live = ref.spatial.get_prices()
         if viewer == ADMIN or not self.snapshots:
             return live
-        here, rnd = self.docked_at(ref, viewer), ref.current_round
+        rnd = ref.current_round
+        live_at = self.docked_everywhere(ref, viewer)
         old = self._old(rnd)['spots']
-        return {st: (live[st] if st == here else
+        return {st: (live[st] if st in live_at else
                      {c: self._jitter(viewer, rnd, st, c, 'spot_price', p) for c, p in old.get(st, {}).items()})
                 for st in STATIONS}
 
@@ -130,7 +143,7 @@ class FogEngine:
         the station it is docked at; the public sees none."""
         if viewer == ADMIN:
             return ticks
-        here = self.docked_at(ref, viewer)
+        live_at = self.docked_everywhere(ref, viewer)
         out = []
         for t in ticks:
             p = t.get('payload')
@@ -139,7 +152,7 @@ class FogEngine:
             inst = (p.get('instrument') or '') if isinstance(p, dict) else ''
             if str(inst).startswith('EQ_'):
                 priced = False  # the stock exchange is public: no fog on stocks
-            if priced and (st is None or st != here):
+            if priced and (st is None or st not in live_at):
                 continue
             out.append(t)
         return out

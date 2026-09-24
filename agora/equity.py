@@ -101,6 +101,10 @@ class SyndicateEquityEngine:
             liquid = bals.get('CR', bals.get('CREDITS', 10000))
             frags = bals.get('FRAG', bals.get('BANANA', 1000))
             fuel = bals.get('FUEL', 500)
+            if self.referee is not None and hasattr(self.referee, 'corp_goods'):
+                # Goods live on the corp's ships (#175).
+                frags = self.referee.corp_goods(agent_id, 'FRAG')
+                fuel = self.referee.corp_goods(agent_id, 'FUEL')
 
             # Mark prices
             frag_mark = 10.0

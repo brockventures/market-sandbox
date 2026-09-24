@@ -177,7 +177,9 @@ class ContractDesk:
                              (buyer, cid))
         return {'v': 1, 'kind': 'contract_buy_ok', 'payload': self.get(cid)}
 
-    def deliver(self, agent: str, cid: str, qty: Optional[int] = None) -> Dict[str, Any]:
+    def deliver(self, agent: str, cid: str, qty: Optional[int] = None, vessel_id=None) -> Dict[str, Any]:
+        """Deliver from one ship docked at the contract's station (ship 1
+        unless vessel_id, #175)."""
         ref = self.ref
         ref.mark_active(agent)
         with ref.lock, ref.conn:
@@ -186,17 +188,20 @@ class ContractDesk:
                 return _reject('not_open', f"Contract '{cid}' is not open")
             if row['owner'] != agent:
                 return _reject('unauthorized', f"Only the owner can deliver into '{cid}'")
-            loc = ref.get_vessel_location(agent)
+            acct, err = ref.fleet.goods_account(agent, vessel_id)
+            if err:
+                return err
+            loc = ref.get_vessel_location(agent, acct if acct != agent else None)
             if loc.get('status') != 'docked' or loc.get('station_id') != row['station_id']:
-                return _reject('vessel_not_docked', f"Deliver while docked at {row['station_id']}")
-            have = self._available(agent, row['instrument'])
+                return _reject('vessel_not_docked', f"Deliver while docked at {row['station_id']} ({acct} is not)")
+            have = ref.available_account(acct, row['instrument'])
             n = min(row['qty_remaining'], have if qty is None else min(int(qty), have))
             if n <= 0:
                 return _reject('insufficient_balance', f"No {row['instrument']} available to deliver")
             pay = n * row['price']
             refund = row['bond'] * n // row['qty_remaining']
             self._move(f"contract-deliver-{cid}-{ref.current_round}-{row['qty_remaining']}", (
-                (agent, row['instrument'], -n), ('SYSTEM', row['instrument'], n),
+                (acct, row['instrument'], -n), ('SYSTEM', row['instrument'], n),
                 ('SYSTEM', 'CR', -(pay + refund)), (agent, 'CR', pay + refund)))
             left = row['qty_remaining'] - n
             ref.conn.execute("UPDATE station_contracts SET qty_remaining = ?, bond = ?, status = ? WHERE contract_id = ?",

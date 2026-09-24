@@ -60,6 +60,7 @@ Usage:
 """
 
 import argparse
+import collections
 import contextlib
 import faulthandler
 import importlib
@@ -83,7 +84,9 @@ from agora import piracy as piracy_mod  # noqa: E402
 from agora.referee import AgoraReferee  # noqa: E402
 from agora.server import build_referee_from_env  # noqa: E402
 from agora.spatial import STATIONS, BASE_PRICES, get_route  # noqa: E402
+from agora.equity import FLEET_EQUITIES  # noqa: E402
 from agora import upgrades as upgrades_mod  # noqa: E402
+from agora import fleet as fleet_mod  # noqa: E402
 from agora.upgrades import CATALOG as UPGRADES  # noqa: E402
 
 FLEETS = ["zero", "amos", "marvin", "aerial"]
@@ -157,6 +160,10 @@ def scenario_kinds(scenario: str, seed: int) -> Dict[str, str]:
 # contracts and trade on the peer desk: an idler or a market maker never
 # delivers, so a claim by one is a guaranteed penalty.
 CONTRACTORS = {"hauler", "novice", "privateer", "raider", "saboteur", "spy", "stock_hauler", "maker_hauler"}
+# Strategies that buy more ships when a ship pays for itself (#175, ShipFleet):
+# every one that lives by hauling. Not the raider, which stops buying cargo
+# at its SWITCH_ROUND, and not the novice.
+SHIP_BUYERS = {"hauler", "privateer", "saboteur", "spy", "stock_hauler", "maker_hauler"}
 
 # Bot thresholds for the live-only mechanics. Behaviour, not rules.
 UPGRADE_ORDER = ("armor", "hold", "shielding", "engines")
@@ -172,22 +179,26 @@ NOVICE_IGNORES_DEMAND = 0.5
 
 # ------------------------------------------------------------------ helpers
 
-def order(ref: AgoraReferee, agent: str, side: str, qty: int, price: int, comm: str, st: str, tag: str):
-    """POST /referee/orders."""
-    return ref.submit_envelope({"v": 1, "kind": "order", "payload": {
+def order(ref: AgoraReferee, agent: str, side: str, qty: int, price: int, comm: str, st: str, tag: str,
+          vessel: Optional[str] = None):
+    """POST /referee/orders (vessel_id: the ship trading; None = ship 1)."""
+    payload = {
         "order_id": f"sim-{agent}-{tag}-{ref.current_round}-{ref.current_seq}",
         "agent_id": agent, "side": side, "qty": int(qty), "limit_price": int(price),
-        "instrument": comm, "station_id": st, "seq_seen": ref.current_seq}})
+        "instrument": comm, "station_id": st, "seq_seen": ref.current_seq}
+    if vessel:
+        payload["vessel_id"] = vessel
+    return ref.submit_envelope({"v": 1, "kind": "order", "payload": payload})
 
 
-def cancel_all(ref: AgoraReferee, agent: str) -> None:
-    """POST /referee/orders/cancel per resting order. Not ref.cancel_all:
-    that marks the fleet active even with nothing to cancel, which would
-    dodge the idle fee for free."""
+def cancel_all(ref: AgoraReferee, agent: str, vessel: Optional[str] = None) -> None:
+    """POST /referee/orders/cancel per resting order (only one ship's when
+    vessel is given). Not ref.cancel_all: that marks the fleet active even
+    with nothing to cancel, which would dodge the idle fee for free."""
     for st_books in ref.books.values():
         for b in st_books.values():
             for o in list(b.bids) + list(b.asks):
-                if o.agent_id == agent:
+                if o.agent_id == agent and (vessel is None or o.vessel_id == vessel):
                     ref.cancel_order(agent, o.order_id)
 
 
@@ -199,18 +210,31 @@ def band_ok(ref: AgoraReferee, st: str, comm: str, price: int) -> bool:
     return (lo is None or price >= lo) and (hi is None or price <= hi)
 
 
-def location(ref: AgoraReferee, agent: str) -> Optional[str]:
-    loc = ref.get_vessel_location(agent)
+def location(ref: AgoraReferee, agent: str, vessel: Optional[str] = None) -> Optional[str]:
+    loc = ref.get_vessel_location(agent, vessel)
     return loc["station_id"] if loc.get("status") == "docked" else None
 
 
-def inventory(ref: AgoraReferee, agent: str) -> Dict[str, int]:
-    return {c: ref.get_balance(agent, c) for c in ["CR"] + TRADED}
+def inventory(ref: AgoraReferee, agent: str, vessel: Optional[str] = None) -> Dict[str, int]:
+    """The fleet's CR and one ship's hold (ship 1 unless vessel), #175."""
+    hold = vessel or f"{agent}/1"
+    return {c: ref.get_balance(agent if c == "CR" else hold, c) for c in ["CR"] + TRADED}
 
 
-def available(ref: AgoraReferee, agent: str, inst: str) -> int:
-    """Balance less what resting orders commit, as every desk checks it."""
-    return ref.peer._available(agent, inst)
+def available(ref: AgoraReferee, agent: str, inst: str, vessel: Optional[str] = None) -> int:
+    """Balance less what resting orders commit, as every desk checks it:
+    the fleet's CR, or one ship's goods (ship 1 unless vessel)."""
+    return ref.available(agent, inst, vessel)
+
+
+def load_hold(ref: AgoraReferee, agent: str, vessel: Optional[str], st: str, stats) -> None:
+    """POST /referee/vessels/transfer: take on whatever the fleet's hold at
+    this station keeps (loot waiting at the fence, a refunded offer), #175."""
+    hold = fleet_mod.hold_account(agent, st)
+    for c in TRADED:
+        q = ref.available_account(hold, c)
+        if q > 0 and ref.fleet.transfer(agent, f"@{st}", vessel or f"{agent}/1", c, q).get("kind") == "transfer_ok":
+            stats["hold_loads"] = stats.get("hold_loads", 0) + 1
 
 
 def debt(ref: AgoraReferee, agent: str) -> int:
@@ -233,13 +257,14 @@ def contract_for(ref: AgoraReferee, agent: str, dest: str, comm: str, arrival: i
     return max(live, key=lambda c: c["price"]) if live else None
 
 
-def deliver_contracts(ref: AgoraReferee, agent: str, st: str, stats) -> None:
-    """POST /referee/contracts/{id}/deliver for each owned contract here."""
+def deliver_contracts(ref: AgoraReferee, agent: str, st: str, stats, vessel: Optional[str] = None) -> None:
+    """POST /referee/contracts/{id}/deliver for each owned contract here,
+    from this ship's hold."""
     for c in sorted(my_contracts(ref, agent), key=lambda c: -c["price"]):
-        have = available(ref, agent, c["instrument"]) - (FUEL_KEEP if c["instrument"] == "FUEL" else 0)
+        have = available(ref, agent, c["instrument"], vessel) - (FUEL_KEEP if c["instrument"] == "FUEL" else 0)
         if c["station_id"] != st or have <= 0:
             continue
-        res = ref.contract_desk.deliver(agent, c["contract_id"], have)
+        res = ref.contract_desk.deliver(agent, c["contract_id"], have, vessel_id=vessel)
         if res.get("kind") == "contract_deliver_ok":
             stats["contract_deliveries"] += 1
 
@@ -313,9 +338,10 @@ def answer_demand(ref: AgoraReferee, agent: str, res: dict, stats, novice_rng: O
 
 
 def move(ref: AgoraReferee, agent: str, dest: str, comm: str, qty: int, stats, escort: bool = False,
-         novice_rng: Optional[random.Random] = None) -> dict:
+         novice_rng: Optional[random.Random] = None, vessel: Optional[str] = None) -> dict:
     """POST /stations/transit, then answer any pirate demand at once."""
-    res = ref.initiate_transit(agent_id=agent, destination=dest, commodity=comm, cargo_qty=qty, escort=escort)
+    res = ref.initiate_transit(agent_id=agent, destination=dest, commodity=comm, cargo_qty=qty, escort=escort,
+                               vessel_id=vessel)
     if res.get("status") == "in_transit":
         stats["transits"] += 1
         answer_demand(ref, agent, res, stats, novice_rng)
@@ -371,7 +397,7 @@ def contract_value(ref: AgoraReferee, agent: str, c: dict, view, one_hop: bool =
     rem, comm = c["qty_remaining"], c["instrument"]
     cash = available(ref, agent, "CR") - (0 if c.get("owner") == agent else c.get("bond") or
                                            ref.contract_desk.bond_for(c["price"], rem))
-    held = ref.get_balance(agent, comm) - (FUEL_KEEP if comm == "FUEL" else 0)
+    held = ref.get_balance(f"{agent}/1", comm) - (FUEL_KEEP if comm == "FUEL" else 0)
     # A Hauler never hauls FUEL as cargo (it burns it to fly), so to one it
     # a FUEL contract is worth only the FUEL it already holds at the station.
     for src in ([] if one_hop and comm == "FUEL" else [st] if one_hop else STATIONS):
@@ -574,8 +600,11 @@ class Hauler:
     REST_MIN_SHARE = 0.1
     REST_MODE = "ask"
 
-    def __init__(self, agent: str, tolerate_halts: bool = False, rest_asks: Optional[bool] = None):
+    def __init__(self, agent: str, tolerate_halts: bool = False, rest_asks: Optional[bool] = None,
+                 vessel: Optional[str] = None):
         self.agent = agent
+        # The ship this bot flies (#175): ship 1 unless a ShipFleet gave it another.
+        self.vessel = vessel or f"{agent}/1"
         self.rest_asks = self.REST_ASKS if rest_asks is None else rest_asks
         self.rest: Dict[str, dict] = {}  # comm -> {"st", "rounds", "held"} while resting an ask
         self.stranded = False
@@ -585,22 +614,36 @@ class Hauler:
         # for cheap goods, whose 1-CR depot spread exceeds a 10% band).
         self.tolerate_halts = tolerate_halts
         self.plan = None  # (dest, comm) while waiting on an auction fill
+        # (station, good) buy legs fleet-mates already took this round (#175,
+        # handed in by ShipFleet each round): a second ship on the same leg
+        # only drains the same shelf and floods the same buyer. A hauler on
+        # its own starts every round with none.
+        self.claims: set = set()
+        self.shared_claims = False
+        # CR a cargo purchase leaves untouched: 200 alone, more once the
+        # fleet pays ship upkeep (ShipFleet sets it), so upkeep never has to
+        # be borrowed against the corp's own shares.
+        self.cash_reserve = 200
 
     def _hauling_value(self, quotes, st: str, comm: str) -> int:
         """Best bid for `comm` at any other station."""
         return max((quotes[d][comm]["best_bid"] or 0) for d in STATIONS if d != st)
 
     def act(self, ref: AgoraReferee, quotes, stats) -> None:
-        st = location(ref, self.agent)
+        if not self.shared_claims:
+            self.claims = set()
+        v = self.vessel
+        st = location(ref, self.agent, v)
         if st is None:
             return
-        inv = inventory(ref, self.agent)
+        load_hold(ref, self.agent, v, st, stats)
+        inv = inventory(ref, self.agent, v)
 
         # Waiting on a halted book's reopening auction: keep the resting bid.
         if self.plan and (ref.circuit_breaker.is_halted(st, self.plan[1])
                           or ref.circuit_breaker.is_halted(st, "FUEL")):
             return
-        cancel_all(ref, self.agent)
+        cancel_all(ref, self.agent, v)
         if self.plan and inv[self.plan[1]] > 0:
             dest, comm = self.plan
             self.plan = None
@@ -608,20 +651,20 @@ class Hauler:
             return
         self.plan = None
 
-        deliver_contracts(ref, self.agent, st, stats)
-        inv = inventory(ref, self.agent)
+        deliver_contracts(ref, self.agent, st, stats, v)
+        inv = inventory(ref, self.agent, v)
 
         # 1. Sell cargo here only if this is the best market for it; otherwise
         #    it is cargo to haul (e.g. a per-planet genesis export).
         resting = False
         for comm in ("FRAG", "FOOD", "ORE"):
-            qty = available(ref, self.agent, comm)
+            qty = available(ref, self.agent, comm, v)
             bid = quotes[st][comm]["best_bid"]
             if qty > 0 and bid and bid >= self._hauling_value(quotes, st, comm) and band_ok(ref, st, comm, bid):
                 if self._rest_ask(ref, quotes, st, comm, qty, stats):
                     resting = True
                     continue
-                order(ref, self.agent, "ask", min(qty, quotes[st][comm]["bid_depth"] or qty), bid, comm, st, "sell")
+                order(ref, self.agent, "ask", min(qty, quotes[st][comm]["bid_depth"] or qty), bid, comm, st, "sell", v)
         self.rest = {c: r for c, r in self.rest.items() if r.get("live")}
         for r in self.rest.values():
             r["live"] = False
@@ -629,7 +672,7 @@ class Hauler:
             self._buy_upgrades(ref, stats)
         if resting:
             return  # stay docked: the NPC buyers fill at the next tick
-        inv = inventory(ref, self.agent)
+        inv = inventory(ref, self.agent, v)
         for comm in ("FRAG", "FOOD", "ORE"):
             if inv[comm] > 0:
                 dest = max((d for d in STATIONS if d != st), key=lambda d: quotes[d][comm]["best_bid"] or 0)
@@ -642,7 +685,9 @@ class Hauler:
 
         # 2. Pick the best margin from here: a contract it owns first, then
         #    toward a peer pickup if one waits, then anywhere.
-        waiting = sorted({p["station_id"] for p in pickups(ref, self.agent)} - {st})
+        # Peer pickups are ship 1's errand: any ship collects, one is enough.
+        waiting = (sorted({p["station_id"] for p in pickups(ref, self.agent)} - {st})
+                   if v == f"{self.agent}/1" else [])
         owned = [c["station_id"] for c in sorted(my_contracts(ref, self.agent), key=lambda c: -c["price"])
                  if c["station_id"] != st and self._contract_run(ref, st, c["instrument"], c["station_id"])]
         best = None
@@ -653,6 +698,8 @@ class Hauler:
             if not route:
                 continue
             for comm in ("FRAG", "FOOD", "ORE"):
+                if (st, comm) in self.claims:
+                    continue
                 ask = quotes[st][comm]["best_ask"]
                 bid = quotes[dest][comm]["best_bid"] or 0
                 cap = 500
@@ -669,7 +716,7 @@ class Hauler:
                 fuel = trip_fuel(ref, self.agent, route)
                 fuel_cost = fuel * (quotes[st]["FUEL"]["best_ask"] or 20)
                 fuel_buy = max(0, fuel - inv["FUEL"]) * (quotes[st]["FUEL"]["best_ask"] or 20)
-                qty = min(quotes[st][comm]["ask_depth"] or 0, cap, max(0, (inv["CR"] - 200 - fuel_buy) // ask))
+                qty = min(quotes[st][comm]["ask_depth"] or 0, cap, max(0, (inv["CR"] - self.cash_reserve - fuel_buy) // ask))
                 if qty <= 0:
                     continue
                 profit = (bid - ask) * qty - fuel_cost - route.get("toll", 0)
@@ -682,16 +729,17 @@ class Hauler:
                 self._fly(ref, st, waiting[0], "FRAG", inv, stats, empty=True)
             return
         _, dest, comm, qty, ask, route = best
+        self.claims.add((st, comm))
         if waiting:
             stats["pickup_trips"] = stats.get("pickup_trips", 0) + 1
 
         # 3. Buy; fly now, or wait for the auction if the buy tripped a halt.
-        res = order(ref, self.agent, "bid", qty, ask, comm, st, "buy")
+        res = order(ref, self.agent, "bid", qty, ask, comm, st, "buy", v)
         if res.get("status") == "circuit_breaker_halted":
             stats["halts_caused"] += 1
             self.plan = (dest, comm)
             return
-        self._fly(ref, st, dest, comm, inventory(ref, self.agent), stats)
+        self._fly(ref, st, dest, comm, inventory(ref, self.agent, v), stats)
 
     def _rest_ask(self, ref: AgoraReferee, quotes, st: str, comm: str, qty: int, stats) -> bool:
         """rest_asks (#180): offer the cargo at the best ask to the station's
@@ -719,7 +767,7 @@ class Hauler:
         ask = quotes[st][comm]["best_ask"]
         if not ask or not band_ok(ref, st, comm, ask):
             return False
-        if order(ref, self.agent, "ask", qty, ask, comm, st, "rest").get("kind") == "reject":
+        if order(ref, self.agent, "ask", qty, ask, comm, st, "rest", self.vessel).get("kind") == "reject":
             return False
         stats["rest_asks"] = stats.get("rest_asks", 0) + 1
         return True
@@ -731,7 +779,8 @@ class Hauler:
         return True
 
     def _buy_upgrades(self, ref: AgoraReferee, stats) -> None:
-        buy_upgrades(ref, self.agent, self.UPGRADE_CASH_MULT, stats)
+        if self.vessel == f"{self.agent}/1":  # upgrades are fleet-wide: ship 1 buys them
+            buy_upgrades(ref, self.agent, self.UPGRADE_CASH_MULT, stats)
 
     def _want_escort(self, ref: AgoraReferee, st: str, dest: str, comm: str, qty: int) -> bool:
         return want_escort(ref, self.agent, st, dest, comm, qty)
@@ -754,25 +803,25 @@ class Hauler:
             fa = ref.get_depot_summary()["stations"][st]["FUEL"]["best_ask"]
             if fa and inv["CR"] >= need * fa:
                 if band_ok(ref, st, "FUEL", fa):
-                    order(ref, self.agent, "bid", need, fa, "FUEL", st, "fuel")
+                    order(ref, self.agent, "bid", need, fa, "FUEL", st, "fuel", self.vessel)
                 elif self.tolerate_halts:
-                    res = order(ref, self.agent, "bid", need, fa, "FUEL", st, "fuel")
+                    res = order(ref, self.agent, "bid", need, fa, "FUEL", st, "fuel", self.vessel)
                     if res.get("status") == "circuit_breaker_halted":
                         stats["halts_caused"] += 1
                         self.plan = (dest, comm)
                         return
                 else:
                     stats["band_blocked"] += 1
-            if ref.get_balance(self.agent, "FUEL") < fuel:
+            if ref.get_balance(self.vessel, "FUEL") < fuel:
                 self.stranded = True
                 stats["stranded_events"] += 1
                 return
         self.stranded = False
-        held = 0 if empty else ref.get_balance(self.agent, comm)
+        held = 0 if empty else ref.get_balance(self.vessel, comm)
         if held > 0 or empty:
-            cancel_all(ref, self.agent)
+            cancel_all(ref, self.agent, self.vessel)
             escort = self._want_escort(ref, st, dest, comm, held)
-            move(ref, self.agent, dest, comm, held, stats, escort=escort)
+            move(ref, self.agent, dest, comm, held, stats, escort=escort, vessel=self.vessel)
 
 
 class Privateer(Hauler):
@@ -885,7 +934,7 @@ class Maker:
         if self.relocate and st != self.venue:
             cancel_all(ref, self.agent)
             route = get_route(st, self.venue, ref.current_round)
-            if route and ref.get_balance(self.agent, "FUEL") >= trip_fuel(ref, self.agent, route):
+            if route and ref.get_balance(f"{self.agent}/1", "FUEL") >= trip_fuel(ref, self.agent, route):
                 move(ref, self.agent, self.venue, "FRAG", 0, stats)
                 return
             self.venue = st  # cannot get there: make markets here
@@ -1038,7 +1087,7 @@ class Novice:
             return
         order(ref, self.agent, "bid", qty, px, comm, st, "buy")
         self.dest = dest
-        held = ref.get_balance(self.agent, comm)
+        held = ref.get_balance(f"{self.agent}/1", comm)
         if held > 0 and px >= (q["best_ask"] or 10 ** 9):
             self._fly(ref, st, dest, comm, inventory(ref, self.agent), quotes, stats)
         # else: the bid rests inside the spread; next round it flies whatever filled
@@ -1051,7 +1100,7 @@ class Novice:
             fa = quotes[st]["FUEL"]["best_ask"]
             if fa and inv["CR"] >= need * fa and band_ok(ref, st, "FUEL", fa):
                 order(ref, self.agent, "bid", need, fa, "FUEL", st, "fuel")
-        held = 0 if empty else ref.get_balance(self.agent, comm)
+        held = 0 if empty else ref.get_balance(f"{self.agent}/1", comm)
         cancel_all(ref, self.agent)
         t = move(ref, self.agent, dest, comm, held, stats, novice_rng=self.rng)
         if t.get("status") != "in_transit":
@@ -1418,7 +1467,124 @@ class MakerHauler(Hauler):
                 order(ref, self.agent, "ask", min(self.CLIP, held), ask, comm, st, "ma")
 
 
-def build_fleet(agent: str, kind: str, seed: int, mode: str):
+class ShipFleet:
+    """Several ships for a flying fleet (#175): ship 1 plays the fleet's own
+    strategy, every ship it buys is a plain Hauler with its own trip (POST
+    /referee/vessels/buy, then orders and MOVEs with that vessel_id); fleet
+    mates never take the same (station, good) buy leg in one round.
+
+    Buys the next hull only when it pays on paper: the fleet's earnings per
+    ship over the last WINDOW rounds (score, with the book loss on hulls
+    already bought added back), cut by HAIRCUT because a new ship shares the
+    same depots and NPC flow, less SHIP_UPKEEP, over the rounds left in the
+    game, must beat the part of the price net worth does not keep
+    (1 - BOOK_PCT). Keeps CASH_RESERVE CR of working capital after buying,
+    never buys in debt, and waits WINDOW rounds between purchases. WINDOW is
+    60, not 30: over 30 rounds the rule fired on hot streaks, and a fleet's
+    earnings fall back after one whether or not it bought (measured: -699 CR
+    a round over the next 60 rounds with no purchase, #175 PR).
+
+    While it owns bought ships its haulers keep UPKEEP_ROUNDS rounds of
+    upkeep in CR when they buy cargo. Scraps its newest bought ship (POST
+    /referee/vessels/scrap, at book value) when the fleet is in distress: in
+    corporate debt, or its own treasury shares were auctioned since last
+    round (a step pays the debt from that auction before the bot looks).
+    Without the exit a hull that did not pay drained a fleet into a takeover
+    (3 of 160 fleets out in the first sweep)."""
+
+    WINDOW = 60
+    HAIRCUT = 0.5
+    CASH_RESERVE = 8_000
+    MIN_ROUNDS_LEFT = 40
+    UPKEEP_ROUNDS = 10
+
+    def __init__(self, agent: str, first, make_extra, horizon: int = 300):
+        self.agent = agent
+        self.bots = {f"{agent}/1": first}
+        self.make_extra = make_extra
+        self.horizon = horizon
+        self.history: List[float] = []
+        self.book_loss = 0.0  # purchase prices not kept in net worth, added back to measure earnings
+        self.last_buy = -10 ** 9
+        self.bought_at: Dict[str, int] = {}
+        self.own_shares: Optional[int] = None
+        self.distress = False  # in debt, or shares auctioned, since the last hull was scrapped
+
+    def __getattr__(self, name):  # stock_cash, stranded, ... of the fleet's own bot
+        return getattr(self.__dict__["bots"][f"{self.__dict__['agent']}/1"], name)
+
+    def _buy(self, ref: AgoraReferee, stats) -> None:
+        n = len(ref.fleet.ships(self.agent))
+        price = fleet_mod.SHIP_PRICES.get(n + 1)
+        left = self.horizon - ref.current_round
+        if (not price or n + 1 > ref.fleet.ship_cap(self.agent) or left < self.MIN_ROUNDS_LEFT
+                or len(self.history) <= self.WINDOW or ref.current_round - self.last_buy < self.WINDOW
+                or debt(ref, self.agent) > 0):
+            return
+        rate = (self.history[-1] - self.history[-1 - self.WINDOW]) / self.WINDOW
+        gross = rate / max(1, n) + fleet_mod.SHIP_UPKEEP * (n - 1) / max(1, n)  # per ship, before today's upkeep
+        gain = left * (self.HAIRCUT * gross - fleet_mod.SHIP_UPKEEP) - price * (1 - fleet_mod.BOOK_PCT)
+        if gain <= 0 or available(ref, self.agent, "CR") < price + self.CASH_RESERVE:
+            return
+        docked = [l["vessel_id"] for l in ref.fleet_locations(self.agent) if l.get("status") == "docked"]
+        if not docked:
+            return
+        res = ref.fleet.buy(self.agent, docked[0])
+        if res.get("kind") == "ship_bought":
+            self.last_buy = ref.current_round
+            self.bought_at[res["payload"]["vessel_id"]] = ref.current_round
+            self.book_loss += price * (1 - fleet_mod.BOOK_PCT)
+            stats["ships_bought"] = stats.get("ships_bought", 0) + 1
+
+    def _cut(self, ref: AgoraReferee, stats) -> None:
+        # GET /referee/accounts: the fleet's own treasury shares only fall
+        # when a distress auction sells them (the bots trade rivals' stock).
+        sym = FLEET_EQUITIES.get(self.agent, {}).get("symbol") if ref.corporate_enabled else None
+        shares = ref.get_balance(self.agent, sym) if sym else None
+        if self.own_shares is not None and shares is not None and shares < self.own_shares:
+            self.distress = True  # held until a hull goes: the auction has usually cleared the debt
+        self.own_shares = shares
+        if debt(ref, self.agent) > 0:
+            self.distress = True
+        if not self.distress:
+            return
+        ships = [v for v in ref.fleet.ships(self.agent) if fleet_mod.ship_number(v["vessel_id"]) != 1]
+        if not ships:
+            self.distress = False
+            return
+        v = max(ships, key=lambda v: fleet_mod.ship_number(v["vessel_id"]) or 0)
+        vid = v["vessel_id"]
+        if v["status"] != "docked":
+            return  # again next round, once it docks
+        if ref.fleet.scrap(self.agent, vid).get("kind") == "ship_scrapped":
+            self.distress = False
+            self.last_buy = ref.current_round  # no rebuy for a WINDOW
+            stats["ships_scrapped"] = stats.get("ships_scrapped", 0) + 1
+            stats.setdefault("ship_rounds_held", []).append(ref.current_round - self.bought_at.pop(vid, ref.current_round))
+
+    def act(self, ref: AgoraReferee, quotes, stats) -> None:
+        self.history.append(score(ref, self.agent) + self.book_loss)
+        self._cut(ref, stats)
+        self._buy(ref, stats)
+        claims: set = set()  # buy legs taken this round, shared by the fleet's ships
+        reserve = 200 + ref.fleet.upkeep_due(self.agent) * self.UPKEEP_ROUNDS
+        for v in ref.fleet.ships(self.agent):
+            vid = v["vessel_id"]
+            bot = self.bots.get(vid)
+            if bot is None:
+                bot = self.bots[vid] = self.make_extra(vid)
+            bot.claims, bot.shared_claims = claims, True
+            bot.cash_reserve = reserve
+            bot.act(ref, quotes, stats)
+
+
+def build_fleet(agent: str, kind: str, seed: int, mode: str, horizon: int = 300):
+    tolerant = mode == "tolerant"
+    if kind in SHIP_BUYERS:
+        first = {"hauler": Hauler, "privateer": Privateer, "saboteur": Saboteur, "spy": Spy,
+                 "stock_hauler": StockHauler, "maker_hauler": MakerHauler}[kind](
+            agent, tolerate_halts=tolerant)
+        return ShipFleet(agent, first, lambda vid: Hauler(agent, tolerate_halts=tolerant, vessel=vid), horizon)
     if kind == "hauler":
         return Hauler(agent, tolerate_halts=(mode == "tolerant"))
     if kind == "privateer":
@@ -1452,7 +1618,8 @@ def apply_planet_genesis(ref: AgoraReferee) -> None:
         for agent in FLEETS:
             home = ref.get_vessel_location(agent)["station_id"]
             export = PLANET_EXPORT.get(home)
-            frag = ref.get_balance(agent, "FRAG")
+            ship = f"{agent}/1"  # the fleet's goods are aboard ship 1 (#175)
+            frag = ref.get_balance(ship, "FRAG")
             value = frag * REF_PRICE["FRAG"]
             moves = [("FRAG", -frag)]
             if export:
@@ -1462,7 +1629,7 @@ def apply_planet_genesis(ref: AgoraReferee) -> None:
             for inst, delta in moves:
                 if delta == 0:
                     continue
-                for acct, d in ((agent, delta), ("SYSTEM", -delta)):
+                for acct, d in ((agent if inst == "CR" else ship, delta), ("SYSTEM", -delta)):
                     ref.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, ?, 0)", (acct, inst))
                     ref.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?", (d, acct, inst))
                     ref.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, 0, ?, ?, ?)",
@@ -1490,7 +1657,8 @@ def classify_fills(ref: AgoraReferee) -> Dict[str, int]:
 
 
 def score(ref: AgoraReferee, agent: str) -> float:
-    inv = inventory(ref, agent)
+    # The whole fleet: every ship's hold and station hold (#175).
+    inv = {c: ref.get_balance(agent, c) for c in ["CR"] + TRADED}
     escrow = sum(r["cargo_qty"] * REF_PRICE.get(r["commodity"], 0) for r in ref.conn.execute(
         "SELECT commodity, cargo_qty FROM transits WHERE agent_id = ? AND status = 'in_transit'", (agent,)))
     held = ref.peer.holdings_adjustment().get(agent, {})
@@ -1498,6 +1666,8 @@ def score(ref: AgoraReferee, agent: str) -> float:
     escrow += ref.contract_desk.holdings_adjustment().get(agent, 0)
     if ref.upgrades_enabled and not ref.fleet_out(agent):
         escrow += ref.upgrades.book_value(agent)
+    if not ref.fleet_out(agent):
+        escrow += ref.fleet.book_value(agent)  # bought ships at half their price, as the board counts them
     return inv["CR"] + sum(inv[c] * REF_PRICE[c] for c in TRADED) + escrow
 
 
@@ -1705,7 +1875,8 @@ def _run(scenario, genesis, seed, rounds, mode, check_every, overrides, equity_m
     if theta is not None:
         ref.spatial.theta = theta
     kinds = scenario_kinds(scenario, seed)
-    fleets = {a: (fleet_overrides or {}).get(a, build_fleet)(a, kind, seed, mode) for a, kind in kinds.items()}
+    fleets = {a: ((fleet_overrides or {})[a](a, kind, seed, mode) if a in (fleet_overrides or {})
+                  else build_fleet(a, kind, seed, mode, horizon=rounds)) for a, kind in kinds.items()}
     start = {a: score(ref, a) for a in FLEETS}
     # Rival shares every fleet holds: part of what the leaderboard pays, and
     # all of a stock trader's book. Valued at NAV, not the board mark: the mark falls back
@@ -1825,6 +1996,7 @@ def _run(scenario, genesis, seed, rounds, mode, check_every, overrides, equity_m
                        "pnl_active": (round(end[a] - start[a] + stocks_mark_end[a] - stocks_mark_start[a])
                                       - round(passive[a])),
                        "leaderboard_nw": board.get(a),
+                       "ships": len(ref.fleet.ships(a)),
                        "out": ref.fleet_out(a) is not None} for a in FLEETS},
         "order_flow": ({"totals": dict(ref.order_flow.totals), "by_fleet": dict(ref.order_flow.by_fleet)}
                        if getattr(ref, "order_flow", None) is not None and ref.order_flow.enabled else None),
@@ -1840,6 +2012,12 @@ def _run(scenario, genesis, seed, rounds, mode, check_every, overrides, equity_m
         "demands_ignored": stats.get("demands_ignored", 0),
         "vol": ref.spatial.vol, "theta": ref.spatial.theta,
         "rejected_moves": stats.get("rejected_moves", 0),
+        "ships_bought": stats.get("ships_bought", 0),
+        "ships_scrapped": stats.get("ships_scrapped", 0),
+
+        "ship_rounds_held": stats.get("ship_rounds_held", []) + [
+            ref.current_round - r0 for f in fleets.values() for r0 in getattr(f, "__dict__", {}).get("bought_at", {}).values()],
+        "ship_upkeep_cr": _q(ref, "SELECT SUM(delta) FROM ledger_entries WHERE txn_id LIKE 'ship-upkeep-%' AND agent_id = 'SYSTEM'"),
         "ore_spread_by_quarter": [round(statistics.mean(spread[i:i + q]), 1) for i in range(0, len(spread), q)][:4],
         "first_negative_depot_round": first_negative_depot,
         "first_invariant_failure": first_invariant_failure,
@@ -1909,17 +2087,22 @@ def style_rows(results: List[dict], key: str = "pnl_total") -> Dict[str, dict]:
             by.setdefault(f["strategy"], []).append(f)
     return {k: {"n": len(fs), "median": _pct([f[key] for f in fs], 50), "p10": _pct([f[key] for f in fs], 10),
                 "p90": _pct([f[key] for f in fs], 90), "mean": statistics.mean(f[key] for f in fs),
-                "out": sum(f["out"] for f in fs)} for k, fs in by.items()}
+                "out": sum(f["out"] for f in fs),
+                "ships": statistics.mean(f.get("ships", 1) for f in fs),
+                "ships_hist": dict(sorted(collections.Counter(f.get("ships", 1) for f in fs).items()))}
+            for k, fs in by.items()}
 
 
 def style_table(results: List[dict], key: str = "pnl_total") -> str:
     """Markdown per-style table (#162): median, p10, p90 final P&L."""
     rows = style_rows(results, key)
-    lines = [f"| style | fleets | median | p10 | p90 | mean | out |", "|---|---|---|---|---|---|---|"]
+    lines = [f"| style | fleets | median | p10 | p90 | mean | out | ships (mean; count: fleets) |",
+             "|---|---|---|---|---|---|---|---|"]
     for k in sorted(rows, key=lambda k: -rows[k]["median"]):
         v = rows[k]
+        hist = ", ".join(f"{n}: {c}" for n, c in v["ships_hist"].items())
         lines.append(f"| {k} | {v['n']} | {v['median']:+,.0f} | {v['p10']:+,.0f} | {v['p90']:+,.0f} "
-                     f"| {v['mean']:+,.0f} | {v['out']} |")
+                     f"| {v['mean']:+,.0f} | {v['out']} | {v['ships']:.2f} ({hist}) |")
     return "\n".join(lines)
 
 

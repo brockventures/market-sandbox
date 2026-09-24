@@ -24,8 +24,10 @@ from agora.events import EventDesk, env_events
 from agora.covert import CovertDesk
 from agora.fog import FogEngine, env_fog, parse_fog
 from agora.order_flow import OrderFlowDesk, env_order_flow
+from agora.fleet import FleetDesk, GOODS, corp_of, is_ship_account, VESSEL_LOCATIONS_VIEW
 
 STOCK_EXCHANGE_STATION = 'ceres'  # the one book every fleet stock trades on
+
 from agora.spatial import (
     StationPriceEngine, STATIONS, COMMODITIES, BASE_PRICES, get_route, ROUTES,
     get_alignment_windows, PERISHABLE_COMMODITIES
@@ -168,6 +170,9 @@ class AgoraReferee:
             for st in STATIONS
         }
         self.book = self.books['ceres'][self.default_instrument if self.default_instrument in self.books['ceres'] else 'FRAG']
+        # Ships (agora/fleet.py, #175). Before _init_db: rehydrating resting
+        # orders needs it to know which agents' goods live on ships.
+        self.fleet = FleetDesk(self)
         self._init_db()
         self.peer = PeerDesk(self)
         self.contract_desk = ContractDesk(self)
@@ -185,6 +190,7 @@ class AgoraReferee:
         self.equity = SyndicateEquityEngine(self.conn, self)
         self.salvage = DerelictSalvageEngine(self.conn, self)
         self.circuit_breaker = CircuitBreakerEngine(self.conn, self, band_pct=self.band_pct)
+        self._migrate_rng_bags()
         if self.depots_enabled:
             self.seed_depots()
         if asymmetric:
@@ -206,15 +212,22 @@ class AgoraReferee:
                     "UPDATE fleet_roster SET home_station = ? WHERE agent_id = ?",
                     (home_station, agent_id)
                 )
+            # Ship 1 of each fleet starts at its home. This runs on every
+            # boot of an asymmetric server, so it only places ships that have
+            # never moved: it used to reset every fleet's position to home,
+            # teleporting a ship mid-trip on each restart (found by the
+            # #175 vessel invariant on a database carried across the upgrade).
             self.conn.execute("""
-                INSERT OR REPLACE INTO vessel_locations (agent_id, station_id, docked_since, updated_at)
-                SELECT agent_id, home_station, 0, strftime('%Y-%m-%dT%H:%M:%fZ','now') FROM fleet_roster
-            """)
-            self.conn.execute("""
-                INSERT OR REPLACE INTO vessels (vessel_id, agent_id, name, station_id, docked_since, status)
+                INSERT OR IGNORE INTO vessels (vessel_id, agent_id, name, station_id, docked_since, status)
                 SELECT agent_id || '/1', agent_id, agent_id || ' Ship 1', home_station, 0, 'docked'
                 FROM fleet_roster
                 WHERE agent_id NOT LIKE 'depot_%' AND agent_id != 'SYSTEM'
+            """)
+            self.conn.execute("""
+                UPDATE vessels SET station_id = (SELECT home_station FROM fleet_roster f WHERE f.agent_id = vessels.agent_id)
+                WHERE vessel_id = agent_id || '/1' AND status = 'docked' AND docked_since = 0
+                  AND agent_id IN (SELECT agent_id FROM fleet_roster)
+                  AND NOT EXISTS (SELECT 1 FROM transits t WHERE t.vessel_id = vessels.vessel_id)
             """)
 
     def get_last_price(self, station_id: str, instrument: str) -> Optional[int]:
@@ -293,6 +306,8 @@ class AgoraReferee:
                         self.conn.execute("ALTER TABLE orders ADD COLUMN filled_qty INTEGER NOT NULL DEFAULT 0")
                     if 'station_id' not in cols:
                         self.conn.execute("ALTER TABLE orders ADD COLUMN station_id TEXT NOT NULL DEFAULT 'ceres'")
+                    if 'vessel_id' not in cols:
+                        self.conn.execute("ALTER TABLE orders ADD COLUMN vessel_id TEXT")
 
                 # Migration: ensure spatial tables exist if database pre-dated Phase 2
                 if 'station_prices' not in tables:
@@ -339,15 +354,10 @@ class AgoraReferee:
                             created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
                         )
                     """)
-                if 'vessel_locations' not in tables:
-                    self.conn.execute("""
-                        CREATE TABLE IF NOT EXISTS vessel_locations (
-                            agent_id        TEXT PRIMARY KEY,
-                            station_id      TEXT NOT NULL,
-                            docked_since    INTEGER NOT NULL DEFAULT 0,
-                            updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-                        )
-                    """)
+                # vessel_locations was a table until #175 PR 2; it is now a
+                # view of ship 1's `vessels` row. A pre-PR-2 database copies
+                # anything only the old table knew into `vessels` first.
+                self._migrate_vessel_locations_view(tables)
 
                 # Migration: book_events.kind CHECK constraint pre-dated 'cancel', 'news', 'transit', 'borrow', 'distress', 'rescue', 'salvage', 'burst' support
                 if 'book_events' in tables:
@@ -367,12 +377,6 @@ class AgoraReferee:
                             DROP TABLE book_events;
                             ALTER TABLE book_events_new RENAME TO book_events;
                         """)
-
-                # Ensure default vessel locations exist for baseline fleet
-                self.conn.execute("""
-                    INSERT OR IGNORE INTO vessel_locations (agent_id, station_id, docked_since)
-                    SELECT agent_id, home_station, 0 FROM fleet_roster
-                """)
 
                 # Ensure default vessels exist for baseline fleet
                 self.conn.execute("""
@@ -436,6 +440,10 @@ class AgoraReferee:
                     self.conn.execute("ALTER TABLE transits ADD COLUMN vessel_id TEXT")
                     self.conn.execute("UPDATE transits SET vessel_id = agent_id || '/1' WHERE vessel_id IS NULL")
 
+            # #175 PR 2: a corp's goods and FUEL live on its ships' accounts.
+            # Moves whatever a pre-PR-2 database still holds on '<corp>'.
+            self._migrate_goods_to_ships()
+
             if 'orders' in tables or 'accounts' not in tables:
                 if not self.default_instrument:
                     row = self.conn.execute(
@@ -446,6 +454,76 @@ class AgoraReferee:
                         self.default_instrument = row[0]
                         self.book = self.books['ceres'][row[0]]
                 self._rehydrate_book()
+
+    def _migrate_vessel_locations_view(self, tables: List[str]) -> None:
+        """Turn a pre-#175-PR-2 vessel_locations table into the view in
+        db/schema.sql. Caller is inside the _init_db transaction."""
+        kind = self.conn.execute("SELECT type FROM sqlite_master WHERE name = 'vessel_locations'").fetchone()
+        if kind and kind[0] == 'view':
+            return
+        if kind and kind[0] == 'table':
+            # Ship 1 of every fleet the old table knew, where the old table
+            # says it is (it was written alongside `vessels` since PR 1, so
+            # this only matters for rows PR 1 never saw). Depot rows are not
+            # ships and are dropped.
+            self.conn.execute("""
+                INSERT OR IGNORE INTO vessels (vessel_id, agent_id, name, station_id, docked_since, status)
+                SELECT agent_id || '/1', agent_id, agent_id || ' Ship 1', station_id, docked_since,
+                       CASE WHEN station_id = 'in_transit' THEN 'in_transit' ELSE 'docked' END
+                FROM vessel_locations WHERE agent_id NOT LIKE 'depot_%' AND agent_id != 'SYSTEM'
+            """)
+            self.conn.execute("DROP TABLE vessel_locations")
+        for stmt in VESSEL_LOCATIONS_VIEW:
+            self.conn.execute(stmt)
+
+    def _migrate_goods_to_ships(self) -> None:
+        """Move goods and FUEL a roster corp holds on its own account onto
+        its ship 1 ('<corp>/1'), one balanced transaction per corp. Idempotent:
+        a corp with nothing left on '<corp>' is skipped. Caller is inside the
+        _init_db transaction."""
+        corps = [r[0] for r in self.conn.execute("SELECT agent_id FROM fleet_roster")]
+        marks = ','.join('?' for _ in GOODS)
+        seq = self.conn.execute("SELECT COALESCE(MAX(seq), 0) FROM book_events").fetchone()[0]
+        for corp in corps:
+            rows = self.conn.execute(
+                f"SELECT instrument, balance FROM accounts WHERE agent_id = ? AND instrument IN ({marks}) AND balance != 0",
+                (corp, *sorted(GOODS))).fetchall()
+            if not rows:
+                continue
+            ship = f"{corp}/1"
+            self.conn.execute(
+                "INSERT OR IGNORE INTO vessels (vessel_id, agent_id, name, station_id, docked_since, status) "
+                "SELECT ?, agent_id, agent_id || ' Ship 1', home_station, 0, 'docked' FROM fleet_roster WHERE agent_id = ?",
+                (ship, corp))
+            txn = f"ship-migrate-{corp}-{seq}"
+            for r in rows:
+                for acct, d in ((corp, -r['balance']), (ship, r['balance'])):
+                    self.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, ?, 0)",
+                                      (acct, r['instrument']))
+                    self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?",
+                                      (d, acct, r['instrument']))
+                    self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)",
+                                      (txn, seq, acct, r['instrument'], d))
+
+    def _migrate_rng_bags(self) -> None:
+        """#175: a trip's luck is its ship's. Bags a pre-ships database keyed
+        by corp move to that corp's ship 1 (hazard delay/loss, fight escape).
+        Raid luck used to be one credit per corp; raids now draw from bags per
+        ship, protection level and trip conditions (PiracyDesk.raid_key), so
+        the old credits are dropped, as are sabotage-trace bags keyed by the
+        saboteur alone (now per saboteur and target ship). Idempotent."""
+        with self.lock, self.conn:
+            if not self.conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'rng_bags'").fetchone():
+                return
+            roster = "(SELECT agent_id FROM fleet_roster)"
+            for ns, events in (('hazards', ('delay', 'loss')), ('piracy', ('escape',))):
+                marks = ','.join('?' for _ in events)
+                self.conn.execute(f"UPDATE OR IGNORE rng_bags SET fleet = fleet || '/1' "
+                                  f"WHERE ns = ? AND event IN ({marks}) AND fleet IN {roster}", (ns, *events))
+                self.conn.execute(f"DELETE FROM rng_bags WHERE ns = ? AND event IN ({marks}) AND fleet IN {roster}",
+                                  (ns, *events))
+            self.conn.execute("DELETE FROM rng_bags WHERE ns = 'piracy' AND event = 'raid' AND fleet NOT LIKE '%|%'")
+            self.conn.execute(f"DELETE FROM rng_bags WHERE ns = 'covert' AND event = 'sabotage_trace' AND fleet IN {roster}")
 
     def _seed_genesis_from_roster(self) -> None:
         """
@@ -477,19 +555,18 @@ class AgoraReferee:
                 (txn_ids[instrument], instrument, -total)
             )
         for r in roster:
-            for instrument, amount in (('CR', r['genesis_cr']), ('FRAG', r['genesis_frag']), ('FUEL', r['genesis_fuel'])):
+            # CR on the corp; its goods and FUEL aboard its first ship (#175).
+            ship = f"{r['agent_id']}/1"
+            for acct, instrument, amount in ((r['agent_id'], 'CR', r['genesis_cr']), (ship, 'FRAG', r['genesis_frag']),
+                                             (ship, 'FUEL', r['genesis_fuel'])):
                 self.conn.execute(
                     "INSERT INTO accounts (agent_id, instrument, balance) VALUES (?, ?, ?)",
-                    (r['agent_id'], instrument, amount)
+                    (acct, instrument, amount)
                 )
                 self.conn.execute(
                     "INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, 0, ?, ?, ?)",
-                    (txn_ids[instrument], r['agent_id'], instrument, amount)
+                    (txn_ids[instrument], acct, instrument, amount)
                 )
-            self.conn.execute(
-                "INSERT OR REPLACE INTO vessel_locations (agent_id, station_id, docked_since) VALUES (?, ?, 0)",
-                (r['agent_id'], r['home_station'])
-            )
             self.conn.execute(
                 "INSERT OR REPLACE INTO vessels (vessel_id, agent_id, name, station_id, docked_since, status) VALUES (?, ?, ?, ?, 0, 'docked')",
                 (f"{r['agent_id']}/1", r['agent_id'], f"{r['agent_id']} Ship 1", r['home_station'])
@@ -536,7 +613,7 @@ class AgoraReferee:
         with self.lock, self.conn:
             for table in (
                 'accounts', 'ledger_entries', 'book_events', 'station_prices',
-                'transits', 'vessel_locations', 'vessels', 'equity_loans', 'distress_beacons',
+                'transits', 'vessels', 'equity_loans', 'distress_beacons',
                 'rescue_rfqs', 'rescue_quotes', 'salvage_claims',
                 'circuit_breaker_halts', 'orders', 'station_escrow', 'station_contracts', 'transit_hazards', 'corp_status', 'corp_events', 'fleet_upgrades',
                 'piracy_raids', 'piracy_privateers', 'rng_bags', *STANDING_TABLES,
@@ -775,10 +852,11 @@ class AgoraReferee:
         cur = self.conn.cursor()
         cols = [r[1] for r in self.conn.execute("PRAGMA table_info(orders)").fetchall()]
         has_station_col = 'station_id' in cols
+        has_vessel_col = 'vessel_id' in cols
 
         query = f"""
             SELECT order_id, agent_id, instrument, side, qty, limit_price, seq_seen, filled_qty
-                   {', station_id' if has_station_col else ''}
+                   {', station_id' if has_station_col else ''}{', vessel_id' if has_vessel_col else ''}
             FROM orders
             WHERE status = 'open' AND (qty - filled_qty) > 0
             ORDER BY submitted_at ASC
@@ -795,6 +873,9 @@ class AgoraReferee:
                 seq_seen=r['seq_seen'],
                 filled_qty=r['filled_qty']
             )
+            if r['instrument'] in GOODS and self.fleet.is_corp(r['agent_id']):
+                order.vessel_id = (r['vessel_id'] if has_vessel_col else None) or f"{r['agent_id']}/1"
+                order.acct = order.vessel_id
             st = r['station_id'] if has_station_col and r['station_id'] in self.books else 'ceres'
             inst = order.instrument
             if inst not in self.books[st]:
@@ -835,8 +916,8 @@ class AgoraReferee:
         for agent in fleets:
             if agent in self._active_this_round:
                 continue
-            if self.get_vessel_location(agent).get('status') != 'docked':
-                continue
+            if any(l.get('status') != 'docked' for l in self.fleet_locations(agent)):
+                continue  # a ship in flight: the fleet is working
             fee = min(self.idle_fee, max(0, self.get_balance(agent, 'CR')))
             if fee <= 0:
                 continue
@@ -909,6 +990,25 @@ class AgoraReferee:
             return next_seq
 
     def get_balance(self, agent_id: str, instrument: str) -> int:
+        """One account's balance. For a roster corp and a good (#175), the
+        corp total: every ship's hold plus its station holds. Code that
+        debits goods reads the one account it debits instead
+        (available_account, or get_balance on the vessel_id)."""
+        with self.lock:
+            if instrument in GOODS and '/' not in (agent_id or '') and self.fleet.is_corp(agent_id):
+                return self.corp_goods(agent_id, instrument)
+            return self._account_balance(agent_id, instrument)
+
+    def corp_goods(self, corp: str, instrument: str) -> int:
+        """A corp's total of one good across its ships and station holds."""
+        with self.lock:
+            return sum(self._account_balance(a, instrument) for a in [corp] + self.fleet.accounts_of(corp))
+
+    def _account_balance(self, agent_id: str, instrument: str) -> int:
+        with self.lock:
+            return self._account_balance_locked(agent_id, instrument)
+
+    def _account_balance_locked(self, agent_id: str, instrument: str) -> int:
         cur = self.conn.cursor()
         # Support CR, CREDITS, and CASH as currency instrument; FRAG and BANANA as commodity
         cur.execute(
@@ -935,6 +1035,39 @@ class AgoraReferee:
             )
             row = cur.fetchone()
         return row[0] if row else 0
+
+    def committed(self, agent_id: str, instrument: str, acct: Optional[str] = None) -> int:
+        """What resting orders already commit: CR for every bid of the
+        corp (any ship), goods for the asks settling on `acct`."""
+        with self.lock:
+            return self._committed_locked(agent_id, instrument, acct)
+
+    def _committed_locked(self, agent_id: str, instrument: str, acct: Optional[str] = None) -> int:
+        n = 0
+        for books in self.books.values():
+            for comm, book in books.items():
+                if instrument == 'CR':
+                    n += sum(o.remaining_qty * o.limit_price for o in book.bids if o.agent_id == agent_id)
+                elif comm == instrument:
+                    n += sum(o.remaining_qty for o in book.asks
+                             if (o.acct or o.agent_id) == (acct or agent_id))
+        return n
+
+    def available_account(self, acct: str, instrument: str) -> int:
+        """One goods account's balance less the asks that settle on it."""
+        with self.lock:
+            return self._account_balance(acct, instrument) - self.committed(corp_of(acct), instrument, acct)
+
+    def available(self, agent_id: str, instrument: str, vessel_id: Optional[str] = None) -> int:
+        """Balance less what resting orders commit. CR is the corp's; goods
+        are one ship's (ship 1 unless vessel_id says otherwise)."""
+        with self.lock:
+            if instrument in GOODS:
+                acct, err = self.fleet.goods_account(agent_id, vessel_id)
+                if err:
+                    return 0
+                return self.available_account(acct, instrument)
+            return self._account_balance(agent_id, instrument) - self.committed(agent_id, instrument)
 
     def get_currency_instrument(self, agent_id: str = 'amos') -> str:
         cur = self.conn.cursor()
@@ -968,21 +1101,29 @@ class AgoraReferee:
                 return self.books['ceres'][inst].to_dict()
         return self.book.to_dict()
 
-    def get_vessel_location(self, agent_id: str) -> Dict[str, Any]:
-        # Takes the lock itself: it is called from GET handlers, fog and the
-        # briefing, and for a never-seen agent_id it INSERTs (#197).
+    def get_vessel_location(self, agent_id: str, vessel_id: Optional[str] = None) -> Dict[str, Any]:
+        """Where one of a fleet's ships is: ship 1 unless vessel_id names
+        another (#175). Takes the lock itself: it is called from GET
+        handlers, fog and the briefing, and for a never-seen agent_id it
+        INSERTs (#197)."""
         with self.lock:
-            return self._get_vessel_location_locked(agent_id)
+            return self._get_vessel_location_locked(agent_id, vessel_id)
 
-    def _get_vessel_location_locked(self, agent_id: str) -> Dict[str, Any]:
+    def vessel_location(self, vessel_id: str) -> Dict[str, Any]:
+        """Location of a ship by its vessel_id ('<corp>/<n>')."""
+        with self.lock:
+            return self._get_vessel_location_locked(corp_of(vessel_id), vessel_id)
+
+    def _get_vessel_location_locked(self, agent_id: str, vessel_id: Optional[str] = None) -> Dict[str, Any]:
+        vid = vessel_id or f"{agent_id}/1"
         cur = self.conn.cursor()
         cur.execute("""
             SELECT transit_id, origin, destination, departure_round, arrival_round, commodity, cargo_qty, fuel_burned,
                    perishable, decay_rate, decayed_qty
             FROM transits
-            WHERE agent_id = ? AND status = 'in_transit'
+            WHERE vessel_id = ? AND status = 'in_transit'
             ORDER BY departure_round DESC LIMIT 1
-        """, (agent_id,))
+        """, (vid,))
         tx = cur.fetchone()
         if tx:
             # decayed_qty is only written on arrival (see step_round); while still
@@ -999,6 +1140,7 @@ class AgoraReferee:
             )
             return {
                 'agent_id': agent_id,
+                'vessel_id': vid,
                 'station_id': 'in_transit',
                 'status': 'in_transit',
                 'docked_since': None,
@@ -1018,22 +1160,28 @@ class AgoraReferee:
                 }
             }
 
-        cur.execute("SELECT station_id, docked_since FROM vessel_locations WHERE agent_id = ?", (agent_id,))
+        cur.execute("SELECT station_id, docked_since FROM vessels WHERE vessel_id = ?", (vid,))
         row = cur.fetchone()
         if not row:
+            if agent_id.startswith('depot_') and agent_id[len('depot_'):] in STATIONS:
+                return {'agent_id': agent_id, 'vessel_id': None, 'station_id': agent_id[len('depot_'):],
+                        'status': 'docked', 'docked_since': 0, 'transit': None}
+            # A roster fleet's ship 1 is seeded at genesis; if it is gone the
+            # fleet was taken over (#164) and has no ships. Never recreate it.
+            if (vid != f"{agent_id}/1" or '/' in agent_id or agent_id == 'SYSTEM'
+                    or self.fleet.is_corp(agent_id)):
+                return {'agent_id': agent_id, 'vessel_id': vid, 'station_id': None, 'status': 'no_ship',
+                        'docked_since': None, 'transit': None}
             roster_row = cur.execute("SELECT home_station FROM fleet_roster WHERE agent_id = ?", (agent_id,)).fetchone()
             home = roster_row['home_station'] if roster_row else 'ceres'
             with self.conn:
                 self.conn.execute(
-                    "INSERT OR IGNORE INTO vessel_locations (agent_id, station_id, docked_since) VALUES (?, ?, 0)",
-                    (agent_id, home)
-                )
-                self.conn.execute(
                     "INSERT OR IGNORE INTO vessels (vessel_id, agent_id, name, station_id, docked_since, status) VALUES (?, ?, ?, ?, 0, 'docked')",
-                    (f"{agent_id}/1", agent_id, f"{agent_id} Ship 1", home)
+                    (vid, agent_id, f"{agent_id} Ship 1", home)
                 )
             return {
                 'agent_id': agent_id,
+                'vessel_id': vid,
                 'station_id': home,
                 'status': 'docked',
                 'docked_since': 0,
@@ -1041,6 +1189,7 @@ class AgoraReferee:
             }
         return {
             'agent_id': agent_id,
+            'vessel_id': vid,
             'station_id': row['station_id'],
             'status': 'docked',
             'docked_since': row['docked_since'],
@@ -1048,18 +1197,35 @@ class AgoraReferee:
         }
 
     def get_all_vessel_locations(self) -> List[Dict[str, Any]]:
-        cur = self.conn.cursor()
-        cur.execute("""
-            SELECT DISTINCT agent_id FROM vessel_locations WHERE agent_id NOT LIKE 'depot_%'
-            UNION
-            SELECT DISTINCT agent_id FROM accounts WHERE agent_id != 'SYSTEM' AND agent_id NOT LIKE 'depot_%'
-            ORDER BY agent_id ASC
-        """)
-        agents = [r[0] for r in cur.fetchall()]
-        return [self.get_vessel_location(a) for a in agents]
+        """Ship 1 of every fleet (the pre-#175 one-row-per-fleet shape);
+        GET /referee/vessels lists every ship."""
+        with self.lock:
+            cur = self.conn.cursor()
+            cur.execute("""
+                SELECT DISTINCT agent_id FROM vessels WHERE agent_id NOT LIKE 'depot_%'
+                UNION
+                SELECT DISTINCT agent_id FROM accounts WHERE agent_id != 'SYSTEM' AND agent_id NOT LIKE 'depot_%'
+                    AND agent_id NOT LIKE '%/%'
+                ORDER BY agent_id ASC
+            """)
+            agents = [r[0] for r in cur.fetchall()]
+            return [self._get_vessel_location_locked(a) for a in agents]
+
+    def fleet_locations(self, agent_id: str) -> List[Dict[str, Any]]:
+        """Every active ship of a fleet, with its location."""
+        with self.lock:
+            return [self._get_vessel_location_locked(agent_id, v['vessel_id']) for v in self.fleet.ships(agent_id)]
+
+    def docked_stations(self, agent_id: str) -> List[str]:
+        """Stations where at least one of the fleet's ships is docked."""
+        return sorted({l['station_id'] for l in self.fleet_locations(agent_id) if l.get('status') == 'docked'})
 
     def get_vessels(self, agent_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Return list of registered fleet vessels, optionally filtered by agent_id."""
+        with self.lock:
+            return self._get_vessels_locked(agent_id)
+
+    def _get_vessels_locked(self, agent_id: Optional[str] = None) -> List[Dict[str, Any]]:
         cur = self.conn.cursor()
         if agent_id:
             cur.execute("""
@@ -1112,8 +1278,7 @@ class AgoraReferee:
             """, (agent_id, display_name, home_station, genesis_cr, genesis_frag, genesis_fuel))
 
     def _dock_vessel_locked(self, agent_id: str, station_id: str, vessel_id: Optional[str] = None) -> None:
-        """Dock a fleet's vessel at `station_id` in both vessel_locations and
-        vessels, as of the current round. For a path that ends a transit
+        """Dock one of a fleet's ships at `station_id`, as of the current round. For a path that ends a transit
         without it arriving (a salvage claim, a corp going out): without this
         the fleet stays 'in_transit' with no in_transit transit, reads as
         docked at a station called "in_transit", and every later MOVE is
@@ -1123,25 +1288,25 @@ class AgoraReferee:
         executes, it never commits (a nested commit is the #197 bug class)."""
         vessel_id = vessel_id or f"{agent_id}/1"
         rnd = self.current_round
-        self.conn.execute("""
-            INSERT INTO vessel_locations (agent_id, station_id, docked_since, updated_at)
-            VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-            ON CONFLICT(agent_id) DO UPDATE SET
-                station_id = ?,
-                docked_since = ?,
-                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-        """, (agent_id, station_id, rnd, station_id, rnd))
+        # A ship marked for scrapping stays marked until it is scrapped.
         self.conn.execute("""
             INSERT INTO vessels (vessel_id, agent_id, name, station_id, docked_since, status)
             VALUES (?, ?, ?, ?, ?, 'docked')
             ON CONFLICT(vessel_id) DO UPDATE SET
                 station_id = ?,
                 docked_since = ?,
-                status = 'docked'
-        """, (vessel_id, agent_id, f"{agent_id} Ship 1", station_id, rnd, station_id, rnd))
+                status = CASE WHEN status = 'scrap_pending' THEN status ELSE 'docked' END
+        """, (vessel_id, agent_id, f"{agent_id} Ship {vessel_id.rsplit('/', 1)[-1]}", station_id, rnd, station_id, rnd))
+        row = self.conn.execute("SELECT status FROM vessels WHERE vessel_id = ?", (vessel_id,)).fetchone()
+        if row and row['status'] == 'scrap_pending':
+            self.fleet.scrap_locked(vessel_id, "absorbed over the owner's ship cap; scrapped on landing")
 
     def initiate_transit(self, agent_id: str, destination: str, commodity: str = 'FRAG', cargo_qty: int = 0, perishable: Optional[bool] = None,
-                         escort: bool = False) -> Dict[str, Any]:
+                         escort: bool = False, vessel_id: Optional[str] = None) -> Dict[str, Any]:
+        """Fly one ship (ship 1 unless vessel_id names another, #175). Each
+        ship makes one trip at a time; the others are unaffected. FUEL and
+        cargo come out of that ship's hold, the toll and escort out of the
+        corp's CR."""
         self.mark_active(agent_id)
         out = self.fleet_out(agent_id)
         if out:
@@ -1155,12 +1320,19 @@ class AgoraReferee:
                     'payload': {'reason': 'invalid_station', 'detail': f"Unknown destination station '{destination}'. Valid stations: {STATIONS}"}
                 }
 
-            loc = self.get_vessel_location(agent_id)
+            vid, err = self.fleet.resolve(agent_id, vessel_id)
+            if err:
+                return dict(err, reply='optional', floor=self.floor)
+            acct = vid if self.fleet.is_corp(agent_id) else agent_id
+            loc = self._get_vessel_location_locked(agent_id, vid)
             if loc['status'] == 'in_transit':
                 return {
                     'v': 1, 'kind': 'reject', 'reply': 'optional', 'floor': self.floor,
-                    'payload': {'reason': 'already_in_transit', 'detail': f"Agent '{agent_id}' is already in transit to '{loc['transit']['destination']}'"}
+                    'payload': {'reason': 'already_in_transit', 'detail': f"Ship '{vid}' is already in transit to '{loc['transit']['destination']}'"}
                 }
+            if loc['status'] != 'docked':
+                return {'v': 1, 'kind': 'reject', 'reply': 'optional', 'floor': self.floor,
+                        'payload': {'reason': 'invalid_vessel', 'detail': f"Ship '{vid}' is not docked anywhere"}}
 
             origin = loc['station_id']
             if origin == dest:
@@ -1178,13 +1350,8 @@ class AgoraReferee:
 
             # Engines tier 2 cuts the burn by 40% (agora/upgrades.py, #189).
             required_fuel = self.upgrades.engine_fuel(agent_id, route['fuel'])
-            fuel_bal = self.get_balance(agent_id, 'FUEL')
-            committed_fuel = sum(
-                o.remaining_qty
-                for st_books in self.books.values()
-                for o in st_books.get('FUEL', OrderBook('FUEL')).asks
-                if o.agent_id == agent_id
-            )
+            fuel_bal = self._account_balance(acct, 'FUEL')
+            committed_fuel = self.committed(agent_id, 'FUEL', acct)
             avail_fuel = fuel_bal - committed_fuel
             if avail_fuel < required_fuel:
                 return {
@@ -1199,13 +1366,7 @@ class AgoraReferee:
             toll_required = route.get('toll', 0)
             if toll_required > 0:
                 cr_bal = self.get_balance(agent_id, 'CR')
-                committed_cr = sum(
-                    o.remaining_qty * o.limit_price
-                    for st_books in self.books.values()
-                    for b in st_books.values()
-                    for o in b.bids
-                    if o.agent_id == agent_id
-                )
+                committed_cr = self.committed(agent_id, 'CR')
                 avail_cr = cr_bal - committed_cr
                 if avail_cr < toll_required:
                     return {
@@ -1225,13 +1386,8 @@ class AgoraReferee:
                 }
 
             if cargo_qty > 0:
-                comm_bal = self.get_balance(agent_id, comm)
-                committed_comm = sum(
-                    o.remaining_qty
-                    for st_books in self.books.values()
-                    for o in st_books.get(comm, OrderBook(comm)).asks
-                    if o.agent_id == agent_id
-                )
+                comm_bal = self._account_balance(acct, comm)
+                committed_comm = self.committed(agent_id, comm, acct)
                 avail_comm = comm_bal - committed_comm
                 if avail_comm < cargo_qty:
                     return {
@@ -1252,13 +1408,7 @@ class AgoraReferee:
             escort_fee = self.piracy.escort_fee(comm, cargo_qty) if escort else 0
             if escort_fee > 0:
                 cr_bal = self.get_balance(agent_id, 'CR')
-                committed_cr = sum(
-                    o.remaining_qty * o.limit_price
-                    for st_books in self.books.values()
-                    for b in st_books.values()
-                    for o in b.bids
-                    if o.agent_id == agent_id
-                )
+                committed_cr = self.committed(agent_id, 'CR')
                 avail_cr = cr_bal - committed_cr
                 if avail_cr < toll_required + escort_fee:
                     return {
@@ -1266,11 +1416,15 @@ class AgoraReferee:
                         'payload': {'reason': 'insufficient_credits_for_escort', 'detail': f"An escort for {cargo_qty} {comm} costs {escort_fee} CR ({int(PIRACY_ESCORT_PCT * 100)}% of the cargo's value){f' plus the {toll_required} CR toll' if toll_required else ''}; available {avail_cr} CR. Move without an escort, or raise cash first."}
                     }
 
-            # Cancel open resting orders for agent at origin station
+            # Cancel the departing ship's resting orders (every one of them
+            # rests at its origin); other ships' orders stay up. A non-corp
+            # agent has one location, so all its orders at the origin go.
             if origin in self.books:
                 for b in self.books[origin].values():
                     for o in list(b.bids) + list(b.asks):
-                        if o.agent_id == agent_id:
+                        if o.agent_id != agent_id or o.instrument in EQUITY_SYMBOLS:
+                            continue  # stocks trade from anywhere (#146); a departure leaves them up
+                        if o.acct is None or o.acct == acct:
                             # Already inside self.lock: use the _locked body.
                             self._cancel_order_locked(agent_id, o.order_id)
 
@@ -1282,7 +1436,7 @@ class AgoraReferee:
                 cargo_qty if cargo_qty > 0 else 0,
                 delay_factor=self.upgrades.factor(agent_id, 'shielding'),
                 loss_factor=self.upgrades.factor(agent_id, 'hold'),
-                loss_size_factor=self.upgrades.loss_size_factor(agent_id), agent_id=agent_id)
+                loss_size_factor=self.upgrades.loss_size_factor(agent_id), agent_id=vid)
             # Engines upgrade: tier 1 cuts a round off trips of 3+ rounds
             # (agora/upgrades.py ENGINE_CUTS); tier 2 cut the fuel above.
             base_rounds = route['rounds'] - self.upgrades.engine_cut(agent_id, route['rounds'])
@@ -1290,10 +1444,10 @@ class AgoraReferee:
 
             with self.conn:
                 next_seq = self._get_next_seq()
-                # 1. Fuel debit (agent -> SYSTEM)
-                self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = ? AND instrument = 'FUEL'", (required_fuel, agent_id))
+                # 1. Fuel debit (the ship's hold -> SYSTEM)
+                self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = ? AND instrument = 'FUEL'", (required_fuel, acct))
                 self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = 'SYSTEM' AND instrument = 'FUEL'", (required_fuel,))
-                self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, 'FUEL', ?)", (f"fuel-{transit_id}", next_seq, agent_id, -required_fuel))
+                self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, 'FUEL', ?)", (f"fuel-{transit_id}", next_seq, acct, -required_fuel))
                 self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, 'SYSTEM', 'FUEL', ?)", (f"fuel-{transit_id}", next_seq, required_fuel))
 
                 # 2. Belt toll debit (agent -> SYSTEM)
@@ -1306,13 +1460,13 @@ class AgoraReferee:
                 # 3. Cargo escrow (if cargo_qty > 0)
                 if cargo_qty > 0:
                     self.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES ('SYSTEM', ?, 0)", (comm,))
-                    self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = ? AND instrument = ?", (cargo_qty, agent_id, comm))
+                    self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = ? AND instrument = ?", (cargo_qty, acct, comm))
                     self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = 'SYSTEM' AND instrument = ?", (cargo_qty, comm))
-                    self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)", (f"escrow-{transit_id}", next_seq, agent_id, comm, -cargo_qty))
+                    self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)", (f"escrow-{transit_id}", next_seq, acct, comm, -cargo_qty))
                     self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, 'SYSTEM', ?, ?)", (f"escrow-{transit_id}", next_seq, comm, cargo_qty))
 
                 # 4. Transits record
-                vessel_id = f"{agent_id}/1"
+                vessel_id = vid
                 self.conn.execute("""
                     INSERT INTO transits (transit_id, agent_id, vessel_id, origin, destination, departure_round, arrival_round, commodity, cargo_qty, fuel_burned, status, perishable, decay_rate, decayed_qty, toll_paid)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'in_transit', ?, ?, 0, ?)
@@ -1327,17 +1481,9 @@ class AgoraReferee:
                 self.piracy.charge_escort_locked(transit_id, agent_id, escort_fee)
                 piracy = self.piracy.roll_departure_locked(
                     transit_id, agent_id, origin, dest, toll_required > 0, comm,
-                    max(0, cargo_qty - hz_lost), escort, escort_fee, dep_round)
+                    max(0, cargo_qty - hz_lost), escort, escort_fee, dep_round, vessel_id=vid)
 
-                # 5. Vessel locations & vessels
-                self.conn.execute("""
-                    INSERT INTO vessel_locations (agent_id, station_id, docked_since, updated_at)
-                    VALUES (?, 'in_transit', ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-                    ON CONFLICT(agent_id) DO UPDATE SET
-                        station_id = 'in_transit',
-                        docked_since = ?,
-                        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-                """, (agent_id, dep_round, dep_round))
+                # 5. The ship
                 self.conn.execute("""
                     INSERT INTO vessels (vessel_id, agent_id, name, station_id, docked_since, status)
                     VALUES (?, ?, ?, 'in_transit', ?, 'in_transit')
@@ -1361,6 +1507,7 @@ class AgoraReferee:
                     json.dumps({
                         'transit_id': transit_id,
                         'agent_id': agent_id,
+                        'vessel_id': vessel_id,
                         'origin': origin,
                         'destination': dest,
                         'departure_round': dep_round,
@@ -1411,6 +1558,8 @@ class AgoraReferee:
             # Idle fee for the round that is ending, before anything moves.
             with self.conn:
                 idle_fees = self._charge_idle_fees_locked(self.current_round)
+                # Crew and berth for every ship beyond a corp's first (#175).
+                ship_upkeep = self.fleet.upkeep_locked(self.current_round)
                 # Station order flow (agora/order_flow.py): NPC buyers and
                 # sellers fill the fleet orders left resting this round,
                 # against the depot quotes the fleets saw, before prices move.
@@ -1449,6 +1598,9 @@ class AgoraReferee:
                 for a in arrivals:
                     t_id = a['transit_id']
                     ag_id = a['agent_id']
+                    v_id = a['vessel_id'] or f"{ag_id}/1"
+                    # The goods land in the ship's own hold (#175).
+                    hold = v_id if self.fleet.is_corp(ag_id) else ag_id
                     dest = a['destination']
                     comm = a['commodity']
                     c_qty = a['cargo_qty']
@@ -1465,33 +1617,21 @@ class AgoraReferee:
                             deliver_qty = c_qty - decay_qty
 
                         if deliver_qty > 0:
-                            self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?", (deliver_qty, ag_id, comm))
+                            self.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, ?, 0)", (hold, comm))
+                            self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?", (deliver_qty, hold, comm))
                             self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = 'SYSTEM' AND instrument = ?", (deliver_qty, comm))
-                            self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)", (f"release-{t_id}", next_seq, ag_id, comm, deliver_qty))
+                            self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)", (f"release-{t_id}", next_seq, hold, comm, deliver_qty))
                             self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, 'SYSTEM', ?, ?)", (f"release-{t_id}", next_seq, comm, -deliver_qty))
 
                     self.conn.execute("UPDATE transits SET status = 'arrived', decayed_qty = ? WHERE transit_id = ?", (decay_qty, t_id))
-                    self.conn.execute("""
-                        INSERT INTO vessel_locations (agent_id, station_id, docked_since, updated_at)
-                        VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-                        ON CONFLICT(agent_id) DO UPDATE SET
-                            station_id = ?,
-                            docked_since = ?,
-                            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-                    """, (ag_id, dest, new_round, dest, new_round))
-                    v_id = a['vessel_id'] if 'vessel_id' in a.keys() and a['vessel_id'] else f"{ag_id}/1"
-                    self.conn.execute("""
-                        INSERT INTO vessels (vessel_id, agent_id, name, station_id, docked_since, status)
-                        VALUES (?, ?, ?, ?, ?, 'docked')
-                        ON CONFLICT(vessel_id) DO UPDATE SET
-                            station_id = ?,
-                            docked_since = ?,
-                            status = 'docked'
-                    """, (v_id, ag_id, f"{ag_id} Ship 1", dest, new_round, dest, new_round))
+                    # Docks the ship (current_round is already new_round); a
+                    # hull absorbed over its owner's cap is scrapped here (#164).
+                    self._dock_vessel_locked(ag_id, dest, v_id)
 
                     arrival_payload = {
                         'transit_id': t_id,
                         'agent_id': ag_id,
+                        'vessel_id': v_id,
                         'origin': a['origin'],
                         'destination': dest,
                         'commodity': comm,
@@ -1539,6 +1679,7 @@ class AgoraReferee:
                 'piracy': piracy_report,
                 'events': events_report,
                 'idle_fees': idle_fees,
+                'ship_upkeep': ship_upkeep,
                 'order_flow': order_flow_report,
                 'standing': standing_report,
             }
@@ -1698,6 +1839,19 @@ class AgoraReferee:
         return ticks
 
     def get_accounts(self, agent_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """One agent's rows, or every row. A roster corp's goods are shown
+        as one corp-total row per good (#175: they live on its ships; see
+        get_ship_accounts for each ship's hold)."""
+        if agent_id and self.fleet.is_corp(agent_id):
+            with self.lock:
+                bare = {r['instrument']: r['balance'] for r in self.conn.execute(
+                    "SELECT instrument, balance FROM accounts WHERE agent_id = ?", (agent_id,))}
+                insts = set(bare)
+                for acct in self.fleet.accounts_of(agent_id):
+                    insts |= {r[0] for r in self.conn.execute("SELECT instrument FROM accounts WHERE agent_id = ?", (acct,))}
+                return [{'agent_id': agent_id, 'instrument': i,
+                         'balance': self.corp_goods(agent_id, i) if i in GOODS else bare.get(i, 0)}
+                        for i in sorted(insts)]
         cur = self.conn.cursor()
         if agent_id:
             cur.execute(
@@ -1716,6 +1870,16 @@ class AgoraReferee:
             }
             for r in cur.fetchall()
         ]
+
+    def get_ship_accounts(self, agent_id: str) -> Dict[str, Dict[str, int]]:
+        """{account: {instrument: balance}} for each of a corp's ships and
+        station holds."""
+        with self.lock:
+            out = {}
+            for acct in self.fleet.accounts_of(agent_id):
+                out[acct] = {r[0]: r[1] for r in self.conn.execute(
+                    "SELECT instrument, balance FROM accounts WHERE agent_id = ? ORDER BY instrument", (acct,))}
+            return out
 
     def submit_envelope(self, envelope: Dict[str, Any]) -> Dict[str, Any]:
         self.mark_active((envelope.get('payload') or {}).get('agent_id') if isinstance(envelope, dict) else None)
@@ -1792,11 +1956,24 @@ class AgoraReferee:
             else:
                 return self._reject_envelope(order_id, agent_id, 'duplicate_order', f"Order ID '{order_id}' already exists for agent '{agent_id}' with conflicting parameters")
 
-        # 2b. Spatial Locality & Docking Audit
-        vessel = self.get_vessel_location(agent_id)
+        # 2b. Spatial Locality & Docking Audit. Goods are bought and sold by
+        # one ship (payload vessel_id, ship 1 by default), which must be
+        # docked at the order's station; its goods settle on that ship's
+        # hold (#175).
+        is_stock = instrument in EQUITY_SYMBOLS
+        order_vessel = None
+        order_acct = None
+        if '/' in str(agent_id):
+            return self._reject_envelope(order_id, agent_id, 'invalid_format',
+                                         "agent_id is a fleet, not one of its ships; name the ship in vessel_id")
+        if not is_stock:
+            order_vessel, err = self.fleet.resolve(agent_id, payload.get('vessel_id'))
+            if err:
+                return self._reject_envelope(order_id, agent_id, err['payload']['reason'], err['payload']['detail'])
+            order_acct = order_vessel if self.fleet.is_corp(agent_id) else None
+            vessel = self._get_vessel_location_locked(agent_id, order_vessel)
         # Fleet stocks trade on one exchange book, from anywhere, in transit
         # included (Ryan, #agent-chat 2026-09-22 22:44).
-        is_stock = instrument in EQUITY_SYMBOLS
         if is_stock:
             vessel = {'status': 'docked', 'station_id': STOCK_EXCHANGE_STATION}
             payload = dict(payload, station_id=STOCK_EXCHANGE_STATION)
@@ -1804,8 +1981,10 @@ class AgoraReferee:
             dest_station = vessel.get('transit', {}).get('destination', 'destination')
             return self._reject_envelope(
                 order_id, agent_id, 'vessel_in_transit',
-                f"Agent '{agent_id}' is currently in transit to '{dest_station}' and cannot place orders until docked."
+                f"Ship '{order_vessel}' is currently in transit to '{dest_station}' and cannot place orders until docked."
             )
+        if vessel['status'] != 'docked':
+            return self._reject_envelope(order_id, agent_id, 'invalid_vessel', f"Ship '{order_vessel}' is not docked anywhere")
 
         docked_station = vessel['station_id']
         order_station = payload.get('station_id')
@@ -1819,7 +1998,7 @@ class AgoraReferee:
             if order_station != docked_station:
                 return self._reject_envelope(
                     order_id, agent_id, 'vessel_not_docked',
-                    f"Agent '{agent_id}' is docked at '{docked_station}', cannot place orders at '{order_station}'. Local trading only."
+                    f"Ship '{order_vessel or agent_id}' is docked at '{docked_station}', cannot place orders at '{order_station}'. Local trading only."
                 )
         else:
             order_station = docked_station
@@ -1834,13 +2013,7 @@ class AgoraReferee:
         currency = self.get_currency_instrument(agent_id)
         if side == 'bid':
             max_cost = qty * limit_price
-            committed_funds = sum(
-                o.remaining_qty * o.limit_price
-                for st_books in self.books.values()
-                for b in st_books.values()
-                for o in b.bids
-                if o.agent_id == agent_id
-            )
+            committed_funds = self.committed(agent_id, 'CR')
             buyer_balance = self.get_balance(agent_id, currency)
             available_funds = buyer_balance - committed_funds
             if available_funds < max_cost:
@@ -1850,19 +2023,14 @@ class AgoraReferee:
                     f"(balance {buyer_balance} - committed {committed_funds}) insufficient for bid requirement {max_cost}"
                 )
         elif side == 'ask':
-            committed_commodity = sum(
-                o.remaining_qty
-                for st_books in self.books.values()
-                for b in st_books.values()
-                for o in b.asks
-                if o.agent_id == agent_id and o.instrument == instrument
-            )
-            seller_balance = self.get_balance(agent_id, instrument)
+            goods_acct = order_acct or agent_id
+            committed_commodity = self.committed(agent_id, instrument, goods_acct)
+            seller_balance = self._account_balance(goods_acct, instrument)
             available_commodity = seller_balance - committed_commodity
             if available_commodity < qty:
                 return self._reject_envelope(
                     order_id, agent_id, 'insufficient_balance',
-                    f"Account '{agent_id}' available {instrument} balance {available_commodity} "
+                    f"Account '{goods_acct}' available {instrument} balance {available_commodity} "
                     f"(balance {seller_balance} - committed {committed_commodity}) insufficient for ask requirement {qty}"
                 )
 
@@ -1911,8 +2079,12 @@ class AgoraReferee:
             side=side,
             qty=qty,
             limit_price=limit_price,
-            seq_seen=seq_seen
+            seq_seen=seq_seen,
+            acct=order_acct,
+            vessel_id=order_vessel,
         )
+        if order_vessel:
+            payload = dict(payload, vessel_id=order_vessel)
 
         # Check if station book is currently halted by circuit breaker (commodities only)
         is_commodity = (instrument.upper() in COMMODITIES or instrument.upper() == 'BANANA') and not instrument.upper().startswith('EQ_')
@@ -1928,9 +2100,9 @@ class AgoraReferee:
                     target_book.asks.sort(key=lambda o: (o.limit_price, o.submitted_at))
 
                 self.conn.execute("""
-                    INSERT INTO orders (order_id, agent_id, instrument, side, qty, limit_price, seq_seen, status, resolved_seq, filled_qty, station_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 'open', NULL, 0, ?)
-                """, (order_id, agent_id, instrument, side, qty, limit_price, seq_seen, order_station))
+                    INSERT INTO orders (order_id, agent_id, instrument, side, qty, limit_price, seq_seen, status, resolved_seq, filled_qty, station_id, vessel_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'open', NULL, 0, ?, ?)
+                """, (order_id, agent_id, instrument, side, qty, limit_price, seq_seen, order_station, order_vessel))
 
                 self.conn.execute("""
                     INSERT INTO book_events (seq, kind, payload)
@@ -2009,9 +2181,9 @@ class AgoraReferee:
                     target_book.asks.sort(key=lambda o: (o.limit_price, o.submitted_at))
 
                 self.conn.execute("""
-                    INSERT INTO orders (order_id, agent_id, instrument, side, qty, limit_price, seq_seen, status, resolved_seq, filled_qty, station_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 'open', NULL, 0, ?)
-                """, (order_id, agent_id, instrument, side, qty, limit_price, seq_seen, order_station))
+                    INSERT INTO orders (order_id, agent_id, instrument, side, qty, limit_price, seq_seen, status, resolved_seq, filled_qty, station_id, vessel_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'open', NULL, 0, ?, ?)
+                """, (order_id, agent_id, instrument, side, qty, limit_price, seq_seen, order_station, order_vessel))
 
                 self.conn.execute("""
                     INSERT INTO book_events (seq, kind, payload)
@@ -2047,9 +2219,9 @@ class AgoraReferee:
                 # Record submission in orders table
                 status = 'filled' if order.is_filled else 'open'
                 self.conn.execute("""
-                    INSERT INTO orders (order_id, agent_id, instrument, side, qty, limit_price, seq_seen, status, resolved_seq, filled_qty, station_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (order_id, agent_id, instrument, side, qty, limit_price, seq_seen, status, next_seq if order.is_filled else None, order.filled_qty, order_station))
+                    INSERT INTO orders (order_id, agent_id, instrument, side, qty, limit_price, seq_seen, status, resolved_seq, filled_qty, station_id, vessel_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (order_id, agent_id, instrument, side, qty, limit_price, seq_seen, status, next_seq if order.is_filled else None, order.filled_qty, order_station, order_vessel))
 
                 # Record book event
                 self.conn.execute("""
@@ -2076,6 +2248,9 @@ class AgoraReferee:
                     cost = trade.price * trade.qty
                     txn_id = f'trade-{trade.trade_id}'
                     commodity_inst = trade.instrument
+                    # CR moves between the corps, goods between the ships (#175).
+                    buyer_goods = trade.buyer_acct or trade.buyer_id
+                    seller_goods = trade.seller_acct or trade.seller_id
 
                     # Double-entry rows: sum(delta) == 0 per instrument
                     # Currency deltas
@@ -2092,11 +2267,11 @@ class AgoraReferee:
                     self.conn.execute("""
                         INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta)
                         VALUES (?, ?, ?, ?, ?)
-                    """, (txn_id, next_seq, trade.buyer_id, commodity_inst, trade.qty))
+                    """, (txn_id, next_seq, buyer_goods, commodity_inst, trade.qty))
                     self.conn.execute("""
                         INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta)
                         VALUES (?, ?, ?, ?, ?)
-                    """, (txn_id, next_seq, trade.seller_id, commodity_inst, -trade.qty))
+                    """, (txn_id, next_seq, seller_goods, commodity_inst, -trade.qty))
 
                     # Update accounts with strict rowcount validation (must match exactly 1 row per update)
                     cur = self.conn.execute(
@@ -2115,21 +2290,21 @@ class AgoraReferee:
 
                     self.conn.execute(
                         "INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, ?, 0)",
-                        (trade.buyer_id, commodity_inst)
+                        (buyer_goods, commodity_inst)
                     )
                     cur = self.conn.execute(
                         "UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?",
-                        (trade.qty, trade.buyer_id, commodity_inst)
+                        (trade.qty, buyer_goods, commodity_inst)
                     )
                     if cur.rowcount != 1:
-                        raise RuntimeError(f"Failed to credit {trade.buyer_id} {commodity_inst}: rowcount {cur.rowcount} != 1")
+                        raise RuntimeError(f"Failed to credit {buyer_goods} {commodity_inst}: rowcount {cur.rowcount} != 1")
 
                     cur = self.conn.execute(
                         "UPDATE accounts SET balance = balance - ? WHERE agent_id = ? AND instrument = ?",
-                        (trade.qty, trade.seller_id, commodity_inst)
+                        (trade.qty, seller_goods, commodity_inst)
                     )
                     if cur.rowcount != 1:
-                        raise RuntimeError(f"Failed to debit {trade.seller_id} {commodity_inst}: rowcount {cur.rowcount} != 1")
+                        raise RuntimeError(f"Failed to debit {seller_goods} {commodity_inst}: rowcount {cur.rowcount} != 1")
 
                     # Record trade event in book_events
                     trade_seq = self.current_seq + 1
@@ -2140,6 +2315,8 @@ class AgoraReferee:
                         'trade_id': trade.trade_id,
                         'buyer_id': trade.buyer_id,
                         'seller_id': trade.seller_id,
+                        'buyer_vessel': trade.buyer_acct if trade.buyer_acct != trade.buyer_id else None,
+                        'seller_vessel': trade.seller_acct if trade.seller_acct != trade.seller_id else None,
                         'price': trade.price,
                         'qty': trade.qty,
                         'cost': cost,
@@ -2212,9 +2389,8 @@ class AgoraReferee:
                            for b in st_books.values() for x in b.bids if x.agent_id == a)
                 have = self.get_balance(a, self.get_currency_instrument(a))
             else:
-                need = sum(x.remaining_qty for st_books in self.books.values()
-                           for b in st_books.values() for x in b.asks if x.agent_id == a and x.instrument == o.instrument)
-                have = self.get_balance(a, o.instrument)
+                need = self.committed(a, o.instrument, o.goods_acct)
+                have = self._account_balance(o.goods_acct, o.instrument)
             if have < need:
                 self._cancel_order_locked(a, o.order_id)
                 pruned.append(o.order_id)
@@ -2383,15 +2559,45 @@ class AgoraReferee:
                 f"account balance = {row['account_balance']} vs ledger delta sum = {row['ledger_sum']}"
             )
 
+        # Invariant 4 (#175): a roster corp's goods live on its ships and
+        # station holds, never on '<corp>' itself (goods with no location
+        # would trade at whichever station a ship happened to be).
+        marks = ','.join('?' for _ in GOODS)
+        cur.execute(f"""
+            SELECT a.agent_id, a.instrument, a.balance FROM accounts a JOIN fleet_roster f ON f.agent_id = a.agent_id
+            WHERE a.instrument IN ({marks}) AND a.balance != 0
+        """, sorted(GOODS))
+        for row in cur.fetchall():
+            errors.append(f"Goods off ship: {row['agent_id']} holds {row['balance']} {row['instrument']} on the corp account")
+
+        # Invariant 5 (#175): a ship is 'in_transit' exactly when it has one
+        # in_transit trip, and never more than one.
+        cur.execute("""
+            SELECT v.vessel_id, v.station_id,
+                   (SELECT COUNT(*) FROM transits t WHERE t.vessel_id = v.vessel_id AND t.status = 'in_transit') AS n
+            FROM vessels v
+        """)
+        for row in cur.fetchall():
+            flying = row['station_id'] == 'in_transit'
+            if row['n'] > 1 or flying != (row['n'] == 1):
+                errors.append(f"Vessel breach: {row['vessel_id']} at '{row['station_id']}' with {row['n']} in_transit trips")
+        cur.execute("""
+            SELECT transit_id, vessel_id FROM transits WHERE status = 'in_transit'
+              AND (vessel_id IS NULL OR vessel_id NOT IN (SELECT vessel_id FROM vessels))
+        """)
+        for row in cur.fetchall():
+            errors.append(f"Vessel breach: trip {row['transit_id']} flies unknown ship {row['vessel_id']}")
+
         return len(errors) == 0, errors
 
     def get_leaderboard(self) -> List[Dict[str, Any]]:
         """
         Calculate Net Worth = Balance(Credits/CR) + Qty(Cargo) * Local Spot Price
-        + Upgrades + Stocks.
-        All commodities (FRAG, FOOD, ORE) are marked at the fleet's docked station
-        spot price (or departure station spot for cargo in transit), eliminating
-        mean-spot distortions where buying cheap cargo rewarded fleets without hauling (#196).
+        + Upgrades + Ships + Stocks.
+        All commodities (FRAG, FOOD, ORE) are marked at the spot price of the
+        station they are at (#196): each ship's hold where that ship is docked
+        (or the departure station while it flies), each station hold at its
+        station (#175). Bought ships count at half their price.
         """
         station_marks: Dict[str, Dict[str, int]] = {}
         for st in STATIONS:
@@ -2402,18 +2608,34 @@ class AgoraReferee:
 
         with self.lock:
             cur = self.conn.cursor()
-            cur.execute("""
-                SELECT agent_id,
-                       SUM(CASE WHEN instrument IN ('CR', 'CREDITS', 'CASH') THEN balance ELSE 0 END) as liquid,
-                       SUM(CASE WHEN instrument IN ('FRAG', 'BANANA') THEN balance ELSE 0 END) as frags,
-                       SUM(CASE WHEN instrument = 'FUEL' THEN balance ELSE 0 END) as fuel,
-                       SUM(CASE WHEN instrument = 'FOOD' THEN balance ELSE 0 END) as food,
-                       SUM(CASE WHEN instrument = 'ORE' THEN balance ELSE 0 END) as ore
-                FROM accounts
+            # One row per corp, its ships' and station holds' accounts
+            # ('<corp>/...') folded in; goods valued where each account is.
+            per: Dict[str, Dict[str, Any]] = {}
+            where_cache: Dict[str, str] = {}
+            for r in cur.execute("""
+                SELECT agent_id, instrument, balance FROM accounts
                 WHERE agent_id != 'SYSTEM' AND agent_id NOT LIKE 'depot_%'
-                GROUP BY agent_id
-            """)
-            rows = cur.fetchall()
+            """).fetchall():
+                corp = corp_of(r['agent_id'])
+                d = per.setdefault(corp, {'agent_id': corp, 'liquid': 0, 'frags': 0, 'fuel': 0, 'food': 0, 'ore': 0,
+                                          'cargo_val': 0})
+                inst, bal = r['instrument'], r['balance']
+                if inst in ('CR', 'CREDITS', 'CASH'):
+                    d['liquid'] += bal
+                    continue
+                if inst not in ('FRAG', 'BANANA', 'FUEL', 'FOOD', 'ORE'):
+                    continue
+                key = {'FRAG': 'frags', 'BANANA': 'frags', 'FUEL': 'fuel', 'FOOD': 'food', 'ORE': 'ore'}[inst]
+                d[key] += bal
+                if inst == 'FUEL' or not bal:
+                    continue
+                acct = r['agent_id']
+                if acct not in where_cache:
+                    where_cache[acct] = (self.fleet.mark_station(acct) if is_ship_account(acct)
+                                         else self._fleet_mark_station_locked(acct))
+                comm_key = 'FRAG' if inst == 'BANANA' else inst
+                d['cargo_val'] += bal * station_marks[where_cache[acct]][comm_key]
+            rows = list(per.values())
 
             board = []
             # Goods and CR held in peer escrow still count toward whoever owns them.
@@ -2473,34 +2695,24 @@ class AgoraReferee:
                 in_flight = transit_cargo.get(r['agent_id'], {})
                 in_flight_val = transit_val.get(r['agent_id'], 0)
 
-                # Determine fleet location for local spot marks
-                vessel = self._get_vessel_location_locked(r['agent_id'])
-                if vessel.get('status') == 'in_transit' and vessel.get('transit'):
-                    st_id = vessel['transit'].get('origin', 'ceres').lower().strip()
-                else:
-                    st_id = vessel.get('station_id', 'ceres').lower().strip()
-                if st_id not in STATIONS:
-                    st_id = 'ceres'
-
+                # Ship 1's station: the board's headline station and marks.
+                st_id = self._fleet_mark_station_locked(r['agent_id'])
                 fleet_marks = station_marks[st_id]
-
-                docked_frags = r['frags'] or 0
-                docked_food = r['food'] or 0
-                docked_ore = r['ore'] or 0
-
-                docked_cargo_val = (docked_frags * fleet_marks['FRAG']
-                                    + docked_food * fleet_marks['FOOD']
-                                    + docked_ore * fleet_marks['ORE'])
+                docked_cargo_val = r['cargo_val']
 
                 # Fitted ship upgrades at half their cost (agora/upgrades.py,
-                # #151); nothing for a corp that is out of the game.
-                fitted = upgrades.book_value(r['agent_id']) if upgrades and not self.fleet_out(r['agent_id']) else 0
+                # #151), and bought ships at half their price (#175); nothing
+                # for a corp that is out of the game.
+                is_out = self.fleet_out(r['agent_id'])
+                fitted = upgrades.book_value(r['agent_id']) if upgrades and not is_out else 0
+                ships_value = self.fleet.book_value(r['agent_id']) if not is_out else 0
                 net_worth = (r['liquid']
                              + escrow_cr.get(r['agent_id'], 0)
                              + docked_cargo_val
                              + escrow_goods_val.get(r['agent_id'], 0)
                              + in_flight_val
-                             + fitted)
+                             + fitted
+                             + ships_value)
                 board.append({
                     'agent_id': r['agent_id'],
                     'net_worth': net_worth,
@@ -2514,6 +2726,8 @@ class AgoraReferee:
                     'commodity_marks': fleet_marks,
                     'station_id': st_id,
                     'upgrades_value': fitted,
+                    'ships': len(self.fleet.ships(r['agent_id'])),
+                    'ships_value': ships_value,
                     'in_transit_cargo': in_flight,
                 })
             # Rival stocks count at their mark. A fleet's own shares do not count
@@ -2537,6 +2751,16 @@ class AgoraReferee:
                     b['status'] = self.corporate.status(b['agent_id'])
             board.sort(key=lambda x: x['net_worth'], reverse=True)
             return board
+
+    def _fleet_mark_station_locked(self, agent_id: str) -> str:
+        """Ship 1's station (its trip's origin while it flies), for a fleet's
+        headline marks and for goods on an account that is not a ship."""
+        vessel = self._get_vessel_location_locked(agent_id)
+        if vessel.get('status') == 'in_transit' and vessel.get('transit'):
+            st_id = (vessel['transit'].get('origin') or 'ceres').lower().strip()
+        else:
+            st_id = (vessel.get('station_id') or 'ceres').lower().strip()
+        return st_id if st_id in STATIONS else 'ceres'
 
     def stock_marks(self, base_net_worth: Dict[str, float]) -> Dict[str, Dict[str, Any]]:
         """Per fleet stock: NAV per share from the issuer's net worth before
@@ -2569,12 +2793,8 @@ class AgoraReferee:
             self._reset_reactive_state()
             for st in STATIONS:
                 depot_id = f"depot_{st}"
-                # Ensure vessel is docked at home station
-                self.conn.execute("""
-                    INSERT INTO vessel_locations (agent_id, station_id, docked_since, updated_at)
-                    VALUES (?, ?, 0, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-                    ON CONFLICT(agent_id) DO UPDATE SET station_id = ?, docked_since = 0
-                """, (depot_id, st, st))
+                # A depot is not a ship: get_vessel_location('depot_<st>')
+                # answers 'docked at <st>' without a vessels row (#175).
 
                 cur = self.conn.cursor()
                 cur.execute("SELECT balance FROM accounts WHERE agent_id = ? AND instrument = 'CR'", (depot_id,))

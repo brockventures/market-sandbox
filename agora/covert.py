@@ -188,7 +188,10 @@ class CovertDesk:
 
         loc = ref.get_vessel_location(target)
         liquid = ref.get_balance(target, 'CR')
+        # A wiretap reveals the whole fleet (#175): every ship, where it is and its hold.
         hold = {c: ref.get_balance(target, c) for c in ('FRAG', 'FOOD', 'ORE', 'FUEL')}
+        fleet = [dict(l, hold={c: ref.get_balance(l['vessel_id'], c) for c in ('FRAG', 'FOOD', 'ORE', 'FUEL')})
+                 for l in ref.fleet_locations(target)]
         contracts = []
         if getattr(ref, 'contracts_enabled', False):
             contracts = [c for c in ref.contract_desk.list(status='open') if c.get('holder') == target]
@@ -198,14 +201,15 @@ class CovertDesk:
 
         return {'v': 1, 'kind': 'intel_ok', 'payload': {
             'target': target, 'round': ref.current_round,
-            'location': loc, 'liquid_cr': liquid, 'cargo': hold,
+            'location': loc, 'liquid_cr': liquid, 'cargo': hold, 'fleet': fleet,
             'contracts': contracts, 'upgrades': upgrades
         }}
 
     # ------------------------------------------------------------ Sabotage (#135)
 
-    def execute_sabotage(self, actor: str, target: str, mode: str = 'auto') -> Dict[str, Any]:
-        """Execute industrial sabotage against target cargo/transit."""
+    def execute_sabotage(self, actor: str, target: str, mode: str = 'auto', target_vessel=None) -> Dict[str, Any]:
+        """Execute industrial sabotage against one of the target's ships
+        (ship 1 unless target_vessel, #175): its trip, or its docked hold."""
         ref = self.ref
         ref.mark_active(actor)
         actor = (actor or '').strip().lower()
@@ -231,6 +235,9 @@ class CovertDesk:
                 # The round stays out of the message: the sabotage is private (#153).
                 return _reject('target_alert', f"{target} is on alert after a recent sabotage; "
                                                f"a corp can be sabotaged once every {SABOTAGE_COOLDOWN} rounds")
+            ship, err = ref.fleet.resolve(target, target_vessel)
+            if err:
+                return err
             avail = ref.peer._available(actor, 'CR') if hasattr(ref, 'peer') else ref.get_balance(actor, 'CR')
             if avail < SABOTAGE_COST:
                 return _reject('insufficient_credits',
@@ -246,7 +253,7 @@ class CovertDesk:
                     "INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, 'CR', ?)",
                     (txn, seq, acct, d))
 
-            loc = ref.get_vessel_location(target)
+            loc = ref.get_vessel_location(target, ship)
             st = loc.get('status')
             damage_detail = ""
             loss_cr = 0
@@ -256,8 +263,8 @@ class CovertDesk:
             if (mode in ('transit', 'auto')) and st == 'in_transit':
                 # Delay transit arrival by +1 round and siphon cargo
                 t_row = ref.conn.execute(
-                    "SELECT transit_id, destination, commodity, cargo_qty, arrival_round FROM transits WHERE agent_id = ? AND status = 'in_transit' ORDER BY departure_round DESC LIMIT 1",
-                    (target,)).fetchone()
+                    "SELECT transit_id, destination, commodity, cargo_qty, arrival_round FROM transits WHERE vessel_id = ? AND status = 'in_transit' ORDER BY departure_round DESC LIMIT 1",
+                    (ship,)).fetchone()
                 if t_row:
                     comm = t_row['commodity']
                     c_qty = t_row['cargo_qty'] or 0
@@ -266,7 +273,7 @@ class CovertDesk:
                         "UPDATE transits SET arrival_round = arrival_round + 1, cargo_qty = cargo_qty - ? WHERE transit_id = ?",
                         (lost_qty, t_row['transit_id']))
                     # The cargo sits in SYSTEM escrow while in flight.
-                    loot = self._loot_locked(actor, target, comm, lost_qty, rnd)
+                    loot = self._loot_locked(actor, target, comm, lost_qty, rnd, t_row['destination'])
                     damage_detail = f"flight delayed +1 round ({t_row['destination']})" + (f", lost {lost_qty} {comm}" if lost_qty else "")
                     loss_cr = ref_value(comm, lost_qty)
                 else:
@@ -276,45 +283,46 @@ class CovertDesk:
                 best_comm = None
                 best_qty = 0
                 for c in ('FRAG', 'FOOD', 'ORE'):
-                    b = ref.get_balance(target, c)
+                    b = ref.get_balance(ship, c)
                     if b > best_qty:
                         best_qty, best_comm = b, c
                 if best_qty > 0 and best_comm:
                     destroy_qty = max(1, int(best_qty * DOCK_STEAL))
                     seq = ref._get_next_seq()
                     txn_loss = f"sabotage-dock-{target}-r{rnd}"
-                    for acct, d in ((target, -destroy_qty), ('SYSTEM', destroy_qty)):
+                    for acct, d in ((ship, -destroy_qty), ('SYSTEM', destroy_qty)):
                         ref.conn.execute(
                             "UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?",
                             (d, acct, best_comm))
                         ref.conn.execute(
                             "INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)",
                             (txn_loss, seq, acct, best_comm, d))
-                    loot = self._loot_locked(actor, target, best_comm, destroy_qty, rnd)
+                    loot = self._loot_locked(actor, target, best_comm, destroy_qty, rnd, loc.get('station_id'))
                     damage_detail = f"{'stole' if loot else 'destroyed'} {destroy_qty} {best_comm} in docked cargo hold"
                     loss_cr = ref_value(best_comm, destroy_qty)
                 else:
                     # Siphon fuel
-                    f_bal = ref.get_balance(target, 'FUEL')
+                    f_bal = ref.get_balance(ship, 'FUEL')
                     siphon = min(f_bal, FUEL_SIPHON)
                     if siphon > 0:
                         seq = ref._get_next_seq()
                         txn_loss = f"sabotage-fuel-{target}-r{rnd}"
-                        for acct, d in ((target, -siphon), ('SYSTEM', siphon)):
+                        for acct, d in ((ship, -siphon), ('SYSTEM', siphon)):
                             ref.conn.execute(
                                 "UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = 'FUEL'",
                                 (d, acct))
                             ref.conn.execute(
                                 "INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)",
                                 (txn_loss, seq, acct, 'FUEL', d))
-                        loot = self._loot_locked(actor, target, 'FUEL', siphon, rnd)
+                        loot = self._loot_locked(actor, target, 'FUEL', siphon, rnd, loc.get('station_id'))
                         damage_detail = f"siphoned {siphon} FUEL from fuel tanks"
                         loss_cr = ref_value('FUEL', siphon)
                     else:
                         damage_detail = "docking clamps locked for 1 round"
 
-            # Roll trace: a marble from the saboteur's bag (#214)
-            traced = self.bags.draw('sabotage_trace', actor, SABOTAGE_TRACE)
+            # Roll trace: a marble from the saboteur's bag for this target ship
+            # (#214; per ship since #175, key '<actor>><target ship>').
+            traced = self.bags.draw('sabotage_trace', f"{actor}>{ship}", SABOTAGE_TRACE)
             fine_paid = 0
             detail_actor = f"{target} suffered covert sabotage: {damage_detail}"
 
@@ -368,23 +376,31 @@ class CovertDesk:
             'fine_paid': fine_paid, 'round': rnd
         }}
 
-    def _loot_locked(self, actor: str, target: str, comm: str, qty: int, rnd: int) -> Optional[Dict[str, Any]]:
+    def _loot_locked(self, actor: str, target: str, comm: str, qty: int, rnd: int,
+                     where: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Move the saboteur's SABOTAGE_LOOT_SHARE of goods taken (now held by
-        SYSTEM) to the saboteur. Caller holds ref.lock and a transaction."""
+        SYSTEM) to the saboteur's ship 1 (#175: a corp's goods live on its
+        ships; the saboteur's agents deliver the take, as before ships, so
+        #186's covert economics are unchanged). `where` is the station they
+        were taken at (or the trip's destination), for the event. Caller
+        holds ref.lock and a transaction."""
         cut = int(qty * SABOTAGE_LOOT_SHARE)
         if cut <= 0:
             return None
         ref = self.ref
         seq = ref._get_next_seq()
         txn = f"sabotage-loot-{actor}-{target}-r{rnd}"
-        for acct, d in (('SYSTEM', -cut), (actor, cut)):
+        dest = actor
+        if getattr(ref, 'fleet', None) is not None and ref.fleet.is_corp(actor):
+            dest = f"{actor}/1"
+        for acct, d in (('SYSTEM', -cut), (dest, cut)):
             ref.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, ?, 0)", (acct, comm))
             ref.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?",
                              (d, acct, comm))
             ref.conn.execute(
                 "INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)",
                 (txn, seq, acct, comm, d))
-        return {'commodity': comm, 'qty': cut, 'value_cr': ref_value(comm, cut)}
+        return {'commodity': comm, 'qty': cut, 'value_cr': ref_value(comm, cut), 'to': dest}
 
     # ------------------------------------------------------------ Rivalry Scoreboard (#152)
 

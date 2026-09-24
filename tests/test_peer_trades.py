@@ -18,8 +18,10 @@ def fresh(peer=True):
 
 def dock(ref, agent, st):
     with ref.conn:
-        ref.conn.execute("INSERT INTO vessel_locations (agent_id, station_id, docked_since) VALUES (?, ?, 0) "
-                         "ON CONFLICT(agent_id) DO UPDATE SET station_id = excluded.station_id", (agent, st))
+        # vessel_locations is a view of ship 1 since #175; its INSTEAD OF
+        # INSERT trigger upserts, and an UPSERT cannot target a view.
+        ref.conn.execute("INSERT INTO vessel_locations (agent_id, station_id, docked_since) VALUES (?, ?, 0)",
+                         (agent, st))
 
 
 def nw(ref):

@@ -214,27 +214,28 @@ class TestHazardSites(unittest.TestCase):
         # shielding tier 2 (x0.6): 0.12 = 3 in 25
         self.assertEqual(sum(eng.roll(0, delay_factor=0.6, agent_id='amos')[0] > 0 for _ in range(100)), 12)
 
-    def test_live_transit_uses_the_fleets_bag(self):
+    def test_live_transit_uses_the_ships_bag(self):
+        # A trip draws from the flying ship's bag (#175), not the fleet's.
         ref = hz_game('0.2,0.1')
         ref.initiate_transit('amos', 'mars', commodity='FRAG', cargo_qty=10)
-        self.assertEqual(ref.hazards.bags.stats('delay', 'amos')['draws'], 1)
-        self.assertEqual(ref.hazards.bags.stats('loss', 'amos')['draws'], 1)
-        self.assertEqual(ref.hazards.bags.stats('delay', 'zero')['draws'], 0)
+        self.assertEqual(ref.hazards.bags.stats('delay', 'amos/1')['draws'], 1)
+        self.assertEqual(ref.hazards.bags.stats('loss', 'amos/1')['draws'], 1)
+        self.assertEqual(ref.hazards.bags.stats('delay', 'zero/1')['draws'], 0)
 
     def test_bags_survive_a_referee_restart(self):
         fd, path = tempfile.mkstemp(suffix='.db')
         os.close(fd)
         try:
             straight = hz_game('0,0.1', seed=6)
-            want = [straight.hazards.roll(100, agent_id='amos')[1] > 0 for _ in range(30)]
+            want = [straight.hazards.roll(100, agent_id='amos/1')[1] > 0 for _ in range(30)]
             ref = AgoraReferee(db_path=path, hazards='0,0.1')
             ref.new_game(seed=6, warmup_rounds=2, hazards='0,0.1')
-            got = [ref.hazards.roll(100, agent_id='amos')[1] > 0 for _ in range(13)]
+            got = [ref.hazards.roll(100, agent_id='amos/1')[1] > 0 for _ in range(13)]
             ref.conn.commit()
             ref.conn.close()
             again = AgoraReferee(db_path=path, hazards='0,0.1')  # a restart: no new_game
-            self.assertEqual(again.hazards.bags.stats('loss', 'amos')['draws'], 13)
-            got += [again.hazards.roll(100, agent_id='amos')[1] > 0 for _ in range(17)]
+            self.assertEqual(again.hazards.bags.stats('loss', 'amos/1')['draws'], 13)
+            got += [again.hazards.roll(100, agent_id='amos/1')[1] > 0 for _ in range(17)]
             self.assertEqual(got, want)
         finally:
             os.unlink(path)
@@ -257,13 +258,20 @@ def pir_game(odds=(1, 1), seed=7, **kw):
     return ref
 
 
-def depart(ref, n, agent='amos', qty=1000, tag='t'):
+def depart(ref, n, agent='amos', qty=1000, tag='t', escort=False, vessel=None):
     out = []
     for i in range(n):
         with ref.lock, ref.conn:
             out.append(ref.piracy.roll_departure_locked(f"{tag}{i}", agent, 'ceres', 'mars', True, 'FRAG', qty,
-                                                        False, 0, ref.current_round))
+                                                        escort, 0, ref.current_round, vessel_id=vessel))
     return out
+
+
+def raid_draws(ref, ship, escort=None):
+    """Raid draws and hits over every bag of one ship (#175: raid_key)."""
+    q = "SELECT COALESCE(SUM(draws), 0), COALESCE(SUM(hits), 0) FROM rng_bags WHERE ns = 'piracy' AND event = 'raid' AND fleet LIKE ?"
+    rows = ref.conn.execute(q, (ship + '|%' + ('' if escort is None else ('|escort' if escort else '|bare')),)).fetchone()
+    return {'draws': rows[0], 'hits': rows[1]}
 
 
 class TestPiracySites(unittest.TestCase):
@@ -275,12 +283,73 @@ class TestPiracySites(unittest.TestCase):
         self.assertGreater(total, 10)
         self.assertLess(abs(sum(raided) - total), 2)
         self.assertLess(streaks(raided)[1], 2 / min(o['odds'] for o in outs))
-        self.assertEqual(ref.piracy.bags.stats('raid', 'amos')['draws'], 300)
+        self.assertEqual(raid_draws(ref, 'amos/1')['draws'], 300)
+
+    def test_escorted_trips_draw_from_their_own_bag(self):
+        # Ryan (#175): escort and armor luck is the ship's. However many bare
+        # trips came first, escorted trips hit at exactly the escorted odds:
+        # a whole number of escorted bags holds exactly its hits.
+        ref = pir_game(odds=(0.4, 0.4))
+        c = ref.piracy.chance('amos', 'ceres', 'mars', True, 'FRAG', 1000, True, ref.current_round)
+        k, n = composition(P.PiracyDesk.bag_odds(c['exact_odds']))
+        for bare in (0, 7, 23):
+            ref = pir_game(odds=(0.4, 0.4))
+            depart(ref, bare, tag='b')
+            outs = depart(ref, 3 * n, escort=True, tag='e')
+            self.assertEqual(sum(o['raided'] for o in outs), 3 * k, bare)
+            self.assertEqual(raid_draws(ref, 'amos/1', escort=True), {'draws': 3 * n, 'hits': 3 * k})
+            self.assertEqual(raid_draws(ref, 'amos/1', escort=False)['draws'], bare)
+
+    def test_two_ships_of_one_corp_have_independent_bags(self):
+        ref = pir_game(odds=(0.4, 0.4), hazards='0.2,0.2')
+        with ref.lock, ref.conn:
+            ref.piracy._move('test-cash', (('SYSTEM', 'CR', -100_000), ('amos', 'CR', 100_000)))
+        self.assertEqual(ref.fleet.buy('amos')['payload']['vessel_id'], 'amos/2')
+        solo = pir_game(odds=(0.4, 0.4), hazards='0.2,0.2')
+        a = [o['raided'] for o in depart(ref, 40, vessel='amos/2', tag='s2')]  # ship 2 flies first
+        b = [o['raided'] for o in depart(ref, 40, vessel='amos/1', tag='s1')]
+        self.assertEqual(b, [o['raided'] for o in depart(solo, 40, vessel='amos/1', tag='s1')])
+        self.assertEqual(raid_draws(ref, 'amos/2')['draws'], 40)
+        self.assertEqual(raid_draws(ref, 'amos/1')['draws'], 40)
+        # Hazard bags too: ship 2's trips leave ship 1's draws untouched.
+        h2 = [ref.hazards.roll(100, agent_id='amos/2')[1] > 0 for _ in range(20)]
+        h1 = [ref.hazards.roll(100, agent_id='amos/1')[1] > 0 for _ in range(20)]
+        self.assertEqual(ref.hazards.bags.stats('loss', 'amos/1')['draws'], 20)
+        self.assertEqual(ref.hazards.bags.stats('loss', 'amos/2')['draws'], 20)
+        self.assertEqual(h1, [solo.hazards.roll(100, agent_id='amos/1')[1] > 0 for _ in range(20)])
+        self.assertEqual(sum(h2), 4)
+        self.assertTrue(a)
+
+    def test_a_pre_ships_database_moves_its_bags_to_ship_one(self):
+        fd, path = tempfile.mkstemp(suffix='.db')
+        os.close(fd)
+        try:
+            ref = AgoraReferee(db_path=path, hazards='0,0.1', piracy=(0.4, 0.4))
+            ref.new_game(seed=6, warmup_rounds=2, hazards='0,0.1', piracy=(0.4, 0.4))
+            for _ in range(7):
+                ref.hazards.roll(100, agent_id='amos')  # the old key: the corp
+            with ref.lock, ref.conn:
+                ref.piracy.bags.draw_varying('raid', 'amos', 0.3)
+                ref.piracy.bags.draw('escape', 'zero', 0.5)
+                ref.covert.bags.draw('sabotage_trace', 'zero', 0.25)
+            ref.conn.commit()
+            ref.conn.close()
+            for _ in range(2):  # a restart, twice
+                again = AgoraReferee(db_path=path, hazards='0,0.1', piracy=(0.4, 0.4))
+                self.assertEqual(again.hazards.bags.stats('loss', 'amos/1')['draws'], 7)
+                self.assertEqual(again.hazards.bags.stats('loss', 'amos')['draws'], 0)
+                self.assertEqual(again.piracy.bags.stats('escape', 'zero/1')['draws'], 1)
+                self.assertEqual(again.piracy.bags.stats('raid', 'amos')['draws'], 0)
+                self.assertEqual(again.covert.bags.stats('sabotage_trace', 'zero')['draws'], 0)
+                again.conn.commit()
+                again.conn.close()
+        finally:
+            os.unlink(path)
 
     def test_empty_trip_draws_nothing(self):
         ref = pir_game(odds=(0.1, 0.1))
         depart(ref, 5, qty=0)
-        self.assertEqual(ref.piracy.bags.stats('raid', 'amos')['draws'], 0)
+        self.assertEqual(raid_draws(ref, 'amos/1')['draws'], 0)
 
     def test_trace_is_one_in_ten_from_the_sponsors_bag(self):
         ref = pir_game()
@@ -304,7 +373,7 @@ class TestPiracySites(unittest.TestCase):
                 ref.step_round()
         self.assertEqual(sorted(seen), ['escaped', 'escaped', 'lost', 'lost'])
         self.assertEqual(sorted(seen[:2]), ['escaped', 'lost'])
-        self.assertEqual(ref.piracy.bags.stats('escape', 'amos')['draws'], 4)
+        self.assertEqual(ref.piracy.bags.stats('escape', 'amos/1')['draws'], 4)
 
 
 class TestCovertAndLeakSites(unittest.TestCase):
@@ -320,7 +389,8 @@ class TestCovertAndLeakSites(unittest.TestCase):
             traced.append(res['payload']['traced'])
             ref.current_round += C.SABOTAGE_COOLDOWN
         self.assertEqual(sum(traced), 1)
-        self.assertEqual(ref.covert.bags.stats('sabotage_trace', 'zero')['draws'], 4)
+        # Per saboteur and target ship (#175).
+        self.assertEqual(ref.covert.bags.stats('sabotage_trace', 'zero>amos/1')['draws'], 4)
 
     def test_leak_is_one_in_fifty_from_the_actors_bag(self):
         ref = AgoraReferee(events=True)
