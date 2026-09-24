@@ -1,0 +1,39 @@
+name: Balance band
+
+# Merge gate for economy PRs (prices, fees, payouts, rumours, dividends,
+# loans): every play style's median, flat strict, seeds 1-40, must sit in
+# 100k-180k. Rules and plumbing PRs skip it: they either touch none of these
+# paths, or carry the `skip-band-check` label.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+    paths:
+      - 'agora/**.py'
+      - 'tools/economy_sim.py'
+      - 'tools/band_check.py'
+      - '.github/workflows/balance-band.yml'
+      - '!agora/server.py'
+      - '!agora/websocket.py'
+      - '!agora/ticker.py'
+      - '!agora/briefing.py'
+      - '!agora/history.py'
+  workflow_dispatch:
+
+concurrency:
+  group: balance-band-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  band:
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-band-check') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 40-seed styles band check
+        run: python tools/band_check.py --jobs 4 --summary "$GITHUB_STEP_SUMMARY"
