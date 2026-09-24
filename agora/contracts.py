@@ -34,9 +34,12 @@ from typing import Any, Dict, List, Optional
 from agora.spatial import STATIONS, BASE_PRICES
 
 POST_EVERY = 4
-QTY = (300, 800)
+QTY = (250, 500)
+OVERSIZED_QTY = (600, 1200)
 DEADLINE = (6, 10)
+OVERSIZED_DEADLINE = (10, 16)
 PREMIUM = (1.3, 1.6)
+OVERSIZED_PREMIUM = (1.5, 1.85)
 GOODS = ("FRAG", "FOOD", "ORE", "FUEL")
 MAX_OPEN = 2
 BOND_PCT = 0.25
@@ -45,10 +48,21 @@ PENALTY = 0.5
 # survival: "one bad claim teaches rather than kills"). Every later one
 # costs PENALTY. #162 sweep, 60 seeds: novices out of the game 35% -> 30%.
 FIRST_PENALTY = 0.25
+DEFAULT_OVERSIZED_PROB = 0.35
 
 
 def env_contracts() -> bool:
     return os.environ.get("AGORA_CONTRACTS", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def env_oversized_prob() -> float:
+    v = os.environ.get("AGORA_CONTRACT_OVERSIZED_PROB")
+    if v is not None:
+        try:
+            return max(0.0, min(1.0, float(v)))
+        except ValueError:
+            pass
+    return DEFAULT_OVERSIZED_PROB
 
 
 SCHEMA = """
@@ -66,7 +80,8 @@ CREATE TABLE IF NOT EXISTS station_contracts (
     list_price     INTEGER,
     penalty        INTEGER NOT NULL DEFAULT 0,
     shortfall      INTEGER NOT NULL DEFAULT 0,
-    status         TEXT NOT NULL CHECK (status IN ('open', 'fulfilled', 'lapsed'))
+    status         TEXT NOT NULL CHECK (status IN ('open', 'fulfilled', 'lapsed')),
+    lot_type       TEXT NOT NULL DEFAULT 'standard'
 )
 """
 
@@ -76,10 +91,14 @@ def _reject(reason: str, detail: str) -> Dict[str, Any]:
 
 
 class ContractDesk:
-    def __init__(self, ref, seed: int = 0):
+    def __init__(self, ref, seed: int = 0, oversized_prob: Optional[float] = None):
         self.ref = ref
+        self.oversized_prob = env_oversized_prob() if oversized_prob is None else float(oversized_prob)
         with ref.conn:
             ref.conn.execute(SCHEMA)
+            cols = [r[1] for r in ref.conn.execute("PRAGMA table_info(station_contracts)").fetchall()]
+            if 'lot_type' not in cols:
+                ref.conn.execute("ALTER TABLE station_contracts ADD COLUMN lot_type TEXT NOT NULL DEFAULT 'standard'")
         self.reset(seed)
 
     def reset(self, seed: int) -> None:
@@ -254,14 +273,23 @@ class ContractDesk:
         comm = self.rng.choice(GOODS)
         cheap = min(STATIONS, key=lambda st: BASE_PRICES[st][comm])
         st = self.rng.choice([x for x in STATIONS if x != cheap])
-        qty = self.rng.randint(*QTY)
+        is_oversized = self.rng.random() < self.oversized_prob
+        if is_oversized:
+            qty = self.rng.randint(*OVERSIZED_QTY)
+            deadline = round_num + self.rng.randint(*OVERSIZED_DEADLINE)
+            price = int(round(BASE_PRICES[st][comm] * self.rng.uniform(*OVERSIZED_PREMIUM)))
+            lot_type = 'oversized'
+        else:
+            qty = self.rng.randint(*QTY)
+            deadline = round_num + self.rng.randint(*DEADLINE)
+            price = int(round(BASE_PRICES[st][comm] * self.rng.uniform(*PREMIUM)))
+            lot_type = 'standard'
         self.seq += 1
         cid = f"k{round_num}{st[:2]}{self.seq}"
         self.ref.conn.execute("""INSERT INTO station_contracts
-            (contract_id, station_id, instrument, qty_total, qty_remaining, price, posted_round, deadline, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open')""",
-            (cid, st, comm, qty, qty, int(round(BASE_PRICES[st][comm] * self.rng.uniform(*PREMIUM))),
-             round_num, round_num + self.rng.randint(*DEADLINE)))
+            (contract_id, station_id, instrument, qty_total, qty_remaining, price, posted_round, deadline, status, lot_type)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)""",
+            (cid, st, comm, qty, qty, price, round_num, deadline, lot_type))
         return cid
 
     # ------------------------------------------------------------ reads
@@ -270,11 +298,14 @@ class ContractDesk:
         row = self._row(cid)
         return dict(row) if row else None
 
-    def list(self, status: str = 'open', station_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    def list(self, status: str = 'open', station_id: Optional[str] = None, lot_type: Optional[str] = None) -> List[Dict[str, Any]]:
         q, args = "SELECT * FROM station_contracts WHERE status = ?", [status]
         if station_id:
             q += " AND station_id = ?"
             args.append(station_id.lower())
+        if lot_type:
+            q += " AND lot_type = ?"
+            args.append(lot_type.lower())
         return [dict(r) for r in self.ref.conn.execute(q + " ORDER BY deadline, contract_id", args)]
 
     def holdings_adjustment(self) -> Dict[str, int]:
