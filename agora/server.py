@@ -1389,15 +1389,40 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                                       'payload': {'reason': 'agent_required', 'detail': 'agent_id is required with this token'}})
                 return
             if path == '/referee/lobbying/influence':
-                result = ref.lobbying.buy_influence(agent, str(data.get('station_id', '')), int(data.get('tokens', 1)))
+                tokens_raw = data.get('tokens', 1)
+                try:
+                    tokens = int(tokens_raw)
+                except (ValueError, TypeError):
+                    self._send_json(400, {'v': 1, 'kind': 'reject',
+                                          'payload': {'reason': 'invalid_format', 'detail': 'tokens must be an integer'}})
+                    return
+                result = ref.lobbying.buy_influence(agent, str(data.get('station_id', '')), tokens)
             else:
+                rounds_raw = data.get('rounds')
+                param_raw = data.get('param_value')
+                rounds = None
+                param_value = None
+                if rounds_raw is not None:
+                    try:
+                        rounds = int(rounds_raw)
+                    except (ValueError, TypeError):
+                        self._send_json(400, {'v': 1, 'kind': 'reject',
+                                              'payload': {'reason': 'invalid_format', 'detail': 'rounds must be an integer'}})
+                        return
+                if param_raw is not None:
+                    try:
+                        param_value = int(param_raw)
+                    except (ValueError, TypeError):
+                        self._send_json(400, {'v': 1, 'kind': 'reject',
+                                              'payload': {'reason': 'invalid_format', 'detail': 'param_value must be an integer'}})
+                        return
                 result = ref.lobbying.enact_action(
                     agent,
                     str(data.get('action_type', '')),
                     str(data.get('station_id', '')),
                     target=data.get('target'),
-                    rounds=data.get('rounds'),
-                    param_value=data.get('param_value'),
+                    rounds=rounds,
+                    param_value=param_value,
                 )
             self._send_json(400 if result.get('kind') == 'reject' else 200, result)
             return

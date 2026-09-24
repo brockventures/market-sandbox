@@ -3,12 +3,22 @@ tests/test_planetary_lobbying.py - Planetary Council Lobbying & Regulatory Captu
 
 Tests buying planetary council influence tokens, enacting deregulation packages
 (circuit breaker suspension, targeted docking tariffs, idle fee exemptions),
-and stock appreciation shocks.
+bounds clamping, duplicate action rejection, shock cooldowns, and stock appreciation shocks.
 """
 
+import json
+import threading
 import unittest
+import urllib.request
+import urllib.error
+from http.server import HTTPServer
+from typing import Optional
+
+import agora.referee
 from agora.referee import AgoraReferee
 from agora.exchange import shock_for
+from agora.lobbying import ACTIONS, DEREGULATION_SHOCK_COOLDOWN_ROUNDS
+from agora.server import make_handler
 
 
 def make_referee(**kwargs):
@@ -20,6 +30,11 @@ def make_referee(**kwargs):
 
 
 class TestPlanetaryLobbying(unittest.TestCase):
+    def test_referee_docstring_preserved(self):
+        """Module docstring on agora.referee is preserved as __doc__."""
+        self.assertIsNotNone(agora.referee.__doc__)
+        self.assertIn("Central referee for order validation", agora.referee.__doc__)
+
     def test_buy_influence_tokens(self):
         """Buying influence tokens deducts 500 CR per token and credits council influence."""
         ref = make_referee()
@@ -126,6 +141,150 @@ class TestPlanetaryLobbying(unittest.TestCase):
         self.assertEqual(len(actions), 1)
         self.assertEqual(actions[0]['action_type'], 'circuit_breaker_suspension')
         self.assertEqual(actions[0]['agent_id'], 'zero')
+
+    def test_bounds_clamping_tariff_and_rounds(self):
+        """Unbounded tariff param_value and duration rounds are clamped server-side."""
+        ref = make_referee()
+        agent = 'zero'
+        st = 'ceres'
+        target = 'amos'
+
+        # Buy influence
+        ref.lobbying.buy_influence(agent, st, tokens=10)
+
+        # 1. Enact tariff with extreme 1e9 param_value and 100000 rounds
+        res = ref.lobbying.enact_action(agent, 'tariff', st, target=target, param_value=1_000_000_000, rounds=100_000)
+        self.assertEqual(res['kind'], 'lobbying_action_ok')
+        self.assertEqual(res['payload']['param_value'], ACTIONS['tariff']['max_param'])  # 500
+        self.assertEqual(res['payload']['duration_rounds'], ACTIONS['tariff']['max_rounds'])  # 20
+        self.assertEqual(ref.lobbying.get_docking_tariff(target, st), 500)
+
+        # 2. Enact circuit_breaker_suspension with 1000 rounds clamped to max_rounds (10)
+        res_cb = ref.lobbying.enact_action(agent, 'circuit_breaker_suspension', st, rounds=1000)
+        self.assertEqual(res_cb['kind'], 'lobbying_action_ok')
+        self.assertEqual(res_cb['payload']['duration_rounds'], ACTIONS['circuit_breaker_suspension']['max_rounds'])  # 10
+
+        # 3. Low / negative tariff param_value is clamped to min_param (10)
+        ref.lobbying.buy_influence(agent, 'earth', tokens=2)
+        res_low = ref.lobbying.enact_action(agent, 'tariff', 'earth', target=target, param_value=-50)
+        self.assertEqual(res_low['kind'], 'lobbying_action_ok')
+        self.assertEqual(res_low['payload']['param_value'], ACTIONS['tariff']['min_param'])  # 10
+
+    def test_duplicate_active_action_rejected(self):
+        """Cannot enact the same action while an identical one is currently active."""
+        ref = make_referee()
+        agent = 'zero'
+        st = 'mars'
+
+        ref.lobbying.buy_influence(agent, st, tokens=10)
+        res1 = ref.lobbying.enact_action(agent, 'circuit_breaker_suspension', st, rounds=5)
+        self.assertEqual(res1['kind'], 'lobbying_action_ok')
+
+        # Second identical action while active is cleanly rejected
+        res2 = ref.lobbying.enact_action(agent, 'circuit_breaker_suspension', st, rounds=5)
+        self.assertEqual(res2['kind'], 'reject')
+        self.assertEqual(res2['payload']['reason'], 'action_already_active')
+
+        # Tariff on same target is rejected, but tariff on different target succeeds
+        res_t1 = ref.lobbying.enact_action(agent, 'tariff', st, target='amos', rounds=5)
+        self.assertEqual(res_t1['kind'], 'lobbying_action_ok')
+
+        res_t1_dup = ref.lobbying.enact_action(agent, 'tariff', st, target='amos', rounds=5)
+        self.assertEqual(res_t1_dup['kind'], 'reject')
+        self.assertEqual(res_t1_dup['payload']['reason'], 'action_already_active')
+
+        # Different target succeeds and gets a unique action_id
+        res_t2 = ref.lobbying.enact_action(agent, 'tariff', st, target='marvin', rounds=5)
+        self.assertEqual(res_t2['kind'], 'lobbying_action_ok')
+        self.assertNotEqual(res_t1['payload']['action_id'], res_t2['payload']['action_id'])
+
+    def test_shock_cooldown(self):
+        """Deregulation stock appreciation shock has a cooldown to prevent paid stock pumping."""
+        ref = make_referee()
+        agent = 'zero'
+
+        ref.lobbying.buy_influence(agent, 'ceres', tokens=3)
+        ref.lobbying.buy_influence(agent, 'earth', tokens=3)
+
+        # First enactment fires shock
+        res1 = ref.lobbying.enact_action(agent, 'circuit_breaker_suspension', 'ceres', rounds=5)
+        self.assertEqual(res1['kind'], 'lobbying_action_ok')
+        self.assertTrue(res1['payload']['shock_fired'])
+
+        # Immediate second enactment on earth does NOT fire shock due to cooldown
+        res2 = ref.lobbying.enact_action(agent, 'circuit_breaker_suspension', 'earth', rounds=5)
+        self.assertEqual(res2['kind'], 'lobbying_action_ok')
+        self.assertFalse(res2['payload']['shock_fired'])
+
+        # Advance rounds past cooldown
+        for _ in range(DEREGULATION_SHOCK_COOLDOWN_ROUNDS):
+            ref.step_round()
+
+        # Enacting another action now fires shock again
+        ref.lobbying.buy_influence(agent, 'mars', tokens=3)
+        res3 = ref.lobbying.enact_action(agent, 'circuit_breaker_suspension', 'mars', rounds=5)
+        self.assertEqual(res3['kind'], 'lobbying_action_ok')
+        self.assertTrue(res3['payload']['shock_fired'])
+
+
+class TestPlanetaryLobbyingServer(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.referee = AgoraReferee(db_path=':memory:', events=True)
+        cls.referee.new_game(seed=42, warmup_rounds=0)
+        cls.auth_tokens = {'zero': 'tok-zero', 'amos': 'tok-amos', 'admin': 'tok-admin'}
+        handler_class = make_handler(cls.referee, auth_tokens=cls.auth_tokens)
+        cls.server = HTTPServer(('127.0.0.1', 0), handler_class)
+        cls.port = cls.server.server_port
+        cls.base_url = f"http://127.0.0.1:{cls.port}"
+        cls.server_thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.server_thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def _post(self, path: str, payload: dict, token: Optional[str] = 'tok-zero'):
+        url = f"{self.base_url}{path}"
+        data_bytes = json.dumps(payload).encode('utf-8')
+        headers = {'Content-Type': 'application/json'}
+        if token:
+            headers['Authorization'] = f'Bearer {token}'
+        req = urllib.request.Request(url, data=data_bytes, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return resp.status, json.loads(resp.read().decode('utf-8'))
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read().decode('utf-8'))
+
+    def test_http_rejects_non_integer_tokens(self):
+        """POST /referee/lobbying/influence rejects non-integer tokens with 400."""
+        status, data = self._post('/referee/lobbying/influence', {'station_id': 'ceres', 'tokens': 'not-an-int'})
+        self.assertEqual(status, 400)
+        self.assertEqual(data['kind'], 'reject')
+        self.assertEqual(data['payload']['reason'], 'invalid_format')
+
+    def test_http_rejects_non_integer_rounds_and_param(self):
+        """POST /referee/lobbying/action rejects non-integer rounds or param_value with 400."""
+        status, data = self._post('/referee/lobbying/action', {
+            'action_type': 'circuit_breaker_suspension',
+            'station_id': 'ceres',
+            'rounds': 'bad_round'
+        })
+        self.assertEqual(status, 400)
+        self.assertEqual(data['kind'], 'reject')
+        self.assertEqual(data['payload']['reason'], 'invalid_format')
+
+        status, data = self._post('/referee/lobbying/action', {
+            'action_type': 'tariff',
+            'station_id': 'ceres',
+            'target': 'amos',
+            'param_value': 'bad_param'
+        })
+        self.assertEqual(status, 400)
+        self.assertEqual(data['kind'], 'reject')
+        self.assertEqual(data['payload']['reason'], 'invalid_format')
 
 
 if __name__ == '__main__':

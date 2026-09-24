@@ -11,21 +11,28 @@ from typing import Any, Dict, List, Optional, Tuple
 from agora.spatial import STATIONS
 
 TOKEN_COST_CR = 500
+DEREGULATION_SHOCK_COOLDOWN_ROUNDS = 5
 
 ACTIONS: Dict[str, Dict[str, Any]] = {
     'circuit_breaker_suspension': {
         'cost_tokens': 3,
         'default_rounds': 5,
+        'max_rounds': 10,
         'what': 'Temporarily disables LULD circuit breaker trading halts on the station',
     },
     'tariff': {
         'cost_tokens': 2,
         'default_rounds': 10,
+        'max_rounds': 20,
+        'min_param': 10,
+        'max_param': 500,
+        'default_param': 100,
         'what': 'Imposes a targeted docking tariff on a rival fleet entering the station',
     },
     'idle_fee_exemption': {
         'cost_tokens': 2,
         'default_rounds': 10,
+        'max_rounds': 25,
         'what': 'Exempts the corporate fleet from the 10 CR idle fee',
     },
 }
@@ -53,6 +60,12 @@ SCHEMA = [
         end_round    INTEGER NOT NULL,
         status       TEXT NOT NULL DEFAULT 'active'
     )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS lobbying_shocks (
+        agent_id     TEXT PRIMARY KEY,
+        last_round   INTEGER NOT NULL
+    )
     """
 ]
 
@@ -67,6 +80,8 @@ class LobbyingDesk:
         with ref.conn:
             for stmt in SCHEMA:
                 ref.conn.execute(stmt)
+            row = ref.conn.execute("SELECT COUNT(*) FROM lobbying_actions").fetchone()
+            self._action_counter = int(row[0]) if row else 0
 
     def _move(self, txn: str, legs: List[Tuple[str, str, int]]) -> None:
         conn, seq = self.ref.conn, self.ref._get_next_seq()
@@ -95,7 +110,7 @@ class LobbyingDesk:
             if have < cost:
                 return _reject('insufficient_credits', f"Influence costs {cost} CR ({TOKEN_COST_CR} CR/token); available {have} CR")
 
-            txn = f"lobbying-token-{ref.current_round}-{agent}-{st}"
+            txn = f"lobbying-token-{ref.current_round}-{agent}-{st}-{ref._get_next_seq()}"
             self._move(txn, [(agent, 'CR', -cost), ('SYSTEM', 'CR', cost)])
 
             ref.conn.execute(
@@ -147,8 +162,8 @@ class LobbyingDesk:
 
         cfg = ACTIONS[act]
         cost_tokens = cfg['cost_tokens']
-        duration = int(rounds) if rounds and rounds > 0 else cfg['default_rounds']
-        param = int(param_value) if param_value is not None else (100 if act == 'tariff' else 0)
+        max_r = cfg.get('max_rounds', cfg['default_rounds'] * 2)
+        duration = min(max(1, int(rounds)), max_r) if rounds is not None else cfg['default_rounds']
 
         if act == 'tariff':
             if not tgt:
@@ -158,8 +173,41 @@ class LobbyingDesk:
             fleets = {r[0] for r in ref.conn.execute("SELECT agent_id FROM fleet_roster")}
             if tgt not in fleets:
                 return _reject('invalid_target', f"Unknown fleet '{tgt}'")
+            min_p = cfg.get('min_param', 10)
+            max_p = cfg.get('max_param', 500)
+            param = min(max(min_p, int(param_value)), max_p) if param_value is not None else cfg.get('default_param', 100)
+        else:
+            param = 0
 
         with ref.lock, ref.conn:
+            r = ref.current_round
+
+            # Clean reject if an identical action is already active
+            if act == 'circuit_breaker_suspension':
+                active_row = ref.conn.execute(
+                    """SELECT 1 FROM lobbying_actions
+                       WHERE station_id = ? AND action_type = ? AND end_round >= ? AND status = 'active'""",
+                    (st, act, r)
+                ).fetchone()
+                if active_row:
+                    return _reject('action_already_active', f"Circuit breaker suspension is already active at {st}")
+            elif act == 'idle_fee_exemption':
+                active_row = ref.conn.execute(
+                    """SELECT 1 FROM lobbying_actions
+                       WHERE agent_id = ? AND action_type = ? AND end_round >= ? AND status = 'active'""",
+                    (agent, act, r)
+                ).fetchone()
+                if active_row:
+                    return _reject('action_already_active', f"Idle fee exemption is already active for {agent}")
+            elif act == 'tariff':
+                active_row = ref.conn.execute(
+                    """SELECT 1 FROM lobbying_actions
+                       WHERE station_id = ? AND target = ? AND action_type = ? AND end_round >= ? AND status = 'active'""",
+                    (st, tgt, act, r)
+                ).fetchone()
+                if active_row:
+                    return _reject('action_already_active', f"Tariff on {tgt} is already active at {st}")
+
             row = ref.conn.execute(
                 "SELECT tokens FROM planetary_influence WHERE agent_id = ? AND station_id = ?",
                 (agent, st)
@@ -174,22 +222,38 @@ class LobbyingDesk:
                 (cost_tokens, agent, st)
             )
 
-            r = ref.current_round
-            aid = f"act-{r}-{agent}-{act}-{st}"
+            self._action_counter += 1
+            target_suffix = f"-{tgt}" if tgt else ""
+            aid = f"act-{r}-{agent}-{act}-{st}{target_suffix}-{self._action_counter}"
             ref.conn.execute(
                 """INSERT INTO lobbying_actions (action_id, agent_id, station_id, action_type, target, cost_tokens, param_value, start_round, end_round, status)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')""",
                 (aid, agent, st, act, tgt, cost_tokens, param, r, r + duration)
             )
 
-            # Public deregulation event triggers stock appreciation shock
-            if getattr(ref, 'events_enabled', False) and hasattr(ref, 'events') and ref.events:
-                ref.events.record_locked(
-                    'deregulation_enacted',
-                    'public',
-                    actor=agent,
-                    detail=f"{agent} enacted council regulation '{act}' at {st} ({duration} rounds)"
+            # Public deregulation event triggers stock appreciation shock if not on cooldown
+            shock_fired = False
+            shock_row = ref.conn.execute(
+                "SELECT last_round FROM lobbying_shocks WHERE agent_id = ?",
+                (agent,)
+            ).fetchone()
+            last_shock = int(shock_row['last_round']) if shock_row else None
+            can_shock = (last_shock is None or (r - last_shock) >= DEREGULATION_SHOCK_COOLDOWN_ROUNDS)
+
+            if can_shock:
+                ref.conn.execute(
+                    """INSERT INTO lobbying_shocks (agent_id, last_round) VALUES (?, ?)
+                       ON CONFLICT(agent_id) DO UPDATE SET last_round = excluded.last_round""",
+                    (agent, r)
                 )
+                if getattr(ref, 'events_enabled', False) and hasattr(ref, 'events') and ref.events:
+                    ref.events.record_locked(
+                        'deregulation_enacted',
+                        'public',
+                        actor=agent,
+                        detail=f"{agent} enacted council regulation '{act}' at {st} ({duration} rounds)"
+                    )
+                shock_fired = True
 
         return {
             'v': 1,
@@ -206,6 +270,7 @@ class LobbyingDesk:
                 'end_round': r + duration,
                 'tokens_spent': cost_tokens,
                 'tokens_remaining': tokens_have - cost_tokens,
+                'shock_fired': shock_fired,
             }
         }
 

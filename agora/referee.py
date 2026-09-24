@@ -1,4 +1,3 @@
-from agora.lobbying import LobbyingDesk
 """
 agora.referee - Central referee for order validation, solvency auditing,
 book matching, and atomic double-entry ledger settlement.
@@ -26,6 +25,7 @@ from agora.covert import CovertDesk
 from agora.fog import FogEngine, env_fog, parse_fog
 from agora.order_flow import OrderFlowDesk, env_order_flow
 from agora.fleet import FleetDesk, GOODS, corp_of, is_ship_account, VESSEL_LOCATIONS_VIEW
+from agora.lobbying import LobbyingDesk
 
 STOCK_EXCHANGE_STATION = 'ceres'  # the one book every fleet stock trades on
 
