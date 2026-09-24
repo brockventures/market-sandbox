@@ -173,6 +173,15 @@ class TestCovertOps(unittest.TestCase):
         self.ref.current_round += covert_mod.SABOTAGE_COOLDOWN
         self.assertEqual(self.covert.execute_sabotage('marvin', target)['kind'], 'sabotage_ok')
 
+    def test_sabotage_alert_ignores_later_rounds_after_a_round_reset(self):
+        # A restart over the same database restarts current_round.
+        self.ref.current_round = 50
+        self.assertEqual(self.covert.execute_sabotage('zero', 'amos')['kind'], 'sabotage_ok')
+        self.ref.current_round = 0
+        self.assertEqual(self.covert.execute_sabotage('zero', 'amos')['kind'], 'sabotage_ok')
+        self.ref.new_game(seed=3)
+        self.assertEqual(self.covert.execute_sabotage('zero', 'amos')['kind'], 'sabotage_ok')
+
     def test_sabotage_traced_fine_restitution(self):
         actor = 'zero'
         target = 'amos'

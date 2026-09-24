@@ -21,12 +21,15 @@ from typing import Any, Dict, List, Optional, Tuple
 # at 4,000 plus ~2 traced fines of 12,000, for no income at all, since what a
 # sabotage took was destroyed. Now the saboteur keeps what it takes
 # (SABOTAGE_LOOT_SHARE 0 -> 1.0) and the prices come down: WIRETAP_COST
-# 2,500 -> 500, SABOTAGE_COST 4,000 -> 1,000, SABOTAGE_FINE 12,000 -> 3,000
+# 2,500 -> 500, SABOTAGE_COST 4,000 -> 1,500, SABOTAGE_FINE 12,000 -> 3,000
 # (still paid to the victim). SABOTAGE_COOLDOWN is new: a paying sabotage
-# must not be repeatable on the same cargo every round.
+# must not be repeatable on the same cargo every round. At 1,000 a saboteur
+# striking every SABOTAGE_COOLDOWN rounds out-earned one striking every 25
+# (styles_saboteur, seeds 1-40); at 1,500 the max rate earns less, so
+# spamming a rival does not pay.
 WIRETAP_COST = 500
 WIRETAP_ROUNDS = 10
-SABOTAGE_COST = 1_000
+SABOTAGE_COST = 1_500
 SABOTAGE_TRACE = 0.25
 SABOTAGE_FINE = 3_000
 # Share of what a sabotage takes (cargo siphoned in flight, goods stolen from
@@ -215,11 +218,15 @@ class CovertDesk:
 
         rnd = ref.current_round
         with ref.lock, ref.conn:
-            last = ref.conn.execute("SELECT MAX(round) FROM corp_events WHERE kind = 'sabotage' AND victim = ?",
-                                    (target,)).fetchone()[0] if getattr(ref, 'events_enabled', False) else None
+            # round <= rnd: a restart over the same database restarts the
+            # round count, and a later-numbered event must not lock the target.
+            last = ref.conn.execute("SELECT MAX(round) FROM corp_events WHERE kind = 'sabotage' AND victim = ? "
+                                    "AND round <= ?", (target, rnd)).fetchone()[0] \
+                if getattr(ref, 'events_enabled', False) else None
             if last is not None and rnd - last < SABOTAGE_COOLDOWN:
-                return _reject('target_alert', f"{target} is on alert after a sabotage in round {last}; "
-                                               f"try again from round {last + SABOTAGE_COOLDOWN}")
+                # The round stays out of the message: the sabotage is private (#153).
+                return _reject('target_alert', f"{target} is on alert after a recent sabotage; "
+                                               f"a corp can be sabotaged once every {SABOTAGE_COOLDOWN} rounds")
             avail = ref.peer._available(actor, 'CR') if hasattr(ref, 'peer') else ref.get_balance(actor, 'CR')
             if avail < SABOTAGE_COST:
                 return _reject('insufficient_credits',
