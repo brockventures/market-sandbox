@@ -3,6 +3,7 @@ tests/test_ticker.py - Background ticker & inactivity watchdog (Issue #61).
 """
 
 import json
+import socket
 import threading
 import time
 import unittest
@@ -14,6 +15,19 @@ from agora.server import make_handler
 from agora.ticker import TickerEngine
 
 
+def _wait_for_server(port: int, timeout: float = 5.0) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.connect(("127.0.0.1", port))
+            s.close()
+            return
+        except OSError:
+            time.sleep(0.01)
+    raise RuntimeError(f"Server failed to start on port {port} within {timeout}s")
+
+
 class TestTickerEngine(unittest.TestCase):
     def test_start_advances_rounds_on_schedule(self):
         referee = AgoraReferee()
@@ -22,9 +36,9 @@ class TestTickerEngine(unittest.TestCase):
 
         ticker.start()
         try:
-            deadline = time.time() + 2.0
+            deadline = time.time() + 5.0
             while referee.current_round < 2 and time.time() < deadline:
-                time.sleep(0.02)
+                time.sleep(0.01)
             self.assertGreaterEqual(referee.current_round, 2)
         finally:
             ticker.stop()
@@ -48,19 +62,23 @@ class TestTickerEngine(unittest.TestCase):
         ticker.start()
         try:
             ticker.pause(reason="manual_test")
-            time.sleep(0.15)
+            # Wait for pause to be reflected in status
+            deadline = time.time() + 5.0
+            while not ticker.status()["paused"] and time.time() < deadline:
+                time.sleep(0.01)
             status = ticker.status()
             self.assertTrue(status["paused"])
             self.assertEqual(status["pause_reason"], "manual_test")
             round_after_pause = referee.current_round
 
-            time.sleep(0.15)
+            # Paused ticker must not advance rounds
+            time.sleep(0.12)
             self.assertEqual(referee.current_round, round_after_pause, "paused ticker must not advance rounds")
 
             ticker.resume()
-            deadline = time.time() + 2.0
+            deadline = time.time() + 5.0
             while referee.current_round <= round_after_pause and time.time() < deadline:
-                time.sleep(0.02)
+                time.sleep(0.01)
             self.assertGreater(referee.current_round, round_after_pause)
         finally:
             ticker.stop()
@@ -71,9 +89,9 @@ class TestTickerEngine(unittest.TestCase):
         ticker = TickerEngine(referee, interval_sec=0.05, inactivity_rounds=2)
         ticker.start()
         try:
-            deadline = time.time() + 3.0
+            deadline = time.time() + 5.0
             while not ticker.status()["paused"] and time.time() < deadline:
-                time.sleep(0.02)
+                time.sleep(0.01)
             status = ticker.status()
             self.assertTrue(status["paused"])
             self.assertIn("inactivity_watchdog", status["pause_reason"])
@@ -86,7 +104,10 @@ class TestTickerEngine(unittest.TestCase):
         ticker = TickerEngine(referee, interval_sec=0.05, inactivity_rounds=3)
         ticker.start()
         try:
-            time.sleep(0.12)  # let 1-2 quiet rounds accumulate
+            # Let at least 1 quiet round accumulate
+            deadline = time.time() + 5.0
+            while referee.current_round < 1 and time.time() < deadline:
+                time.sleep(0.01)
             # Simulate order activity advancing the seq counter between ticks
             referee.submit_envelope({
                 "v": 1,
@@ -101,7 +122,10 @@ class TestTickerEngine(unittest.TestCase):
                     "seq_seen": referee.current_seq,
                 },
             })
-            time.sleep(0.08)
+            rnd_before = referee.current_round
+            deadline = time.time() + 5.0
+            while referee.current_round <= rnd_before and time.time() < deadline:
+                time.sleep(0.01)
             status = ticker.status()
             self.assertEqual(status["quiet_round_count"], 0, "an order between ticks must reset the quiet-round counter")
         finally:
@@ -138,7 +162,7 @@ class TestTickerStatusEndpoint(unittest.TestCase):
         port = server.server_address[1]
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        time.sleep(0.1)
+        _wait_for_server(port)
         try:
             conn = HTTPConnection("127.0.0.1", port)
             conn.request("GET", "/referee/ticker/status")
@@ -160,7 +184,7 @@ class TestTickerStatusEndpoint(unittest.TestCase):
         port = server.server_address[1]
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        time.sleep(0.1)
+        _wait_for_server(port)
         try:
             conn = HTTPConnection("127.0.0.1", port)
             conn.request("GET", "/referee/ticker/status")

@@ -1521,9 +1521,13 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 out['ships'] = ref.get_ship_accounts(agent_id)
             self._send_json(200, out)
         elif path == '/referee/leaderboard':
+            viewer = self._reader() if ref.fog else None
+            board = ref.get_leaderboard()
+            if ref.fog:
+                board = ref.fog.leaderboard_view(ref, viewer, board)
             self._send_json(200, {
                 'status': 'ok',
-                'leaderboard': ref.get_leaderboard()
+                'leaderboard': board
             })
         elif path in ('/referee/briefing', '/briefing', '/llms.txt'):
             from agora.briefing import build_briefing, build_state

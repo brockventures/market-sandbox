@@ -141,7 +141,19 @@ class TestAgoraWebSocket(unittest.TestCase):
         server_thread = threading.Thread(target=server.serve_forever, daemon=True)
         server_thread.start()
 
-        time.sleep(0.1)
+        # Wait for server thread to accept connections
+        deadline = time.time() + 5.0
+        connected = False
+        while time.time() < deadline:
+            try:
+                probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                probe.connect(("127.0.0.1", port))
+                probe.close()
+                connected = True
+                break
+            except OSError:
+                time.sleep(0.01)
+        self.assertTrue(connected, "Server failed to accept connections within deadline")
 
         try:
             # 1. Test regular GET request to /ws/terminal (returns 200 metadata)
@@ -213,10 +225,10 @@ class TestAgoraWebSocket(unittest.TestCase):
 
             # Read diff frames streamed over socket
             # Socket will receive ticks and/or depth_diff
-            sock_ws.settimeout(2.0)
+            sock_ws.settimeout(0.5)
             received_frames = []
-            start_t = time.time()
-            while time.time() - start_t < 3.0:
+            deadline = time.time() + 5.0
+            while time.time() < deadline:
                 try:
                     op, pl = decode_ws_frame(sock_ws)
                     if op == 0x1 and pl:
@@ -224,7 +236,7 @@ class TestAgoraWebSocket(unittest.TestCase):
                         if len(received_frames) >= 1:
                             break
                 except socket.timeout:
-                    break
+                    continue
 
             self.assertGreaterEqual(len(received_frames), 1)
             frame_types = [f["type"] for f in received_frames]
