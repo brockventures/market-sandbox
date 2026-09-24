@@ -287,11 +287,26 @@ class CircuitBreakerEngine:
         if not book:
             return {'ok': False, 'reason': 'book_not_found', 'detail': f"No order book found for {st}/{inst}"}
 
+        # Orders in a halted book wait up to halt_duration rounds, and funding
+        # is only checked when an order is placed. Anything that takes CR or
+        # goods in between (a debt payment, a contract penalty, a sabotage
+        # fine, borrow fees) is allowed to take funds a resting order had
+        # committed; every fill path is then expected to cancel the orders
+        # their owner can no longer pay for before matching, as the
+        # continuous book does (#162). The call auction never did, so a
+        # debt payment earlier in the same step_round was followed by an
+        # auction fill into a negative balance (#204).
+        prune = getattr(self.referee, '_prune_unfunded_locked', None)
+        if prune is not None:
+            prune(book, 'bid')
+            prune(book, 'ask')
+
         ref_price = self.get_vwap(st, inst)
         clearing_price, match_volume = find_clearing_price(book.bids, book.asks, ref_price)
 
         matched_trades = []
         trades_executed = 0
+        executed_volume = 0
 
         if clearing_price is not None and match_volume > 0:
             # Execute crossed orders at the single clearing price
@@ -307,8 +322,17 @@ class CircuitBreakerEngine:
                 if qty <= 0:
                     break
 
+                # Backstop: never settle more than either side holds right
+                # now (depots are not pruned above, and nothing but SYSTEM
+                # may go negative). An order that cannot pay for a single
+                # unit is cancelled and the uncross moves on.
+                qty, dropped = self._fundable_qty(book, best_bid, best_ask, clearing_price, qty, inst)
+                if dropped:
+                    continue
+
                 next_seq = self.referee._get_next_seq() if self.referee else 1
                 trades_executed += 1
+                executed_volume += qty
                 trade_id = f"trd-auc-{next_seq}-{trades_executed}"
                 cost = clearing_price * qty
 
@@ -390,8 +414,11 @@ class CircuitBreakerEngine:
                 if best_ask.is_filled:
                     book.asks.pop(0)
 
-            # Record auction trade into VWAP
-            self.record_trade(st, inst, clearing_price, match_volume, round_num)
+            # Record what actually settled: a backstop cancel can leave the
+            # executed volume below the volume the clearing price promised.
+            match_volume = executed_volume
+            if executed_volume > 0:
+                self.record_trade(st, inst, clearing_price, executed_volume, round_num)
 
         # Mark halt as reopened in database
         final_price = clearing_price if clearing_price is not None else ref_price
@@ -429,6 +456,33 @@ class CircuitBreakerEngine:
             'trades': matched_trades,
             'new_bands': self.get_bands(st, inst)
         }
+
+    def _fundable_qty(self, book, bid: Order, ask: Order, price: int, qty: int, inst: str) -> Tuple[int, bool]:
+        """Shrink an auction fill to what the buyer's CR and the seller's
+        goods cover. Returns (qty, dropped): dropped is True when a side could
+        not cover a single unit, in which case that order has been cancelled
+        and taken off the book."""
+        ref = self.referee
+        if ref is None:
+            return qty, False
+        cash = goods = None
+        if bid.agent_id != 'SYSTEM':
+            # The settlement below debits 'CR', so that is what must cover it.
+            cash = max(0, ref.get_balance(bid.agent_id, 'CR'))
+            qty = min(qty, cash // price)
+        if ask.agent_id != 'SYSTEM':
+            goods = max(0, ref.get_balance(ask.agent_id, inst))
+            qty = min(qty, goods)
+        if qty > 0:
+            return qty, False
+        for o, side, short in ((bid, book.bids, cash is not None and cash < price),
+                               (ask, book.asks, goods is not None and goods < 1)):
+            if not short:
+                continue
+            ref._cancel_order_locked(o.agent_id, o.order_id)
+            # A refused cancel (no orders row) must still never match it.
+            side[:] = [x for x in side if x is not o]
+        return 0, True
 
     def step_round(self, new_round: int) -> List[Dict[str, Any]]:
         """
