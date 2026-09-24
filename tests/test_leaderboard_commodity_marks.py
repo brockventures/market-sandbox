@@ -1,7 +1,7 @@
 """
-tests/test_leaderboard_commodity_marks.py - FOOD and ORE count toward net
-worth at their mean station spot price. Before this, a fleet that bought
-ORE to haul showed a pure loss on the leaderboard.
+tests/test_leaderboard_commodity_marks.py - FOOD, ORE, and FRAG count toward
+net worth at their local station spot price (#196). Before this, mean-spot marks
+rewarded buying at the cheapest station without hauling.
 """
 
 import unittest
@@ -23,21 +23,64 @@ class TestLeaderboardCommodityMarks(unittest.TestCase):
     def _entry(self, ref, agent):
         return next(e for e in ref.get_leaderboard() if e['agent_id'] == agent)
 
-    def test_starting_net_worth_unchanged(self):
+    def test_starting_net_worth_local_spot(self):
         ref = AgoraReferee()
-        self.assertEqual(self._entry(ref, 'amos')['net_worth'], 20000)
+        # At Ceres (default home station), FRAG spot is round(20.2) = 20.
+        # 10000 liquid CR + 1000 FRAG * 20 = 30000 CR.
+        self.assertEqual(self._entry(ref, 'amos')['net_worth'], 30000)
 
-    def test_ore_and_food_are_marked(self):
+    def test_ore_food_and_frag_are_marked_at_local_spot(self):
         ref = AgoraReferee()
         before = self._entry(ref, 'amos')['net_worth']
         self._give(ref, 'amos', 'ORE', 100)
         self._give(ref, 'amos', 'FOOD', 50)
         e = self._entry(ref, 'amos')
-        ore_mark = round(sum(ref.spatial.get_station_price(s, 'ORE') for s in STATIONS) / len(STATIONS))
-        food_mark = round(sum(ref.spatial.get_station_price(s, 'FOOD') for s in STATIONS) / len(STATIONS))
+        ore_mark = round(ref.spatial.get_station_price('ceres', 'ORE'))
+        food_mark = round(ref.spatial.get_station_price('ceres', 'FOOD'))
+        frag_mark = round(ref.spatial.get_station_price('ceres', 'FRAG'))
         self.assertGreater(ore_mark, 0)
+        self.assertGreater(food_mark, 0)
+        self.assertGreater(frag_mark, 0)
         self.assertEqual(e['net_worth'], before + 100 * ore_mark + 50 * food_mark)
-        self.assertEqual(e['commodity_marks'], {'FOOD': food_mark, 'ORE': ore_mark})
+        self.assertEqual(e['commodity_marks'], {'FRAG': frag_mark, 'FOOD': food_mark, 'ORE': ore_mark})
+
+    def test_spatial_variation_across_stations(self):
+        ref = AgoraReferee(asymmetric=True)
+        # Zero starts at Earth, Amos at Ceres
+        zero = self._entry(ref, 'zero')
+        amos = self._entry(ref, 'amos')
+        self.assertEqual(zero['station_id'], 'earth')
+        self.assertEqual(amos['station_id'], 'ceres')
+        self.assertEqual(zero['commodity_marks']['FOOD'], round(ref.spatial.get_station_price('earth', 'FOOD')))
+        self.assertEqual(amos['commodity_marks']['FOOD'], round(ref.spatial.get_station_price('ceres', 'FOOD')))
+        self.assertLess(zero['commodity_marks']['FOOD'], amos['commodity_marks']['FOOD'])
+
+    def test_anti_self_marking_buying_from_depot_does_not_inflate_net_worth(self):
+        ref = AgoraReferee()
+        ref.seed_depots()
+        # Move amos to Earth (where FOOD is cheapest in the solar system)
+        with ref.lock, ref.conn:
+            ref.conn.execute("UPDATE vessel_locations SET station_id='earth' WHERE agent_id='amos'")
+        initial_nw = self._entry(ref, 'amos')['net_worth']
+        book = ref.books['earth']['FOOD']
+        ask = book.best_ask()
+        env = {
+            'kind': 'order',
+            'payload': {
+                'order_id': 'amos-test-buy',
+                'agent_id': 'amos',
+                'instrument': 'FOOD',
+                'side': 'bid',
+                'qty': 100,
+                'limit_price': ask,
+                'station_id': 'earth'
+            }
+        }
+        res = ref.submit_envelope(env)
+        self.assertEqual(res['kind'], 'market_tick')
+        after_nw = self._entry(ref, 'amos')['net_worth']
+        # Buying at Earth depot must NOT inflate net worth: ask >= spot
+        self.assertLessEqual(after_nw, initial_nw)
 
 
 if __name__ == '__main__':

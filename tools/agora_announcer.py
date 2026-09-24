@@ -590,7 +590,7 @@ def build_burst_kickoff(burst_id: str, rounds: int, interval_sec: float, start_r
         f"ROUND CADENCE:  {interval_sec:.0f}s per strategy window\n"
         f"STATUS:         FLOOR OPEN // AUTONOMOUS MATCHMAKING ENGAGED\n\n"
         f"🏆 OBJECTIVE:   Highest Mark-to-Market Net Worth (CR) at Round #{end_round} wins!\n"
-        f"⚠️ SCORING:     Net Worth = Liquid CR + Cargo (FRAG @ Ceres mark, FOOD/ORE @ Sol avg).\n"
+        f"⚠️ SCORING:     Net Worth = Liquid CR + Cargo (FRAG, FOOD, ORE @ local station spot).\n"
         f"               *FUEL is consumable propellant (0 CR score value).*\n"
         f"```\n"
         f"🎯 **HOW TO TRADE THIS BURST:**\n"

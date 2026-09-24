@@ -156,9 +156,9 @@ class TestAgoraEngine(unittest.TestCase):
         referee = AgoraReferee()
         board = referee.get_leaderboard()
         self.assertEqual(len(board), 4)
-        # Flat start: 10000 cash + 1000 bananas * 10 = 20000
+        # Flat start at Ceres: 10000 cash + 1000 bananas * 20 (Ceres spot) = 30000
         for entry in board:
-            self.assertEqual(entry['net_worth'], 20000)
+            self.assertEqual(entry['net_worth'], 30000)
 
     def test_resting_order_escrow_committed_exposure(self):
         referee = AgoraReferee()
@@ -519,11 +519,11 @@ class TestAgoraEngine(unittest.TestCase):
     @pre_162_surface()
     def test_scoped_last_prices_and_uncontaminated_leaderboard_mark(self):
         referee = AgoraReferee()
-        # Initial baseline: all agents flat at 20,000 CR net worth (mark = 10)
+        # Initial baseline: all agents flat at 32,000 CR net worth (mark = 22 under PRE_162)
         board0 = referee.get_leaderboard()
         for e in board0:
-            self.assertEqual(e['mark_price'], 10)
-            self.assertEqual(e['net_worth'], 20000)
+            self.assertEqual(e['mark_price'], 22)
+            self.assertEqual(e['net_worth'], 32000)
 
         # 1. Execute a trade on FUEL at Ceres (price 26, qty 50) within baseline LULD bands (23.4 - 28.6)
         sell_fuel = {
@@ -557,7 +557,7 @@ class TestAgoraEngine(unittest.TestCase):
         # Critical invariant: Leaderboard mark for FRAG MUST NOT be contaminated by FUEL trade price of 26!
         board1 = referee.get_leaderboard()
         for e in board1:
-            self.assertEqual(e['mark_price'], 10, "FRAG mark price was contaminated by FUEL trade!")
+            self.assertEqual(e['mark_price'], 22, "FRAG mark price was contaminated by FUEL trade!")
 
         # 2. Post an active inside spread on Ceres FRAG (bid 21, ask 23)
         bid_frag = {
@@ -623,7 +623,7 @@ class TestAgoraEngine(unittest.TestCase):
         # Ceres FRAG mark in leaderboard must remain unaffected by FUEL fill
         # Book now has resting bid at 21 (ask was filled), so inside mid has no ask -> falls back to last trade (23)
         board3 = referee.get_leaderboard()
-        self.assertEqual(board3[0]['mark_price'], 23)
+        self.assertEqual(board3[0]['mark_price'], 22)
 
 if __name__ == '__main__':
     unittest.main()
