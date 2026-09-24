@@ -73,6 +73,17 @@ SCHEMA = [
         rights_exercised INTEGER NOT NULL DEFAULT 0,
         status          TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'expired'))
     )""",
+    """CREATE TABLE IF NOT EXISTS corp_loan_offers (
+        offer_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+        lender          TEXT NOT NULL,
+        borrower        TEXT NOT NULL,
+        principal       INTEGER NOT NULL,
+        interest_rate   REAL NOT NULL,
+        due_amount      INTEGER NOT NULL,
+        due_rounds      INTEGER NOT NULL,
+        created_round   INTEGER NOT NULL,
+        status          TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'accepted', 'cancelled'))
+    )""",
     """CREATE TABLE IF NOT EXISTS corp_predatory_loans (
         loan_id         INTEGER PRIMARY KEY AUTOINCREMENT,
         lender          TEXT NOT NULL,
@@ -132,6 +143,14 @@ class CorporateDesk:
                 for o in list(b.bids) + list(b.asks):
                     if o.agent_id == agent:
                         self.ref._cancel_order_locked(agent, o.order_id)
+        # Cancel any open tender offers from agent or targeting agent
+        for off in self.ref.conn.execute("SELECT offer_id FROM corp_tender_offers WHERE raider = ? AND status = 'open'", (agent,)).fetchall():
+            self.cancel_tender_offer(agent, off['offer_id'])
+        for off in self.ref.conn.execute("SELECT offer_id, raider FROM corp_tender_offers WHERE target = ? AND status = 'open'", (agent,)).fetchall():
+            self.cancel_tender_offer(off['raider'], off['offer_id'])
+        # Cancel any open loan offers from agent
+        for off in self.ref.conn.execute("SELECT offer_id FROM corp_loan_offers WHERE lender = ? AND status = 'open'", (agent,)).fetchall():
+            self.cancel_loan_offer(agent, off['offer_id'])
 
     def _settle_transits(self, src: str, dst: str) -> None:
         """Cargo still in flight for a corp that is out. Reassigning the trip
@@ -192,6 +211,7 @@ class CorporateDesk:
         win_ev = self.ref.conn.execute("SELECT actor, detail FROM corp_events WHERE kind = 'winner'").fetchone()
         winner = win_ev["actor"] if win_ev else (act[0] if len(act) == 1 and len(rows) > 1 else None)
         offers = [dict(r) for r in self.ref.conn.execute("SELECT * FROM corp_tender_offers WHERE status = 'open'").fetchall()]
+        loan_offers = [dict(r) for r in self.ref.conn.execute("SELECT * FROM corp_loan_offers WHERE status = 'open'").fetchall()]
         pills = [dict(r) for r in self.ref.conn.execute("SELECT * FROM corp_poison_pills WHERE status = 'active'").fetchall()]
         loans = [dict(r) for r in self.ref.conn.execute("SELECT * FROM corp_predatory_loans WHERE status = 'active'").fetchall()]
         return {
@@ -199,6 +219,7 @@ class CorporateDesk:
             "winner": winner,
             "win_reason": win_ev["detail"] if win_ev else ("last corp standing" if winner else None),
             "tender_offers": offers,
+            "loan_offers": loan_offers,
             "poison_pills": pills,
             "predatory_loans": loans,
             # Public and exposed events only: private and secret ones are
@@ -366,13 +387,13 @@ class CorporateDesk:
             if avail < escrow:
                 return _reject('insufficient_credits', f"Tender offer requires {escrow} CR in escrow; available {avail}")
 
-            self._move(f"tender-escrow-{raider}-{target}-r{ref.current_round}",
-                       ((raider, 'CR', -escrow), ('SYSTEM', 'CR', escrow)))
             cur = ref.conn.execute(
                 "INSERT INTO corp_tender_offers (raider, target, price, shares_wanted, shares_filled, escrow_cr, created_round, status) "
                 "VALUES (?, ?, ?, ?, 0, ?, ?, 'open')",
                 (raider, target, price, shares, escrow, ref.current_round))
             offer_id = cur.lastrowid
+            self._move(f"tender-escrow-{offer_id}-{raider}-{target}-r{ref.current_round}",
+                       ((raider, 'CR', -escrow), ('SYSTEM', 'CR', escrow)))
             self._event("tender_offer", raider,
                         f"{raider} launched hostile tender offer for {shares} shares of {target} at {price} CR/share (#{offer_id})",
                         victim=target)
@@ -416,13 +437,13 @@ class CorporateDesk:
                 return _reject('exceeds_offer', f"Offer only has {remaining} shares remaining")
 
             payout = shares * offer['price']
-            self._move(f"tender-fill-{offer_id}-{seller}-r{ref.current_round}", (
+            new_filled = offer['shares_filled'] + shares
+            self._move(f"tender-fill-{offer_id}-{seller}-{new_filled}-r{ref.current_round}", (
                 (seller, sym, -shares),
                 (offer['raider'], sym, shares),
                 ('SYSTEM', 'CR', -payout),
                 (seller, 'CR', payout),
             ))
-            new_filled = offer['shares_filled'] + shares
             new_status = 'filled' if new_filled >= offer['shares_wanted'] else 'open'
             ref.conn.execute("UPDATE corp_tender_offers SET shares_filled = ?, status = ? WHERE offer_id = ?",
                              (new_filled, new_status, offer_id))
@@ -470,6 +491,9 @@ class CorporateDesk:
         """Enact a dilutive rights offering if an outside entity acquires >30% stake (#164)."""
         ref = self.ref
         target = (target or '').strip().lower()
+        if caller is not None and caller not in (target, 'admin'):
+            return _reject('unauthorized', f"Only target corporation '{target}' can activate its poison pill (caller '{caller}' rejected)")
+
         if target not in self.active():
             return _reject('invalid_target', f"Target '{target}' is not an active corporation")
 
@@ -538,6 +562,9 @@ class CorporateDesk:
                 return _reject('no_active_pill', f"No active poison pill rights offering for '{target}'")
             pill = dict(pill)
 
+            if agent == target:
+                return _reject('target_excluded', f"Target corporation '{target}' cannot purchase its own discounted rights")
+
             if agent == pill['trigger_raider']:
                 return _reject('raider_excluded', f"Hostile raider {agent} is barred from participating in {target}'s rights offering")
 
@@ -551,8 +578,9 @@ class CorporateDesk:
                 return _reject('insufficient_credits', f"Exercising {qty} rights costs {cost} CR; available {avail_cr}")
 
             sym = self._sym(target)
+            new_exercised = pill['rights_exercised'] + qty
             # Mint new shares: SYSTEM balance debited -qty (float expands), agent credited +qty
-            self._move(f"poison-exercise-{target}-{agent}-r{ref.current_round}", (
+            self._move(f"poison-exercise-{target}-{agent}-{new_exercised}-r{ref.current_round}", (
                 (agent, 'CR', -cost),
                 (target, 'CR', cost),
                 ('SYSTEM', sym, -qty),
@@ -576,8 +604,8 @@ class CorporateDesk:
 
     # ------------------------------------------------------------ Predatory Lending & Debt Buying (#164)
 
-    def issue_predatory_loan(self, lender: str, borrower: str, principal: int, interest_rate: float = 0.20, due_rounds: int = 5) -> Dict[str, Any]:
-        """Issue high-interest private credit line to a rival; default converts directly into equity (#164)."""
+    def create_loan_offer(self, lender: str, borrower: str, principal: int, interest_rate: float = 0.20, due_rounds: int = 5) -> Dict[str, Any]:
+        """Propose a loan to another corporation with escrowed principal (#164)."""
         ref = self.ref
         lender = (lender or '').strip().lower()
         borrower = (borrower or '').strip().lower()
@@ -597,34 +625,109 @@ class CorporateDesk:
         if lender == borrower:
             return _reject('self_loan', "Cannot issue loan to yourself")
 
+        if interest_rate < 0.0 or interest_rate > 0.50:
+            return _reject('invalid_rate', "Interest rate must be between 0% and 50%")
+        if due_rounds < 3:
+            return _reject('invalid_term', "Loan term must be at least 3 rounds")
+
         due_amount = int(round(principal * (1.0 + interest_rate)))
-        sym = self._sym(borrower)
 
         with ref.lock, ref.conn:
             avail = ref.peer._available(lender, 'CR') if hasattr(ref, 'peer') else ref.get_balance(lender, 'CR')
             if avail < principal:
                 return _reject('insufficient_credits', f"Lender requires {principal} CR; available {avail}")
 
-            self._move(f"loan-disburse-{lender}-{borrower}-r{ref.current_round}", (
+            cur = ref.conn.execute(
+                "INSERT INTO corp_loan_offers (lender, borrower, principal, interest_rate, due_amount, due_rounds, created_round, status) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'open')",
+                (lender, borrower, principal, interest_rate, due_amount, due_rounds, ref.current_round))
+            offer_id = cur.lastrowid
+
+            self._move(f"loan-escrow-{offer_id}-{lender}-r{ref.current_round}", (
                 (lender, 'CR', -principal),
-                (borrower, 'CR', principal),
+                ('SYSTEM', 'CR', principal),
             ))
-            due_round = ref.current_round + due_rounds
+
+            self._event("loan_offered", lender,
+                        f"{lender} offered loan #{offer_id} to {borrower}: {principal} CR at {int(interest_rate*100)}% interest for {due_rounds} rounds",
+                        victim=borrower)
+            return {'v': 1, 'kind': 'loan_offer_ok', 'payload': {
+                'offer_id': offer_id, 'lender': lender, 'borrower': borrower,
+                'principal': principal, 'due_amount': due_amount, 'due_rounds': due_rounds
+            }}
+
+    def accept_loan_offer(self, borrower: str, offer_id: int) -> Dict[str, Any]:
+        """Accept a loan offer, disbursing escrowed funds (#164)."""
+        ref = self.ref
+        borrower = (borrower or '').strip().lower()
+        try:
+            offer_id = int(offer_id)
+        except (ValueError, TypeError):
+            return _reject('invalid_parameters', "Offer ID must be an integer")
+
+        with ref.lock, ref.conn:
+            offer = ref.conn.execute("SELECT * FROM corp_loan_offers WHERE offer_id = ? AND status = 'open'", (offer_id,)).fetchone()
+            if not offer:
+                return _reject('offer_not_found', f"Active loan offer #{offer_id} not found")
+            offer = dict(offer)
+
+            if borrower != offer['borrower'] and borrower != 'admin':
+                return _reject('unauthorized', f"Only borrower {offer['borrower']} can accept this loan offer")
+
+            sym = self._sym(borrower)
+            due_round = ref.current_round + offer['due_rounds']
+
+            self._move(f"loan-disburse-{offer_id}-{borrower}-r{ref.current_round}", (
+                ('SYSTEM', 'CR', -offer['principal']),
+                (borrower, 'CR', offer['principal']),
+            ))
+
+            ref.conn.execute("UPDATE corp_loan_offers SET status = 'accepted' WHERE offer_id = ?", (offer_id,))
             cur = ref.conn.execute(
                 "INSERT INTO corp_predatory_loans (lender, borrower, principal, due_amount, due_round, collateral_sym, status) "
                 "VALUES (?, ?, ?, ?, ?, ?, 'active')",
-                (lender, borrower, principal, due_amount, due_round, sym or ''))
+                (offer['lender'], borrower, offer['principal'], offer['due_amount'], due_round, sym or ''))
             loan_id = cur.lastrowid
-            self._event("predatory_loan", lender,
-                        f"{lender} issued predatory loan #{loan_id} to {borrower}: {principal} CR principal, {due_amount} CR due round {due_round} ({int(interest_rate*100)}% interest)",
+
+            self._event("predatory_loan", offer['lender'],
+                        f"{borrower} accepted loan #{loan_id} from {offer['lender']}: {offer['principal']} CR disbursed, {offer['due_amount']} CR due round {due_round}",
                         victim=borrower)
-            return {'v': 1, 'kind': 'loan_ok', 'payload': {
-                'loan_id': loan_id, 'lender': lender, 'borrower': borrower,
-                'principal': principal, 'due_amount': due_amount, 'due_round': due_round
+            return {'v': 1, 'kind': 'loan_accept_ok', 'payload': {
+                'loan_id': loan_id, 'lender': offer['lender'], 'borrower': borrower,
+                'principal': offer['principal'], 'due_amount': offer['due_amount'], 'due_round': due_round
             }}
 
+    def cancel_loan_offer(self, lender: str, offer_id: int) -> Dict[str, Any]:
+        """Cancel an open loan offer and refund escrowed principal (#164)."""
+        ref = self.ref
+        lender = (lender or '').strip().lower()
+        try:
+            offer_id = int(offer_id)
+        except (ValueError, TypeError):
+            return _reject('invalid_parameters', "Offer ID must be an integer")
+
+        with ref.lock, ref.conn:
+            offer = ref.conn.execute("SELECT * FROM corp_loan_offers WHERE offer_id = ? AND status = 'open'", (offer_id,)).fetchone()
+            if not offer:
+                return _reject('offer_not_found', f"Active loan offer #{offer_id} not found")
+            offer = dict(offer)
+
+            if lender != offer['lender'] and lender != 'admin':
+                return _reject('unauthorized', f"Only lender {offer['lender']} can cancel this loan offer")
+
+            self._move(f"loan-refund-{offer_id}-{lender}-r{ref.current_round}", (
+                ('SYSTEM', 'CR', -offer['principal']),
+                (offer['lender'], 'CR', offer['principal']),
+            ))
+            ref.conn.execute("UPDATE corp_loan_offers SET status = 'cancelled' WHERE offer_id = ?", (offer_id,))
+            return {'v': 1, 'kind': 'loan_cancel_ok', 'payload': {'offer_id': offer_id, 'refund_cr': offer['principal']}}
+
+    def issue_predatory_loan(self, lender: str, borrower: str, principal: int, interest_rate: float = 0.20, due_rounds: int = 5) -> Dict[str, Any]:
+        """Backward-compatible helper creating a loan offer (#164)."""
+        return self.create_loan_offer(lender, borrower, principal, interest_rate=interest_rate, due_rounds=due_rounds)
+
     def buy_distressed_debt(self, buyer: str, debtor: str, amount: int) -> Dict[str, Any]:
-        """Purchase distressed referee debt from SYSTEM; default converts to debtor's equity (#164)."""
+        """Purchase distressed referee debt from SYSTEM; converts into a structured debt claim (#164)."""
         ref = self.ref
         buyer = (buyer or '').strip().lower()
         debtor = (debtor or '').strip().lower()
@@ -653,11 +756,6 @@ class CorporateDesk:
             if avail < buy_amount:
                 return _reject('insufficient_credits', f"Requires {buy_amount} CR; available {avail}")
 
-            # Pay SYSTEM to retire official referee debt and convert to private claim
-            self._move(f"debt-buy-{buyer}-{debtor}-r{ref.current_round}", (
-                (buyer, 'CR', -buy_amount),
-                ('SYSTEM', 'CR', buy_amount),
-            ))
             self._set(debtor, debt=debt - buy_amount)
             due_amount = int(round(buy_amount * 1.25))  # 25% raider surcharge
             due_round = ref.current_round + 5
@@ -667,6 +765,12 @@ class CorporateDesk:
                 "VALUES (?, ?, ?, ?, ?, ?, 'active')",
                 (buyer, debtor, buy_amount, due_amount, due_round, sym or ''))
             loan_id = cur.lastrowid
+
+            # Pay SYSTEM to retire official referee debt and convert to private claim
+            self._move(f"debt-buy-{loan_id}-{buyer}-{debtor}-r{ref.current_round}", (
+                (buyer, 'CR', -buy_amount),
+                ('SYSTEM', 'CR', buy_amount),
+            ))
             self._event("debt_bought", buyer,
                         f"{buyer} purchased {buy_amount} CR of {debtor}'s distressed debt from SYSTEM; converted to predatory claim #{loan_id} ({due_amount} CR due round {due_round})",
                         victim=debtor)
@@ -707,7 +811,7 @@ class CorporateDesk:
             return {'v': 1, 'kind': 'loan_repaid_ok', 'payload': {'loan_id': loan_id, 'amount': due}}
 
     def _check_loan_maturities(self, round_num: int) -> None:
-        """Process maturing loans: auto-repay if cash allows, else default into equity conversion (#164)."""
+        """Process maturing loans: auto-repay if available cash allows, else route to corporate debt (#164)."""
         ref = self.ref
         mature = ref.conn.execute(
             "SELECT * FROM corp_predatory_loans WHERE status = 'active' AND due_round <= ?", (round_num,)
@@ -716,7 +820,7 @@ class CorporateDesk:
             loan_id = loan["loan_id"]
             borrower, lender = loan["borrower"], loan["lender"]
             due = loan["due_amount"]
-            avail = ref.get_balance(borrower, "CR")
+            avail = ref.peer._available(borrower, "CR") if hasattr(ref, 'peer') else ref.get_balance(borrower, "CR")
             if avail >= due:
                 self._move(f"loan-repay-auto-{loan_id}-r{round_num}",
                            ((borrower, "CR", -due), (lender, "CR", due)))
@@ -724,27 +828,11 @@ class CorporateDesk:
                 self._event("loan_repaid", borrower, f"{borrower} auto-repaid predatory loan #{loan_id} ({due} CR) to {lender}")
             else:
                 ref.conn.execute("UPDATE corp_predatory_loans SET status = 'defaulted' WHERE loan_id = ?", (loan_id,))
-                sym = loan["collateral_sym"] or self._sym(borrower)
-                if sym:
-                    base = {e["agent_id"]: e["net_worth"] - e.get("stocks_value", 0) for e in ref.get_leaderboard()}
-                    m = ref.stock_marks(base).get(sym, {})
-                    px = max(10, int(round(m.get("nav", 10.0) * 0.7)))
-                    shares_wanted = max(1, due // px)
-                    treasury_shares = ref.get_balance(borrower, sym)
-                    seize = min(treasury_shares, shares_wanted)
-                    if seize > 0:
-                        self._move(f"loan-default-equity-{loan_id}-r{round_num}",
-                                   ((borrower, sym, -seize), (lender, sym, seize)))
-                        self._event("loan_default", borrower,
-                                    f"{borrower} defaulted on predatory loan #{loan_id} ({due} CR); forfeited {seize} shares of {sym} to {lender}",
-                                    victim=borrower)
-                    else:
-                        self.add_debt(borrower, due, f"default on predatory loan #{loan_id}")
-                        self._event("loan_default", borrower,
-                                    f"{borrower} defaulted on predatory loan #{loan_id} ({due} CR); balance added to corporate debt",
-                                    victim=borrower)
-                else:
-                    self.add_debt(borrower, due, f"default on predatory loan #{loan_id}")
+                # Route unpaid amount to corporate debt so it follows fair auction caps instead of instant takeover
+                self.add_debt(borrower, due, f"default on predatory loan #{loan_id}")
+                self._event("loan_default", borrower,
+                            f"{borrower} defaulted on predatory loan #{loan_id} ({due} CR); balance added to corporate debt",
+                            victim=borrower)
 
     # ------------------------------------------------------------ rounds
 

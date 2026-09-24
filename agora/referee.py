@@ -2535,21 +2535,29 @@ class AgoraReferee:
             if getattr(self, 'corporate_enabled', False):
                 for b in board:
                     b['status'] = self.corporate.status(b['agent_id'])
+                    try:
+                        row = self.conn.execute(
+                            "SELECT COALESCE(SUM(escrow_cr), 0) AS escrow FROM corp_tender_offers WHERE raider = ? AND status = 'open'",
+                            (b['agent_id'],)).fetchone()
+                        if row and row['escrow']:
+                            b['net_worth'] += int(row['escrow'])
+                    except Exception:
+                        pass
             board.sort(key=lambda x: x['net_worth'], reverse=True)
             return board
 
     def get_live_shares(self, sym: str) -> int:
         """Returns the current circulating float of an equity symbol (#164).
-        At genesis, SYSTEM holds -1,000 shares, so -balance on SYSTEM represents the net issued float.
-        When rights offerings mint new shares, SYSTEM's negative balance deepens.
-        Sum of non-SYSTEM accounts also equals this float."""
+        Genesis float is 1,000 shares plus any defensive rights exercised."""
         try:
-            row = self.conn.execute("SELECT -balance AS live_float FROM accounts WHERE agent_id = 'SYSTEM' AND instrument = ?", (sym,)).fetchone()
-            if row and row['live_float'] is not None and row['live_float'] > 0:
-                return int(row['live_float'])
-            row2 = self.conn.execute("SELECT SUM(balance) AS total FROM accounts WHERE agent_id != 'SYSTEM' AND instrument = ?", (sym,)).fetchone()
-            if row2 and row2['total'] is not None and row2['total'] > 0:
-                return int(row2['total'])
+            from agora.equity import FLEET_EQUITIES
+            target = next((fleet for fleet, conf in FLEET_EQUITIES.items() if conf.get("symbol") == sym), None)
+            if target:
+                row = self.conn.execute(
+                    "SELECT COALESCE(SUM(rights_exercised), 0) AS extra FROM corp_poison_pills WHERE target = ?",
+                    (target,)).fetchone()
+                extra = int(row['extra']) if row and row['extra'] else 0
+                return 1000 + extra
         except Exception:
             pass
         return 1000

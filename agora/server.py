@@ -1203,24 +1203,34 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                     self._send_json(400, {'v': 1, 'kind': 'reject',
                                           'payload': {'reason': 'agent_required', 'detail': 'agent_id is required with this token'}})
                     return
-                if action == 'tender_offer':
-                    result = ref.corporate.create_tender_offer(agent, str(data.get('target', '')), int(data.get('price', 0)), int(data.get('shares', 0)))
-                elif action == 'tender_accept':
-                    result = ref.corporate.accept_tender_offer(agent, int(data.get('offer_id', 0)), int(data.get('shares', 0)))
-                elif action == 'tender_cancel':
-                    result = ref.corporate.cancel_tender_offer(agent, int(data.get('offer_id', 0)))
-                elif action == 'poison_pill':
-                    result = ref.corporate.activate_poison_pill(str(data.get('target') or agent), caller=agent)
-                elif action == 'rights_exercise':
-                    result = ref.corporate.exercise_rights(agent, str(data.get('target', '')), int(data.get('qty', 0)))
-                elif action == 'loan':
-                    result = ref.corporate.issue_predatory_loan(agent, str(data.get('borrower', '')), int(data.get('principal', 0)),
-                                                                interest_rate=float(data.get('interest_rate', 0.20)),
-                                                                due_rounds=int(data.get('due_rounds', 5)))
-                elif action == 'debt_buy':
-                    result = ref.corporate.buy_distressed_debt(agent, str(data.get('debtor', '')), int(data.get('amount', 0)))
-                elif action == 'loan_repay':
-                    result = ref.corporate.repay_loan(agent, int(data.get('loan_id', 0)))
+                try:
+                    if action == 'tender_offer':
+                        result = ref.corporate.create_tender_offer(agent, str(data.get('target', '')), int(data.get('price', 0)), int(data.get('shares', 0)))
+                    elif action == 'tender_accept':
+                        result = ref.corporate.accept_tender_offer(agent, int(data.get('offer_id', 0)), int(data.get('shares', 0)))
+                    elif action == 'tender_cancel':
+                        result = ref.corporate.cancel_tender_offer(agent, int(data.get('offer_id', 0)))
+                    elif action == 'poison_pill':
+                        result = ref.corporate.activate_poison_pill(str(data.get('target') or agent), caller=agent)
+                    elif action == 'rights_exercise':
+                        result = ref.corporate.exercise_rights(agent, str(data.get('target', '')), int(data.get('qty', 0)))
+                    elif action in ('loan_offer', 'loan'):
+                        result = ref.corporate.create_loan_offer(agent, str(data.get('borrower', '')), int(data.get('principal', 0)),
+                                                                 interest_rate=float(data.get('interest_rate', 0.20)),
+                                                                 due_rounds=int(data.get('due_rounds', 5)))
+                    elif action == 'loan_accept':
+                        result = ref.corporate.accept_loan_offer(agent, int(data.get('offer_id', 0)))
+                    elif action == 'loan_cancel':
+                        result = ref.corporate.cancel_loan_offer(agent, int(data.get('offer_id', 0)))
+                    elif action == 'debt_buy':
+                        result = ref.corporate.buy_distressed_debt(agent, str(data.get('debtor', '')), int(data.get('amount', 0)))
+                    elif action == 'loan_repay':
+                        result = ref.corporate.repay_loan(agent, int(data.get('loan_id', 0)))
+                    else:
+                        result = {'v': 1, 'kind': 'reject', 'payload': {'reason': 'unknown_action', 'detail': f"Unknown governance action '{action}'"}}
+                except (ValueError, TypeError) as e:
+                    self._send_json(400, {'v': 1, 'kind': 'reject', 'payload': {'reason': 'invalid_parameters', 'detail': str(e)}})
+                    return
                 self._send_json(400 if result.get('kind') == 'reject' else 200, result)
                 return
 

@@ -64,7 +64,10 @@ class TestHostileTakeovers(unittest.TestCase):
         base = {e["agent_id"]: e["net_worth"] - e.get("stocks_value", 0) for e in ref.get_leaderboard()}
         initial_nav = ref.stock_marks(base)[sym]['nav']
 
-        # Mint 500 new shares to zero
+        # Mint 500 new shares to zero via rights offering
+        ref.conn.execute(
+            "INSERT INTO corp_poison_pills (target, trigger_raider, activated_round, rights_price, rights_issued, rights_exercised, status) "
+            "VALUES ('marvin', 'amos', 1, 10, 500, 500, 'expired')")
         move(ref, 'test-mint-rights', (('SYSTEM', sym, -500), ('zero', sym, 500)))
 
         # Live float is now 1,500
@@ -124,7 +127,7 @@ class TestHostileTakeovers(unittest.TestCase):
         self.assertEqual(ref.get_balance('amos', sym), 350)
 
         # marvin board activates poison pill rights offering
-        pill_res = ref.corporate.activate_poison_pill('marvin')
+        pill_res = ref.corporate.activate_poison_pill('marvin', caller='marvin')
         self.assertEqual(pill_res['kind'], 'poison_pill_ok')
         self.assertEqual(pill_res['payload']['trigger_raider'], 'amos')
         rights_price = pill_res['payload']['rights_price']
@@ -133,6 +136,11 @@ class TestHostileTakeovers(unittest.TestCase):
         blocked = ref.corporate.exercise_rights('amos', 'marvin', qty=10)
         self.assertEqual(blocked['kind'], 'reject')
         self.assertEqual(blocked['payload']['reason'], 'raider_excluded')
+
+        # marvin itself is barred from purchasing its own discounted rights
+        self_blocked = ref.corporate.exercise_rights('marvin', 'marvin', qty=10)
+        self.assertEqual(self_blocked['kind'], 'reject')
+        self.assertEqual(self_blocked['payload']['reason'], 'target_excluded')
 
         # zero (friendly shareholder) exercises 200 rights, expanding float and diluting amos
         zero_marv_before = ref.get_balance('zero', sym)
@@ -145,31 +153,35 @@ class TestHostileTakeovers(unittest.TestCase):
         self.assertEqual(ref.corporate.takeover_threshold('marvin'), 601)
         clean(self, ref)
 
-    def test_predatory_loan_and_equity_default(self):
+    def test_predatory_loan_and_default(self):
         ref = game()
-        # amos issues 10,000 CR predatory loan to marvin with 20% interest due in 2 rounds
-        res = ref.corporate.issue_predatory_loan('amos', 'marvin', principal=10000, interest_rate=0.20, due_rounds=2)
-        self.assertEqual(res['kind'], 'loan_ok')
-        loan_id = res['payload']['loan_id']
-        self.assertEqual(res['payload']['due_amount'], 12000)
+        # amos offers 5,000 CR loan to marvin with 20% interest due in 3 rounds
+        res = ref.corporate.create_loan_offer('amos', 'marvin', principal=5000, interest_rate=0.20, due_rounds=3)
+        self.assertEqual(res['kind'], 'loan_offer_ok')
+        offer_id = res['payload']['offer_id']
+        self.assertEqual(res['payload']['due_amount'], 6000)
+        clean(self, ref)
+
+        # marvin accepts the loan offer
+        acc = ref.corporate.accept_loan_offer('marvin', offer_id)
+        self.assertEqual(acc['kind'], 'loan_accept_ok')
+        loan_id = acc['payload']['loan_id']
+        self.assertEqual(ref.get_balance('marvin', 'CR'), 15000)
         clean(self, ref)
 
         # Drain marvin's cash so default occurs
         m_cr = ref.get_balance('marvin', 'CR')
         move(ref, 'drain-marvin', (('marvin', 'CR', -m_cr), ('SYSTEM', 'CR', m_cr)))
 
-        m_marv_before = ref.get_balance('marvin', 'EQ_MARV')
-        amos_marv_before = ref.get_balance('amos', 'EQ_MARV')
-
-        # Step 2 rounds to maturity
+        # Step 3 rounds to maturity
+        ref.step_round()
         ref.step_round()
         ref.step_round()
 
-        # Loan defaulted: debt converted into marvin treasury shares forfeited to amos!
+        # Loan defaulted: due balance added to corporate debt rather than instant takeover!
         loan_row = ref.conn.execute("SELECT status FROM corp_predatory_loans WHERE loan_id = ?", (loan_id,)).fetchone()
         self.assertEqual(loan_row['status'], 'defaulted')
-        self.assertLess(ref.get_balance('marvin', 'EQ_MARV'), m_marv_before)
-        self.assertGreater(ref.get_balance('amos', 'EQ_MARV'), amos_marv_before)
+        self.assertGreaterEqual(ref.corporate._row('marvin')['debt'], 6000)
         clean(self, ref)
 
     def test_distressed_debt_buying(self):
