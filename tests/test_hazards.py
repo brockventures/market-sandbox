@@ -61,6 +61,17 @@ class TestHazards(unittest.TestCase):
             return fly(ref, qty=10)['payload']['hazard']
         self.assertEqual(run(), run())
 
+    def test_loss_fraction_clamped_to_10_20_pct(self):
+        # #194: single hazard roll must not destroy over 20% of cargo hold
+        ref = game('0,1', seed=42)
+        qty = 1000
+        engine = ref.hazards
+        for seed in range(50):
+            engine.reset(seed)
+            _, lost, _ = engine.roll(cargo_qty=qty)
+            self.assertGreaterEqual(lost, int(qty * 0.10))
+            self.assertLessEqual(lost, int(qty * 0.20))
+
 
 if __name__ == '__main__':
     unittest.main()
