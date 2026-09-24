@@ -31,7 +31,10 @@ class TestTransitCancelNoDeadlock(unittest.TestCase):
         th.start()
         th.join(5)
         self.assertFalse(th.is_alive(), "initiate_transit deadlocked on self.lock")
-        self.assertFalse(ref.lock.locked())
+        # RLock has no .locked() before 3.14: a free lock is one another
+        # thread can take without blocking.
+        self.assertTrue(ref.lock.acquire(blocking=False), "self.lock left held")
+        ref.lock.release()
         self.assertEqual(result.get('status'), 'in_transit')
 
         row = ref.conn.execute("SELECT status FROM orders WHERE order_id = 'rest-1'").fetchone()

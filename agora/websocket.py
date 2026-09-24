@@ -10,6 +10,7 @@ Implements /ws/terminal differential streaming frames for Terminal Web HUD:
 """
 
 import base64
+import contextlib
 import hashlib
 import json
 import select
@@ -170,8 +171,22 @@ class TerminalDiffEngine:
             return ref.fog.depot_view(ref, None)
         return ref.get_depot_summary()
 
+    # Frames are built under the referee lock, since every read goes through
+    # its one shared sqlite connection (#197), and sent after it is released.
+    def _ref_lock(self):
+        return getattr(self.referee, "lock", None) or contextlib.nullcontext()
+
     def get_snapshot(self, station_id: str = "ceres", instrument: str = "FRAG") -> Dict[str, Any]:
         """Generate a full initial snapshot frame covering all terminal panels."""
+        with self._ref_lock():
+            return self._get_snapshot(station_id, instrument)
+
+    def get_diffs(self, station_id: str = "ceres", instrument: str = "FRAG") -> List[Dict[str, Any]]:
+        """Calculate differential streaming frames since last invocation."""
+        with self._ref_lock():
+            return self._get_diffs(station_id, instrument)
+
+    def _get_snapshot(self, station_id: str, instrument: str) -> Dict[str, Any]:
         st = station_id.lower()
         inst = instrument.upper()
         book_snap = self._book(st, inst)
@@ -220,8 +235,7 @@ class TerminalDiffEngine:
             "loans": loans
         }
 
-    def get_diffs(self, station_id: str = "ceres", instrument: str = "FRAG") -> List[Dict[str, Any]]:
-        """Calculate differential streaming frames since last invocation."""
+    def _get_diffs(self, station_id: str, instrument: str) -> List[Dict[str, Any]]:
         diffs = []
         st = station_id.lower()
         inst = instrument.upper()

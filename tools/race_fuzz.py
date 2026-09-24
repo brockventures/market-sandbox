@@ -231,9 +231,9 @@ def snapshot_supply(ref) -> Dict[str, int]:
 
 
 def check_invariants(ref, supply0: Optional[Dict[str, int]]) -> List[str]:
-    """Caller must NOT hold ref.lock. Only lock-free referee helpers are used
-    in here: ref.lock is a plain Lock, so anything that re-takes it would
-    deadlock the checker."""
+    """Takes ref.lock for the whole check, so the state it reads is one
+    consistent snapshot. ref.lock is reentrant since #197, so referee helpers
+    that take it themselves are safe to call from in here."""
     v: List[str] = []
     with ref.lock:
         conn = ref.conn

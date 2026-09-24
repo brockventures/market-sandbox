@@ -143,7 +143,12 @@ class AgoraReferee:
         self._reactive: Dict[str, Any] = {}
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
-        self.lock = threading.Lock()
+        # One connection, shared by every request thread, the ticker and the
+        # websocket streams, so EVERY use of it -- reads included -- must hold
+        # this lock (#197). Reentrant, so cheap self-locking helpers
+        # (current_seq, fleet_out, get_vessel_location) can be called both
+        # from outside and from inside a locked writer.
+        self.lock = threading.RLock()
         self.default_instrument = instrument or 'FRAG'
         self.galnet = galnet or GalNetEngine()
         self.spatial = spatial or StationPriceEngine()
@@ -789,10 +794,11 @@ class AgoraReferee:
 
     @property
     def current_seq(self) -> int:
-        cur = self.conn.cursor()
-        cur.execute("SELECT COALESCE(MAX(seq), 0) FROM book_events")
-        row = cur.fetchone()
-        return row[0] if row else 0
+        with self.lock:
+            cur = self.conn.cursor()
+            cur.execute("SELECT COALESCE(MAX(seq), 0) FROM book_events")
+            row = cur.fetchone()
+            return row[0] if row else 0
 
     def mark_active(self, agent_id: Optional[str]) -> None:
         """Record that a fleet acted this round (exempts it from the idle fee)."""
@@ -950,6 +956,12 @@ class AgoraReferee:
         return self.book.to_dict()
 
     def get_vessel_location(self, agent_id: str) -> Dict[str, Any]:
+        # Takes the lock itself: it is called from GET handlers, fog and the
+        # briefing, and for a never-seen agent_id it INSERTs (#197).
+        with self.lock:
+            return self._get_vessel_location_locked(agent_id)
+
+    def _get_vessel_location_locked(self, agent_id: str) -> Dict[str, Any]:
         cur = self.conn.cursor()
         cur.execute("""
             SELECT transit_id, origin, destination, departure_round, arrival_round, commodity, cargo_qty, fuel_burned,
@@ -1066,7 +1078,25 @@ class AgoraReferee:
         """Why a bankrupt or taken-over corp cannot act, or None."""
         if not agent_id or not getattr(self, 'corporate_enabled', False):
             return None
-        return self.corporate.out_reason(agent_id)
+        with self.lock:
+            return self.corporate.out_reason(agent_id)
+
+    def upsert_fleet_roster(self, agent_id: str, display_name: str, home_station: str,
+                            genesis_cr: Any, genesis_frag: Any, genesis_fuel: Any) -> None:
+        """POST /referee/admin/fleets. Takes effect on the next reset. Used to
+        run on the shared connection with no lock and commit, which could
+        commit another thread's half-done transaction (#197)."""
+        with self.lock, self.conn:
+            self.conn.execute("""
+                INSERT INTO fleet_roster (agent_id, display_name, home_station, genesis_cr, genesis_frag, genesis_fuel)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(agent_id) DO UPDATE SET
+                    display_name = excluded.display_name,
+                    home_station = excluded.home_station,
+                    genesis_cr = excluded.genesis_cr,
+                    genesis_frag = excluded.genesis_frag,
+                    genesis_fuel = excluded.genesis_fuel
+            """, (agent_id, display_name, home_station, genesis_cr, genesis_frag, genesis_fuel))
 
     def initiate_transit(self, agent_id: str, destination: str, commodity: str = 'FRAG', cargo_qty: int = 0, perishable: Optional[bool] = None,
                          escort: bool = False) -> Dict[str, Any]:
@@ -1199,7 +1229,7 @@ class AgoraReferee:
                 for b in self.books[origin].values():
                     for o in list(b.bids) + list(b.asks):
                         if o.agent_id == agent_id:
-                            # Already inside self.lock: use the lock-free body.
+                            # Already inside self.lock: use the _locked body.
                             self._cancel_order_locked(agent_id, o.order_id)
 
             transit_id = f"tx-{agent_id}-{time.time_ns()}"
@@ -2146,14 +2176,21 @@ class AgoraReferee:
 
     def _cancel_order_locked(self, agent_id: str, order_id: str) -> Dict[str, Any]:
         """
-        cancel_order() body. Caller must already hold self.lock, which is a
-        plain (non-reentrant) Lock: calling cancel_order() while holding it
-        blocks that thread forever and every later lock-taker behind it.
+        cancel_order() body. Caller must already hold self.lock.
+
+        The DB write comes first and the order leaves the in-memory book only
+        once it has committed. The other way round, a write that threw left
+        the order 'open' in the orders table but resting in no book: it could
+        never match or be cancelled, and came back on restart (#197).
         """
         removed = None
+        removed_from = None
         for st_books in self.books.values():
             for b in st_books.values():
-                removed = b.remove_order(order_id, agent_id)
+                for o in (*b.bids, *b.asks):
+                    if o.order_id == order_id and o.agent_id == agent_id:
+                        removed, removed_from = o, b
+                        break
                 if removed is not None:
                     break
             if removed is not None:
@@ -2187,6 +2224,7 @@ class AgoraReferee:
                     'remaining_qty': removed.remaining_qty,
                 }))
             )
+        removed_from.remove_order(order_id, agent_id)
 
         return {
             'v': 1,

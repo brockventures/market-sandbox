@@ -64,7 +64,12 @@ class TickerEngine:
         self._burst_rounds_remaining = 0
         self._burst_resume_ticker_after = False
 
+    # Never read referee.current_seq while holding self._lock: it takes the
+    # referee lock, and HTTP handlers hold the referee lock while they call
+    # status()/pause()/resume() here. Read it first, then lock (#197).
+
     def start(self) -> None:
+        seq = getattr(self.referee, "current_seq", 0)
         with self._lock:
             if self._running:
                 return
@@ -72,7 +77,7 @@ class TickerEngine:
             self._paused = False
             self._pause_reason = None
             self._quiet_round_count = 0
-            self._last_seq = getattr(self.referee, "current_seq", 0)
+            self._last_seq = seq
             self._stop_event.clear()
             self._next_tick_at = time.time() + self.interval_sec
         self._thread = threading.Thread(target=self._run_loop, name="agora-ticker", daemon=True)
@@ -90,11 +95,12 @@ class TickerEngine:
             self._pause_reason = reason
 
     def resume(self) -> None:
+        seq = getattr(self.referee, "current_seq", 0)
         with self._lock:
             self._paused = False
             self._pause_reason = None
             self._quiet_round_count = 0
-            self._last_seq = getattr(self.referee, "current_seq", 0)
+            self._last_seq = seq
             self._next_tick_at = time.time() + self.interval_sec
 
     def configure(
@@ -267,9 +273,10 @@ class TickerEngine:
                     self._last_round_result = {"status": "error", "error": str(exc)}
                 continue
 
+            seq_now = getattr(self.referee, "current_seq", None)
             with self._lock:
                 self._last_round_result = result
-                new_seq = getattr(self.referee, "current_seq", self._last_seq)
+                new_seq = self._last_seq if seq_now is None else seq_now
                 if new_seq == self._last_seq:
                     self._quiet_round_count += 1
                 else:

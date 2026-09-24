@@ -12,6 +12,7 @@ Implements Section 3 endpoints of docs/wire-spec.md:
 """
 
 import hmac
+import io
 import json
 import os
 import time
@@ -122,7 +123,57 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             }
         }
 
+    # ------------------------------------------------------------ locking
+    # The referee has ONE sqlite connection, shared by every request thread
+    # (ThreadingHTTPServer), the ticker and the websocket streams. Python's
+    # sqlite3 is not safe to share without a lock: unlocked reads returned
+    # wrong rows and NULLs, and an unlocked commit landed inside another
+    # thread's locked transaction and lost a ledger write (#197). So each
+    # request runs start to finish under ref.lock (reentrant; the referee's
+    # own writers re-take it). Two things stay outside it:
+    #   - the request body is read from the socket first, so a slow or stalled
+    #     client cannot hold the referee hostage;
+    #   - the response is buffered and written to the socket after release.
+    # A websocket upgrade is long-lived and is not wrapped: the stream takes
+    # the lock per frame it builds (agora/websocket.py).
+
+    def _is_ws_upgrade(self) -> bool:
+        path = urllib.parse.urlparse(self.path).path.rstrip('/')
+        return path == '/ws/terminal' and self.headers.get('Upgrade', '').lower() == 'websocket'
+
+    def _run_locked(self, body) -> None:
+        ref = self.referee
+        if ref is None:  # a throwaway per-request referee: nothing shared
+            body()
+            return
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+        except (TypeError, ValueError):
+            length = 0  # the handler reports the bad header itself
+        if length > 0:
+            self.rfile = io.BytesIO(self.rfile.read(length))
+        real_wfile = self.wfile
+        buf = io.BytesIO()
+        self.wfile = buf
+        try:
+            with ref.lock:
+                body()
+        finally:
+            self.wfile = real_wfile
+            out = buf.getvalue()
+            if out:
+                real_wfile.write(out)
+
     def do_POST(self):
+        self._run_locked(self._do_POST)
+
+    def do_GET(self):
+        if self._is_ws_upgrade():
+            self._do_GET()
+            return
+        self._run_locked(self._do_GET)
+
+    def _do_POST(self):
         parsed_url = urllib.parse.urlparse(self.path)
         path = parsed_url.path.rstrip('/')
 
@@ -467,20 +518,10 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 return
 
             ref = self.referee or AgoraReferee()
-            ref.conn.execute("""
-                INSERT INTO fleet_roster (agent_id, display_name, home_station, genesis_cr, genesis_frag, genesis_fuel)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(agent_id) DO UPDATE SET
-                    display_name = excluded.display_name,
-                    home_station = excluded.home_station,
-                    genesis_cr = excluded.genesis_cr,
-                    genesis_frag = excluded.genesis_frag,
-                    genesis_fuel = excluded.genesis_fuel
-            """, (
+            ref.upsert_fleet_roster(
                 agent_id, payload['display_name'], payload.get('home_station', 'ceres'),
                 payload['genesis_cr'], payload['genesis_frag'], payload['genesis_fuel'],
-            ))
-            ref.conn.commit()
+            )
             self._send_json(200, {
                 'v': 1, 'kind': 'fleet_roster_ok',
                 'payload': {
@@ -1276,7 +1317,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
         else:
             self._send_json(200, result)
 
-    def do_GET(self):
+    def _do_GET(self):
         parsed_url = urllib.parse.urlparse(self.path)
         path = parsed_url.path.rstrip('/')
         query_params = urllib.parse.parse_qs(parsed_url.query)
