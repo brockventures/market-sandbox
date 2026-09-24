@@ -72,6 +72,13 @@ class TestHazards(unittest.TestCase):
             self.assertGreaterEqual(lost, int(qty * 0.10))
             self.assertLessEqual(lost, int(qty * 0.20))
 
+    def test_default_p_loss_rebalance(self):
+        # #203: default breach odds 25% (1 in 4 marbles) bounds hauler p90 peak
+        from agora.hazards import DEFAULT_P_LOSS
+        from agora.bag import composition
+        self.assertEqual(DEFAULT_P_LOSS, 0.25)
+        self.assertEqual(composition(DEFAULT_P_LOSS), (1, 4))
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -26,7 +26,7 @@ from typing import Any, Dict, Optional, Tuple
 from agora.bag import Bags
 
 DEFAULT_P_DELAY = 0.20
-DEFAULT_P_LOSS = 0.20
+DEFAULT_P_LOSS = 0.25
 DELAY_ROUNDS = (1, 3)
 LOSS_FRACTION = (0.10, 0.20)
 
