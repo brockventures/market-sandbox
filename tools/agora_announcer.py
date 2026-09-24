@@ -151,6 +151,22 @@ CONTRACT_DELIVER_PATTERN = re.compile(
     re.IGNORECASE
 )
 
+FLEET_PATTERN = re.compile(
+    r"(?:!|/)?\b(?:FLEET|VESSELS)\b(?:\s+(?:AS\s+|AGENT:?\s*)?([A-Za-z0-9_]+))?",
+    re.IGNORECASE
+)
+
+SHIP_BUY_PATTERN = re.compile(
+    r"(?:!|/)?\b(?:SHIP\s+BUY|BUY\s+SHIP)\b(?:\s+(?:AT|ON|VESSEL)?\s*([A-Za-z0-9_/]+))?(?:\s+(?:AS\s+|AGENT:?\s*)?([A-Za-z0-9_]+))?",
+    re.IGNORECASE
+)
+
+GOODS_TRANSFER_PATTERN = r"(?:FRAG|FUEL|FOOD|ORE|BANANA)"
+TRANSFER_PATTERN = re.compile(
+    rf"(?:!|/)?\bTRANSFER\s+(?:(\d+)\s+({GOODS_TRANSFER_PATTERN})\s+(?:FROM\s+)?([A-Za-z0-9_/@]+)\s+(?:TO\s+)?([A-Za-z0-9_/@]+)|(?:FROM\s+)?([A-Za-z0-9_/@]+)\s+(?:TO\s+)([A-Za-z0-9_/@]+)\s+(\d+)\s+({GOODS_TRANSFER_PATTERN})|([A-Za-z0-9_/@]+)\s+([A-Za-z0-9_/@]+)\s+(\d+)\s+({GOODS_TRANSFER_PATTERN}))\b",
+    re.IGNORECASE
+)
+
 AUTHOR_MAP = {
     "1468012353206354197": "amos",   # Amos
     "1541205716948353074": "amos",   # Ivy
@@ -609,6 +625,252 @@ def submit_transit_to_referee(transit: dict, ref_token: str) -> dict:
         return {"status": "error", "error": str(e)}
 
 
+def fetch_fleet_from_referee(agent_id: str, ref_token: str) -> dict:
+    """Fetch corporate fleet roster and vessel status from GET /referee/vessels."""
+    url = f"{REFEREE_BASE_URL.rstrip('/')}/referee/vessels?agent_id={urllib.parse.quote(agent_id)}"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {ref_token}",
+            "User-Agent": "AgoraTradeTerminal/2.0"
+        },
+        method="GET"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8")
+        try:
+            return {"status": "error", "http_code": e.code, "error": json.loads(raw)}
+        except Exception:
+            return {"status": "error", "http_code": e.code, "error": raw}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def submit_ship_buy_to_referee(agent_id: str, at_vessel: Optional[str], ref_token: str) -> dict:
+    """Submit ship procurement to POST /referee/vessels/buy."""
+    url = f"{REFEREE_BASE_URL.rstrip('/')}/referee/vessels/buy"
+    body = {"agent_id": agent_id}
+    if at_vessel:
+        body["vessel_id"] = at_vessel
+    payload = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {ref_token}",
+            "Content-Type": "application/json",
+            "User-Agent": "AgoraTradeTerminal/2.0"
+        },
+        method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8")
+        try:
+            return {"status": "error", "http_code": e.code, "error": json.loads(raw)}
+        except Exception:
+            return {"status": "error", "http_code": e.code, "error": raw}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def submit_transfer_to_referee(transfer: dict, ref_token: str) -> dict:
+    """Submit goods transfer to POST /referee/vessels/transfer."""
+    url = f"{REFEREE_BASE_URL.rstrip('/')}/referee/vessels/transfer"
+    body = {
+        "agent_id": transfer["agent_id"],
+        "from": transfer["from"],
+        "to": transfer["to"],
+        "instrument": transfer["instrument"],
+        "qty": transfer["qty"]
+    }
+    payload = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {ref_token}",
+            "Content-Type": "application/json",
+            "User-Agent": "AgoraTradeTerminal/2.0"
+        },
+        method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8")
+        try:
+            return {"status": "error", "http_code": e.code, "error": json.loads(raw)}
+        except Exception:
+            return {"status": "error", "http_code": e.code, "error": raw}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def format_fleet_roster(fleet_res: dict, agent_id: str) -> str:
+    """Format corporate fleet roster for Discord message (budget-conscious, <=2000 chars)."""
+    fleet = fleet_res.get("fleet") or {}
+    fl_name = FLEET_NAMES.get(agent_id, agent_id.upper())
+    ships = fleet.get("ships", [])
+    owned = fleet.get("owned", len(ships))
+    cap = fleet.get("ship_cap", 5)
+    max_ships = fleet.get("max_ships", 5)
+    upkeep = fleet.get("upkeep_per_round", 0)
+    next_ship = fleet.get("next_ship")
+    book_val = fleet.get("book_value", 0)
+
+    lines = [
+        f"🚀 **[Agora Trade Terminal] Fleet Roster: {fl_name}**",
+        f"> **Active Hulls:** {owned}/{max_ships} (cap: {cap}) | **Upkeep:** {upkeep:,} CR/round | **Book Value:** {book_val:,} CR"
+    ]
+    for s in ships:
+        vid = s.get("vessel_id", "?")
+        st = s.get("station_id", "?").title()
+        status = s.get("status", "docked")
+        hold = s.get("hold") or {}
+        fuel = s.get("fuel", hold.get("FUEL", 0))
+        cargo_items = [f"{q:,} {k}" for k, q in hold.items() if k != "FUEL" and q > 0]
+        cargo_str = ", ".join(cargo_items) if cargo_items else "empty"
+        cap_str = f"/{s['hold_capacity']:,}" if s.get("hold_capacity") else ""
+        used = s.get("hold_used", 0)
+
+        if status == "in_transit":
+            tr = (s.get("location") or {}).get("transit") or {}
+            orig = tr.get("origin", "?").title()
+            dest = tr.get("destination", st).title()
+            eta = tr.get("arrival_round", "?")
+            lines.append(f"- `{vid}`: 🛰️ *In Transit* ({orig} ➔ {dest}, ETA R#{eta}) | Cargo: {cargo_str} ({used:,}{cap_str}) | Fuel: {fuel:,}")
+        else:
+            lines.append(f"- `{vid}`: ⚓ **{st}** (Docked) | Cargo: {cargo_str} ({used:,}{cap_str}) | Fuel: {fuel:,}")
+
+    if next_ship and next_ship.get("price"):
+        lines.append(f"> **Next Hull:** #{next_ship.get('hull')} for {next_ship.get('price'):,} CR (`!ship buy`)")
+    elif owned >= max_ships:
+        lines.append(f"> **Next Hull:** Fleet at maximum capacity ({max_ships}/{max_ships})")
+
+    return "\n".join(lines)
+
+
+def parse_discord_fleet_cmd(content: str, author_id: str, author_name: str = "") -> Optional[dict]:
+    """Parse !fleet or !vessels command to query fleet status."""
+    m = FLEET_PATTERN.search(content)
+    if not m:
+        return None
+    agent = None
+    target_raw = m.group(1)
+    if target_raw:
+        cand = target_raw.lower().strip()
+        if cand in ("amos", "marvin", "zero", "aerial"):
+            agent = cand
+    if not agent:
+        agent_override = re.search(r"\b(?:as|agent:?)\s+(amos|marvin|zero|aerial)\b", content, re.I)
+        if agent_override:
+            agent = agent_override.group(1).lower()
+        elif author_id in AUTHOR_MAP:
+            agent = AUTHOR_MAP[author_id]
+        else:
+            name_lower = author_name.lower()
+            if "amos" in name_lower or "carmody" in name_lower or "mike" in name_lower:
+                agent = "amos"
+            elif "marvin" in name_lower or "alex" in name_lower:
+                agent = "marvin"
+            elif "zero" in name_lower or "brock" in name_lower or "ryan" in name_lower:
+                agent = "zero"
+            elif "aerial" in name_lower:
+                agent = "aerial"
+    if not agent:
+        agent = "zero"
+    return {"action": "fleet", "agent_id": agent}
+
+
+def parse_discord_ship_buy_cmd(content: str, author_id: str, author_name: str = "") -> Optional[dict]:
+    """Parse !ship buy or !buy ship command."""
+    m = SHIP_BUY_PATTERN.search(content)
+    if not m:
+        return None
+    at_vessel = m.group(1).strip() if m.group(1) else None
+    if at_vessel and at_vessel.lower() in ("as", "agent"):
+        at_vessel = None
+
+    agent = None
+    target_raw = m.group(2)
+    if target_raw:
+        cand = target_raw.lower().strip()
+        if cand in ("amos", "marvin", "zero", "aerial"):
+            agent = cand
+    if not agent:
+        agent_override = re.search(r"\b(?:as|agent:?)\s+(amos|marvin|zero|aerial)\b", content, re.I)
+        if agent_override:
+            agent = agent_override.group(1).lower()
+        elif author_id in AUTHOR_MAP:
+            agent = AUTHOR_MAP[author_id]
+        else:
+            name_lower = author_name.lower()
+            if "amos" in name_lower or "carmody" in name_lower or "mike" in name_lower:
+                agent = "amos"
+            elif "marvin" in name_lower or "alex" in name_lower:
+                agent = "marvin"
+            elif "zero" in name_lower or "brock" in name_lower or "ryan" in name_lower:
+                agent = "zero"
+            elif "aerial" in name_lower:
+                agent = "aerial"
+    if not agent:
+        agent = "zero"
+    return {"action": "buy_ship", "agent_id": agent, "at_vessel": at_vessel}
+
+
+def parse_discord_transfer_cmd(content: str, author_id: str, author_name: str = "") -> Optional[dict]:
+    """Parse !transfer command between vessels/holds."""
+    m = TRANSFER_PATTERN.search(content)
+    if not m:
+        return None
+    g = m.groups()
+    if g[0]:
+        qty, item, src, dst = int(g[0]), g[1].upper(), g[2].strip(), g[3].strip()
+    elif g[4]:
+        src, dst, qty, item = g[4].strip(), g[5].strip(), int(g[6]), g[7].upper()
+    else:
+        src, dst, qty, item = g[8].strip(), g[9].strip(), int(g[10]), g[11].upper()
+
+    if item == "BANANA":
+        item = "FRAG"
+
+    agent = None
+    agent_override = re.search(r"\b(?:as|agent:?)\s+(amos|marvin|zero|aerial)\b", content, re.I)
+    if agent_override:
+        agent = agent_override.group(1).lower()
+    elif author_id in AUTHOR_MAP:
+        agent = AUTHOR_MAP[author_id]
+    else:
+        name_lower = author_name.lower()
+        if "amos" in name_lower or "carmody" in name_lower or "mike" in name_lower:
+            agent = "amos"
+        elif "marvin" in name_lower or "alex" in name_lower:
+            agent = "marvin"
+        elif "zero" in name_lower or "brock" in name_lower or "ryan" in name_lower:
+            agent = "zero"
+        elif "aerial" in name_lower:
+            agent = "aerial"
+    if not agent:
+        agent = "zero"
+
+    return {
+        "action": "transfer",
+        "agent_id": agent,
+        "from": src,
+        "to": dst,
+        "instrument": item,
+        "qty": qty
+    }
+
+
+
 def parse_discord_burst_cmd(content: str, author_id: str = "") -> Optional[dict]:
     """Parse operator burst control commands (!burst <rounds> [interval], !burst cancel, !burst status).
     Gated on operator allowlist (Ryan, Mike). Bounds rounds (1-50) and interval (10-600s).
@@ -680,48 +942,78 @@ def parse_discord_contract_cmd(content: str, author_id: str, author_name: str = 
 
 
 def parse_discord_transit(content: str, author_id: str, author_name: str) -> Optional[dict]:
-    """Parse natural language transit command from Discord chat."""
+    """Parse natural language transit command from Discord chat, with multi-ship support."""
     if TRADE_PATTERN.search(content) and not re.search(r"\b(?:MOVE|TRANSIT)\b", content, re.I):
         return None
-    m = TRANSIT_PATTERN.search(content)
-    if not m:
-        return None
-    dest_raw, qty_raw, comm_raw = m.groups()
-    dest = dest_raw.lower().strip()
-    if dest not in STATION_PROFILES and dest not in ("earth", "luna", "mars", "ceres"):
-        return None
-
-    qty = int(qty_raw) if qty_raw else 0
-    comm = comm_raw.upper().strip() if comm_raw else "FRAG"
-    if comm == "BANANA":
-        comm = "FRAG"
 
     agent = None
     agent_override = re.search(r"\b(?:as|agent:?)\s+(amos|marvin|zero|aerial)\b", content, re.I)
     if agent_override:
         agent = agent_override.group(1).lower()
-    elif author_id in AUTHOR_MAP:
-        agent = AUTHOR_MAP[author_id]
+        content_clean = re.sub(r"\b(?:as|agent:?)\s+(amos|marvin|zero|aerial)\b", "", content, flags=re.I).strip()
     else:
-        name_lower = author_name.lower()
-        if "amos" in name_lower or "carmody" in name_lower or "mike" in name_lower:
-            agent = "amos"
-        elif "marvin" in name_lower or "alex" in name_lower:
-            agent = "marvin"
-        elif "zero" in name_lower or "brock" in name_lower or "ryan" in name_lower:
-            agent = "zero"
-        elif "aerial" in name_lower:
-            agent = "aerial"
+        content_clean = content
+
+    m_dest = re.search(r"\b(?:MOVE|TRANSIT|FLY|WARP|GO)\s+(?:TO\s+)?([A-Za-z]+)", content_clean, re.I)
+    if not m_dest:
+        return None
+    dest = m_dest.group(1).lower().strip()
+    if dest not in STATION_PROFILES and dest not in ("earth", "luna", "mars", "ceres"):
+        return None
+
+    qty = 0
+    comm = "FRAG"
+    m_cargo = re.search(r"\b(?:WITH|CARRYING|LOAD)\s+(\d+)\s+([A-Za-z]+)\b", content_clean, re.I)
+    if m_cargo:
+        qty = int(m_cargo.group(1))
+        comm = m_cargo.group(2).upper().strip()
+        if comm == "BANANA":
+            comm = "FRAG"
+
+    vessel_id = None
+    m_vessel = re.search(r"\b(?:ON|VIA|VESSEL|SHIP)\s+([A-Za-z0-9_/]+)\b", content_clean, re.I)
+    if m_vessel:
+        vessel_id = m_vessel.group(1).strip()
+    else:
+        m_after = re.search(r"\b(?:MOVE|TRANSIT|FLY|WARP|GO)\s+(?:TO\s+)?([A-Za-z]+)\s+([A-Za-z0-9_/]+)\b", content_clean, re.I)
+        if m_after and m_after.group(1).lower() == dest:
+            cand = m_after.group(2).strip()
+            if cand.upper() not in ("WITH", "CARRYING", "LOAD", "AS", "AGENT", "ON", "VIA", "VESSEL", "SHIP"):
+                if cand.isdigit() or "/" in cand:
+                    vessel_id = cand
+        if not vessel_id:
+            m_trail = re.search(r"\b(?:WITH|CARRYING|LOAD)\s+\d+\s+[A-Za-z]+\s+([A-Za-z0-9_/]+)\b", content_clean, re.I)
+            if m_trail:
+                cand = m_trail.group(1).strip()
+                if cand.isdigit() or "/" in cand:
+                    vessel_id = cand
+
+    if not agent:
+        if author_id in AUTHOR_MAP:
+            agent = AUTHOR_MAP[author_id]
+        else:
+            name_lower = author_name.lower()
+            if "amos" in name_lower or "carmody" in name_lower or "mike" in name_lower:
+                agent = "amos"
+            elif "marvin" in name_lower or "alex" in name_lower:
+                agent = "marvin"
+            elif "zero" in name_lower or "brock" in name_lower or "ryan" in name_lower:
+                agent = "zero"
+            elif "aerial" in name_lower:
+                agent = "aerial"
 
     if not agent:
         agent = "zero"
 
-    return {
+    res = {
         "agent_id": agent,
         "destination": dest,
         "commodity": comm,
         "cargo_qty": qty
     }
+    if vessel_id:
+        res["vessel_id"] = vessel_id
+    return res
 
 
 def submit_trade_to_referee(trade: dict, ref_token: str) -> dict:
@@ -1115,6 +1407,104 @@ def poll_and_execute_trades(channel: str, bot_token: str, ref_token: str, active
                     add_discord_reaction(channel, msg_id, "✅", bot_token)
                     kickoff = build_burst_kickoff(bid, r_count, int_sec, start_rnd)
                     post_discord(channel, kickoff, bot_token)
+            continue
+
+        # Check fleet commands (!fleet / !vessels)
+        fleet_cmd = parse_discord_fleet_cmd(content, author.get("id", ""), author.get("username", ""))
+        if fleet_cmd:
+            ag_id = fleet_cmd["agent_id"]
+            fl_name = FLEET_NAMES.get(ag_id, ag_id.upper())
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Detected fleet query from {author.get('username')}: {fleet_cmd}")
+            sys.stdout.flush()
+            res = fetch_fleet_from_referee(ag_id, ref_token)
+            if res.get("status") == "error":
+                add_discord_reaction(channel, msg_id, "❌", bot_token)
+                err_msg = (
+                    f"⚠️ **[Agora Trade Terminal] Fleet Query Failed**\n"
+                    f"> **Syndicate:** {fl_name}\n"
+                    f"> **Reason:** `{res.get('error')}`"
+                )
+                post_discord(channel, err_msg, bot_token)
+            else:
+                add_discord_reaction(channel, msg_id, "🚀", bot_token)
+                msg_text = format_fleet_roster(res, ag_id)
+                post_discord(channel, msg_text, bot_token)
+            continue
+
+        # Check ship purchase commands (!ship buy / !buy ship)
+        ship_buy_cmd = parse_discord_ship_buy_cmd(content, author.get("id", ""), author.get("username", ""))
+        if ship_buy_cmd:
+            ag_id = ship_buy_cmd["agent_id"]
+            fl_name = FLEET_NAMES.get(ag_id, ag_id.upper())
+            at_vessel = ship_buy_cmd.get("at_vessel")
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Detected ship buy from {author.get('username')}: {ship_buy_cmd}")
+            sys.stdout.flush()
+            res = submit_ship_buy_to_referee(ag_id, at_vessel, ref_token)
+            if res.get("status") == "error" or res.get("kind") == "reject":
+                err_obj = res.get("error") if isinstance(res.get("error"), dict) else {}
+                err_detail = err_obj.get("payload", {}).get("detail") or res.get("payload", {}).get("detail") or res.get("error") or str(res)
+                add_discord_reaction(channel, msg_id, "❌", bot_token)
+                reject_msg = (
+                    f"⚠️ **[Agora Trade Terminal] Ship Purchase Rejected**\n"
+                    f"> **Syndicate:** {fl_name}\n"
+                    f"> **Reason:** `{err_detail}`"
+                )
+                post_discord(channel, reject_msg, bot_token)
+            else:
+                payload = res.get("payload", {})
+                vid = payload.get("vessel_id", "?")
+                price = payload.get("price", payload.get("cost", 0))
+                st = payload.get("station_id", "?").title()
+                upkeep = payload.get("upkeep_per_round", 0)
+                hulls = payload.get("ships", "?")
+                add_discord_reaction(channel, msg_id, "🚢", bot_token)
+                add_discord_reaction(channel, msg_id, "✅", bot_token)
+                rcpt = (
+                    f"🚢 **[Agora Trade Terminal] New Vessel Commissioned**\n"
+                    f"> **Syndicate:** {fl_name}\n"
+                    f"> **Hull:** `{vid}` docked at **{st}**\n"
+                    f"> **Price Paid:** {price:,} CR | **Fleet Total:** {hulls} hulls\n"
+                    f"> **Upkeep Burn:** {upkeep:,} CR/round"
+                )
+                post_discord(channel, rcpt, bot_token)
+            continue
+
+        # Check transfer commands (!transfer)
+        transfer_cmd = parse_discord_transfer_cmd(content, author.get("id", ""), author.get("username", ""))
+        if transfer_cmd:
+            ag_id = transfer_cmd["agent_id"]
+            fl_name = FLEET_NAMES.get(ag_id, ag_id.upper())
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Detected transfer from {author.get('username')}: {transfer_cmd}")
+            sys.stdout.flush()
+            res = submit_transfer_to_referee(transfer_cmd, ref_token)
+            if res.get("status") == "error" or res.get("kind") == "reject":
+                err_obj = res.get("error") if isinstance(res.get("error"), dict) else {}
+                err_detail = err_obj.get("payload", {}).get("detail") or res.get("payload", {}).get("detail") or res.get("error") or str(res)
+                add_discord_reaction(channel, msg_id, "❌", bot_token)
+                reject_msg = (
+                    f"⚠️ **[Agora Trade Terminal] Transfer Rejected**\n"
+                    f"> **Syndicate:** {fl_name}\n"
+                    f"> **From / To:** `{transfer_cmd.get('from')}` ➔ `{transfer_cmd.get('to')}`\n"
+                    f"> **Reason:** `{err_detail}`"
+                )
+                post_discord(channel, reject_msg, bot_token)
+            else:
+                payload = res.get("payload", {})
+                src_v = payload.get("from", transfer_cmd.get("from"))
+                dst_v = payload.get("to", transfer_cmd.get("to"))
+                st = payload.get("station_id", "?").title()
+                item = payload.get("instrument", transfer_cmd.get("instrument"))
+                qty = payload.get("qty", transfer_cmd.get("qty"))
+                add_discord_reaction(channel, msg_id, "📦", bot_token)
+                add_discord_reaction(channel, msg_id, "✅", bot_token)
+                rcpt = (
+                    f"📦 **[Agora Trade Terminal] Cargo Transfer Complete**\n"
+                    f"> **Syndicate:** {fl_name}\n"
+                    f"> **Transfer:** {qty:,} {item} from `{src_v}` to `{dst_v}`\n"
+                    f"> **Location:** Docked at **{st}**\n"
+                    f"> **Integrity:** Ledger verified and conserved."
+                )
+                post_discord(channel, rcpt, bot_token)
             continue
 
         # Check contracts command
