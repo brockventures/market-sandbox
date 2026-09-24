@@ -6,6 +6,7 @@ Implements Section 3 endpoints of docs/wire-spec.md:
 - GET  /referee/ticks
 - GET  /referee/accounts
 - GET  /referee/leaderboard
+- GET  /referee/history
 - GET  /referee/briefing (alias /briefing, /llms.txt)
 - GET  /referee/health
 - GET  /referee/instructions (alias /referee/rules)
@@ -1560,6 +1561,49 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 'instrument': instrument or getattr(ref, 'default_instrument', 'FRAG'),
                 'book': ref.get_book_snapshot(station_id=station_id, instrument=instrument)
             })
+        elif path == '/referee/history':
+            viewer = self._reader()
+            station_id = (query_params.get('station_id', [''])[0] or '').lower().strip()
+            instrument = (query_params.get('instrument', [''])[0] or '').upper().strip()
+            rounds_raw = query_params.get('rounds', ['20'])[0]
+
+            if not instrument:
+                self._send_json(400, {
+                    'v': 1, 'kind': 'reject',
+                    'payload': {'reason': 'missing_parameter', 'detail': "instrument query parameter is required (e.g. 'FRAG', 'EQ_AMOS')"}
+                })
+                return
+
+            is_stock = instrument.startswith('EQ_')
+            if is_stock:
+                station_id = 'ceres'
+            elif not station_id:
+                self._send_json(400, {
+                    'v': 1, 'kind': 'reject',
+                    'payload': {'reason': 'missing_parameter', 'detail': "station_id query parameter is required for commodity price history"}
+                })
+                return
+            elif station_id not in STATIONS:
+                self._send_json(400, {
+                    'v': 1, 'kind': 'reject',
+                    'payload': {'reason': 'invalid_station', 'detail': f"Unknown station '{station_id}'"}
+                })
+                return
+
+            try:
+                rounds = int(rounds_raw)
+            except ValueError:
+                rounds = 20
+
+            history = ref.get_price_history(station_id=station_id, instrument=instrument, rounds=rounds, viewer=viewer)
+            self._send_json(200, {
+                'status': 'ok',
+                'station_id': station_id,
+                'instrument': instrument,
+                'rounds': len(history),
+                'history': history,
+            })
+            return
         elif path == '/referee/ticks':
             since_seq_raw = query_params.get('since_seq', ['0'])[0]
             try:

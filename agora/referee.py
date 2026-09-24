@@ -38,6 +38,7 @@ from agora.equity import (
 )
 from agora.salvage import DerelictSalvageEngine
 from agora.circuit_breaker import CircuitBreakerEngine, DEFAULT_BAND_PCT
+from agora.history import PriceHistoryEngine
 from agora.hazards import HazardEngine, env_hazards, parse_hazards
 from agora.standing import StandingDesk, env_standing, TABLES as STANDING_TABLES
 from agora.piracy import PiracyDesk, env_piracy, parse_piracy, ESCORT_PCT as PIRACY_ESCORT_PCT
@@ -194,6 +195,7 @@ class AgoraReferee:
         self.equity = SyndicateEquityEngine(self.conn, self)
         self.salvage = DerelictSalvageEngine(self.conn, self)
         self.circuit_breaker = CircuitBreakerEngine(self.conn, self, band_pct=self.band_pct)
+        self.history_engine = PriceHistoryEngine(self.conn)
         self._migrate_rng_bags()
         # A database from before the hold limit (or one started with a bigger
         # hold): unload what docked ships hold over capacity into their
@@ -210,6 +212,9 @@ class AgoraReferee:
         # round 0 (seen on Railway 2026-09-23 after #137 deployed).
         if self.exchange_shares:
             self._start_exchange(seed=0)
+        if hasattr(self, 'spatial') and self.spatial:
+            stock_marks = self._stock_marks()
+            self.history_engine.record_genesis(self.spatial.get_prices(), stock_marks=stock_marks)
 
     def set_asymmetric_roster(self, spawn_map: Optional[Dict[str, str]] = None) -> None:
         """Update fleet_roster with asymmetric home stations and sync vessel locations."""
@@ -635,7 +640,7 @@ class AgoraReferee:
                 'accounts', 'ledger_entries', 'book_events', 'station_prices',
                 'transits', 'vessels', 'equity_loans', 'distress_beacons',
                 'rescue_rfqs', 'rescue_quotes', 'salvage_claims',
-                'circuit_breaker_halts', 'orders', 'station_escrow', 'station_contracts', 'transit_hazards', 'corp_status', 'corp_events', 'fleet_upgrades',
+                'circuit_breaker_halts', 'price_history', 'orders', 'station_escrow', 'station_contracts', 'transit_hazards', 'corp_status', 'corp_events', 'fleet_upgrades',
                 'piracy_raids', 'piracy_privateers', 'rng_bags', *STANDING_TABLES,
             ):
                 self.conn.execute(f"DELETE FROM {table}")
@@ -746,6 +751,8 @@ class AgoraReferee:
         self.events.reset(0)
         self.covert.reset(0)
         self.order_flow.reset(0)
+        stock_marks = self._stock_marks()
+        self.history_engine.record_genesis(self.spatial.get_prices(), stock_marks=stock_marks)
 
         return {'seq': 0, 'floor': self.floor, 'fleets': [r['agent_id'] for r in
                 self.conn.execute("SELECT agent_id FROM fleet_roster").fetchall()]}
@@ -856,6 +863,8 @@ class AgoraReferee:
         self.events.reset(roll_seed)
         self.covert.reset(roll_seed)
         self.order_flow.reset(roll_seed)
+        stock_marks = self._stock_marks()
+        self.history_engine.record_genesis(opening_prices, stock_marks=stock_marks)
 
         return {
             'seq': 0,
@@ -1597,6 +1606,8 @@ class AgoraReferee:
 
                 if self.depots_enabled:
                     self._refresh_depot_orders_locked()
+                stock_marks = self._stock_marks()
+                self.history_engine.record_round_start(new_round, spot_prices, stock_marks=stock_marks)
                 # Not inside _refresh_depot_orders_locked: the reactive model
                 # returns early from it, and reactive is the live default.
                 if self.exchange_shares:
@@ -1809,6 +1820,27 @@ class AgoraReferee:
     def get_salvage_summary(self) -> Dict[str, Any]:
         """Returns high-level salvage and rescue statistics."""
         return self.salvage.get_salvage_summary()
+
+    def _stock_marks(self) -> Dict[str, float]:
+        if hasattr(self, 'exchange') and self.exchange and getattr(self.exchange, 'price', None):
+            return {s: round(float(p), 2) for s, p in self.exchange.price.items()}
+        return {s: 20.0 for s in EQUITY_SYMBOLS}
+
+    def get_price_history(
+        self,
+        station_id: str,
+        instrument: str,
+        rounds: int = 20,
+        viewer: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Retrieve OHLCV price history for station/instrument respecting fog of war (#122)."""
+        return self.history_engine.get_history(
+            ref=self,
+            station_id=station_id,
+            instrument=instrument,
+            rounds=rounds,
+            viewer=viewer
+        )
 
     def get_circuit_breaker_bands(self, station_id: Optional[str] = None, instrument: Optional[str] = None) -> List[Dict[str, Any]]:
         """Returns LULD bands, VWAPs, and halt status."""

@@ -174,6 +174,15 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
                        "(`Authorization: Bearer <your token>`) to see exact prices where you are docked.")
     out.extend(_price_table(depots))
     out.append("")
+    history_engine = getattr(ref, 'history_engine', None)
+    if history_engine:
+        v_station = 'earth'
+        if viewer and viewer in locs and locs[viewer].get('station_id'):
+            v_station = locs[viewer]['station_id']
+        hist_table = history_engine.briefing_table(ref, v_station, rounds=5, viewer=viewer)
+        if hist_table:
+            out.extend(hist_table)
+            out.append("")
     out.append("## Routes")
     out.extend(_route_table(rnd))
     out.append("")

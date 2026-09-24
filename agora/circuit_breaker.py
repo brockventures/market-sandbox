@@ -127,6 +127,9 @@ class CircuitBreakerEngine:
         exchange = getattr(self.referee, 'exchange', None)
         if exchange is not None:
             exchange.note_trade(station_id, instrument, qty)
+        history_engine = getattr(self.referee, 'history_engine', None)
+        if history_engine is not None:
+            history_engine.record_trade(station_id, instrument, price, qty, round_num)
 
     def has_prior_trades(self, station_id: str, instrument: str) -> bool:
         """Returns True if at least one trade has been executed and recorded for this station/instrument."""
