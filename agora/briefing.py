@@ -248,7 +248,7 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
         out.append("")
     standing = getattr(ref, 'standing', None)
     if standing is not None and standing.enabled:
-        out.extend(_standing_section(standing))
+        out.extend(_standing_section(standing, viewer))
     if getattr(ref, 'upgrades_enabled', False):
         out.append("## Ship upgrades")
         out.append("Fitted while docked at any station, paid in CR, permanent for the game, one tier at a time. "
@@ -426,47 +426,42 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
     return "\n".join(out) + "\n"
 
 
-def _standing_section(standing) -> List[str]:
-    """## Institutional standing (#187 track 2): who each institution admits,
-    every threshold, and each corp's lane mix as progress toward the next tier."""
+def _standing_line(lane: str, v: dict) -> str:
+    """One institution's line: the counter, the goal, the percentage, and what
+    the next tier opens. `Sol Freight Guild (freight): 31,200 / 40,000 CR (78%)
+    - next: Guild Member (opens 4th ship berth, Guild refit yards)`."""
+    from agora import standing as S
+    inst = S.INSTITUTIONS[lane]
+    head = f"{inst['name']} ({inst['lane_label'].lower()}): "
+    held = f"{inst['titles'][v['tier'] - 1]}. " if v['tier'] else ""
+    if v['next_tier'] is None:
+        return f"{head}{held}{v['lane_profit_cr']:,} CR - top tier reached"
+    return (f"{head}{held}{v['lane_profit_cr']:,} / {v['next_threshold_cr']:,} CR ({v['progress_pct']}%) - next: "
+            f"{v['next_title']} (opens {inst['opens'][v['next_tier'] - 1]})")
+
+
+def _standing_section(standing, viewer: Optional[str] = None) -> List[str]:
+    """## Institutional standing (#187): the rule in one sentence, then each
+    corp's progress list, the viewer's own corp first."""
     from agora import standing as S
     rep = standing.report()
     out = ["## Institutional standing",
-           f"Sol's institutions back corps that live by their line of business. Every round the referee books your "
-           f"realized profit to a lane: freight (goods sold away from where you bought them, contracts, tolls, fuel), "
-           f"trading (stock round trips and borrow fees), market making (goods bought and sold at the same station) "
-           f"or covert (privateer loot and ransoms, sabotage and wiretaps). Earn a lane's standing with "
-           f"{S.T1_SHARE:.0%} of your last {S.WINDOW} rounds' lane profit from it and {S.T1_FLOOR:,} CR earned in it "
-           f"all game; {S.T2_SHARE:.0%} and {S.T2_FLOOR:,} CR for the second tier ({S.t2_floor('market_making'):,} CR for market making). Membership lapses after "
-           f"{S.LAPSE_ROUNDS} rounds below {S.T1_KEEP:.0%} ({S.T2_KEEP:.0%} for the second tier), and GalNet reports "
-           f"every admission and lapse. Standing opens the institution's lane tech for purchase; tech you already "
-           f"bought is yours to keep if standing lapses. `GET /referee/standing`",
-           "",
-           "| Institution | Lane | Tier 1 / tier 2 | Why they care | Opens (t1; t2) |",
-           "|---|---|---|---|---|"]
-    for lane, inst in S.INSTITUTIONS.items():
-        out.append(f"| {inst['name']} (`{inst['cap']}`) | {inst['lane_label']} | {inst['titles'][0]} / "
-                   f"{inst['titles'][1]} | {inst['why']} | {inst['opens'][0]}; {inst['opens'][1]} |")
-    out.append("")
-    out.append("| Corp | Lane mix (last %d rounds) | Standing | Next tier |" % S.WINDOW)
-    out.append("|---|---|---|---|")
-    for a, c in sorted(rep['corps'].items()):
-        mix = ", ".join(f"{S.INSTITUTIONS[l]['lane_label']} {v['share']:.0%}" for l, v in c['lanes'].items()
-                        if v['share'] > 0) or "no lane profit yet"
-        nxt = []
-        for l, v in c['lanes'].items():
-            inst = S.INSTITUTIONS[l]
-            if v['tier'] == 0 and v['share'] >= 0.25:
-                nxt.append(f"{inst['lane_label']} {v['share']:.0%} / {v['lane_profit_cr']:,} CR: {inst['titles'][0]} "
-                           f"at {S.T1_SHARE:.0%} and {S.T1_FLOOR:,} CR")
-            elif v['tier'] == 1:
-                nxt.append(f"{inst['lane_label']} {v['share']:.0%} / {v['lane_profit_cr']:,} CR: {inst['titles'][1]} "
-                           f"at {S.T2_SHARE:.0%} and {S.t2_floor(l):,} CR")
-            if v['tier'] and v['rounds_below_keep']:
-                keep = S.T2_KEEP if v['tier'] == 2 else S.T1_KEEP
-                nxt.append(f"{inst['titles'][v['tier'] - 1]} lapses in "
-                           f"{S.LAPSE_ROUNDS - v['rounds_below_keep']} rounds unless {inst['lane_label'].lower()} "
-                           f"is back over {keep:.0%}")
-        out.append(f"| {a} | {mix} | {', '.join(c['titles']) or '-'} | {'; '.join(nxt) or '-'} |")
-    out.append("")
+           f"Each institution tracks one number, your lifetime net profit in its lane: reach {S.T1_FLOOR:,} CR for "
+           f"tier 1 and {S.T2_FLOOR:,} CR for tier 2 ({S.t2_floor('market_making'):,} for market making), and "
+           f"the standing is yours for the rest of the game, even if the lane later loses money.",
+           f"Lanes: freight (goods sold away from where you bought them, contracts, tolls, fuel), trading (stock "
+           f"round trips and borrow fees), market making (goods bought and sold at the same station), covert "
+           f"(privateer loot and ransoms, sabotage and wiretaps). Standing opens the institution's lane tech for "
+           f"purchase. GalNet reports each admission and the round a corp is halfway to its next tier. "
+           f"`GET /referee/standing`",
+           ""]
+    corps = sorted(rep['corps'])
+    if viewer in rep['corps']:
+        corps.remove(viewer)
+        corps.insert(0, viewer)
+    for a in corps:
+        out.append(f"**{a}**" + (" (you)" if a == viewer else ""))
+        for lane, v in rep['corps'][a]['lanes'].items():
+            out.append(f"- {_standing_line(lane, v)}")
+        out.append("")
     return out
