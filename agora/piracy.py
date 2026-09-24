@@ -66,7 +66,10 @@ Hooks into sibling PRs, guarded so this works on main without them:
 
 Every movement is a balanced ledger entry and no fleet balance goes
 negative. Rolls come from a seeded random.Random, reset by new_game (game
-seed) and reset_to_genesis (0). Off unless odds are set (new_game
+seed) and reset_to_genesis (0). Whether a trip is raided, a sponsor traced
+or a fight escaped is a per-fleet marble-bag draw (#214, agora/bag.py): the
+raid chance varies trip to trip, so raids use the bag's luck accumulator,
+which keeps a fleet's raid rate at its mean chance and bounds its streaks. Off unless odds are set (new_game
 {"piracy": ...}, the constructor, or AGORA_PIRACY in the live server).
 """
 
@@ -74,6 +77,7 @@ import os
 import random
 from typing import Any, Dict, List, Optional, Tuple
 
+from agora.bag import Bags
 from agora.galnet import GalNetNewsEvent
 from agora.spatial import STATIONS, COMMODITIES, BASE_PRICES
 
@@ -199,16 +203,21 @@ class PiracyDesk:
             for stmt in SCHEMA:
                 ref.conn.execute(stmt)
         self.odds = odds
-        self.reset(seed)
+        self.bags = Bags(ref.conn, 'piracy')
+        self._reseed(seed)
 
     @property
     def enabled(self) -> bool:
         return bool(self.odds)
 
-    def reset(self, seed: int) -> None:
+    def _reseed(self, seed: int) -> None:
         self.seed = seed
         self.rng = random.Random(f"piracy-{seed}")
         self._epoch: Optional[int] = None
+
+    def reset(self, seed: int) -> None:
+        self._reseed(seed)
+        self.bags.reset(seed)
 
     # ------------------------------------------------------------ ledger
 
@@ -288,16 +297,16 @@ class PiracyDesk:
                               commodity: str, qty: int, escort: bool, escort_fee: int,
                               round_num: int) -> Optional[Dict[str, Any]]:
         """Called from initiate_transit under ref.lock inside its transaction,
-        after the transit row is written. Always draws two values so one
-        trip's outcome does not shift the next trip's."""
+        after the transit row is written. The raid is a draw from this
+        fleet's luck (#214), so one trip's outcome does not shift another
+        fleet's."""
         if not self.odds:
             return None
-        roll, trace_roll = self.rng.random(), self.rng.random()
         c = self.chance(agent, origin, dest, tolled, commodity, qty, escort, round_num)
         out = {'odds': c['odds'], 'hot_station': self.hot_station(round_num), 'hot_route': c['hot'],
                'cargo_value': c['value'], 'escort': bool(escort), 'escort_fee': escort_fee if escort else 0,
                'raided': False, 'demand': None}
-        if qty <= 0 or roll >= c['odds']:
+        if qty <= 0 or not self.bags.draw_varying('raid', agent, c['odds']):
             return out
         ransom = int(c['value'] * RANSOM_PCT)
         surrender = int(qty * SURRENDER_PCT)
@@ -312,7 +321,7 @@ class PiracyDesk:
                     'privateer_raid', 'private', actor=sponsor, victim=agent, link=contract['contract_id'],
                     detail=f"raided on the {origin.capitalize()}-{dest.capitalize()} run by privateers "
                            f"under contract (sponsor unknown until exposed)")
-            if trace_roll < PRIV_TRACE:
+            if self.bags.draw('trace', sponsor, PRIV_TRACE):
                 traced = 1
                 fine = min(contract['fee'] * PRIV_FINE, max(0, self.ref.get_balance(sponsor, 'CR')))
                 self._move(f"piracy-fine-{transit_id}", ((sponsor, 'CR', -fine), ('SYSTEM', 'CR', fine)))
@@ -386,8 +395,8 @@ class PiracyDesk:
             qty_taken, fenced = self._steal_locked(row, transit, row['surrender_qty'])
             status = 'surrendered'
         else:
-            escape_roll, d = self.rng.random(), self.rng.randint(*FIGHT_DELAY)
-            if escape_roll < FIGHT_ESCAPE:
+            d = self.rng.randint(*FIGHT_DELAY)
+            if self.bags.draw('escape', row['agent_id'], FIGHT_ESCAPE):
                 status = 'escaped'
             else:
                 status = 'lost'

@@ -539,7 +539,7 @@ class AgoraReferee:
                 'transits', 'vessel_locations', 'vessels', 'equity_loans', 'distress_beacons',
                 'rescue_rfqs', 'rescue_quotes', 'salvage_claims',
                 'circuit_breaker_halts', 'orders', 'station_escrow', 'station_contracts', 'transit_hazards', 'corp_status', 'corp_events', 'fleet_upgrades',
-                'piracy_raids', 'piracy_privateers', *STANDING_TABLES,
+                'piracy_raids', 'piracy_privateers', 'rng_bags', *STANDING_TABLES,
             ):
                 self.conn.execute(f"DELETE FROM {table}")
             self.standing.reset_locked()
@@ -647,6 +647,7 @@ class AgoraReferee:
         self.hazards.reset(0)
         self.piracy.reset(0)
         self.events.reset(0)
+        self.covert.reset(0)
         self.order_flow.reset(0)
 
         return {'seq': 0, 'floor': self.floor, 'fleets': [r['agent_id'] for r in
@@ -756,6 +757,7 @@ class AgoraReferee:
         self.hazards.reset(roll_seed)
         self.piracy.reset(roll_seed)
         self.events.reset(roll_seed)
+        self.covert.reset(roll_seed)
         self.order_flow.reset(roll_seed)
 
         return {
@@ -1280,7 +1282,7 @@ class AgoraReferee:
                 cargo_qty if cargo_qty > 0 else 0,
                 delay_factor=self.upgrades.factor(agent_id, 'shielding'),
                 loss_factor=self.upgrades.factor(agent_id, 'hold'),
-                loss_size_factor=self.upgrades.loss_size_factor(agent_id))
+                loss_size_factor=self.upgrades.loss_size_factor(agent_id), agent_id=agent_id)
             # Engines upgrade: tier 1 cuts a round off trips of 3+ rounds
             # (agora/upgrades.py ENGINE_CUTS); tier 2 cut the fuel above.
             base_rounds = route['rounds'] - self.upgrades.engine_cut(agent_id, route['rounds'])

@@ -76,7 +76,7 @@ class TestCovertServerHTTP(unittest.TestCase):
 
     def test_covert_http_sabotage_and_rivalry_scoreboard(self):
         # Force trace off for this test to test unknown attacker on scoreboard
-        self.ref.covert.rng.random = lambda: 0.99
+        self.ref.covert.bags.force('sabotage_trace', False)
 
         # Sabotage over HTTP -> 200
         code, r = self._post('/referee/covert/sabotage', {'target': 'amos', 'mode': 'docked'}, 'tz')

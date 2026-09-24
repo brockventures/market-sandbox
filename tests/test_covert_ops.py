@@ -137,7 +137,7 @@ class TestCovertOps(unittest.TestCase):
         # #186: the siphoned cargo reaches the saboteur (SABOTAGE_LOOT_SHARE),
         # valued at the reference price piracy uses, and the victim gets the rest.
         actor, target = 'zero', 'amos'
-        self.covert.rng.random = lambda: 0.99  # untraced
+        self.covert.bags.force('sabotage_trace', False)  # untraced
         self.ref.initiate_transit(target, 'luna', 'FRAG', 30)
         frag_before = self.ref.get_balance(actor, 'FRAG')
         res = self.covert.execute_sabotage(actor, target, mode='transit')
@@ -194,7 +194,7 @@ class TestCovertOps(unittest.TestCase):
                                   ('topup-actor', seq, acct, d))
 
         # Force trace
-        self.covert.rng.random = lambda: 0.01  # Guaranteed trace (< 0.25)
+        self.covert.bags.force('sabotage_trace', True)  # Guaranteed trace (< 0.25)
 
         target_cr_before = self.ref.get_balance(target, 'CR')
         actor_cr_before = self.ref.get_balance(actor, 'CR')

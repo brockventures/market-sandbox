@@ -126,7 +126,7 @@ class TestPiracy(unittest.TestCase):
         ref = game()
         tid = move(ref)['payload']['transit_id']
         arr = ref.conn.execute("SELECT arrival_round FROM transits WHERE transit_id = ?", (tid,)).fetchone()[0]
-        ref.piracy.rng = Fixed(0.0)  # escape roll < 0.5
+        ref.piracy.bags.force('escape', True)  # escape roll < 0.5
         r = ref.piracy.respond('amos', tid, 'fight')
         self.assertEqual(r['payload']['status'], 'escaped')
         self.assertEqual(r['payload']['qty_taken'], 0)
@@ -139,6 +139,7 @@ class TestPiracy(unittest.TestCase):
         arr = ref.conn.execute("SELECT arrival_round FROM transits WHERE transit_id = ?", (tid,)).fetchone()[0]
         depot = ref.get_balance('depot_ceres', 'FRAG')
         ref.piracy.rng = Fixed(0.9, randint=2)
+        ref.piracy.bags.force('escape', False)
         r = ref.piracy.respond('amos', tid, 'fight')
         self.assertEqual(r['payload']['status'], 'lost')
         self.assertEqual(r['payload']['qty_taken'], int(CARGO * P.FIGHT_LOSS))
@@ -151,6 +152,7 @@ class TestPiracy(unittest.TestCase):
         ref = game()
         tid = move(ref)['payload']['transit_id']
         ref.piracy.rng = Fixed(0.9, randint=1)
+        ref.piracy.bags.force('escape', False)
         rep = ref.step_round()
         row = ref.piracy._row(tid)
         self.assertEqual(row['status'], 'lost')
@@ -167,6 +169,7 @@ class TestPiracy(unittest.TestCase):
             ref.conn.execute("UPDATE vessel_locations SET station_id = 'earth' WHERE agent_id = 'amos'")
         tid = ref.initiate_transit('amos', 'luna', 'FRAG', CARGO)['payload']['transit_id']
         ref.piracy.rng = Fixed(0.9, randint=1)
+        ref.piracy.bags.force('escape', False)
         ref.step_round()
         self.assertEqual(ref.get_vessel_location('amos')['status'], 'in_transit')  # delayed a round
         ref.step_round()
@@ -234,7 +237,8 @@ class TestPiracy(unittest.TestCase):
         c = ref.piracy.chance('amos', 'ceres', 'mars', True, 'FRAG', CARGO, False, ref.current_round)
         self.assertTrue(c['privateers'])
         self.assertGreaterEqual(c['odds'], P.PRIV_ADD)
-        ref.piracy.rng = Fixed(0.0, 0.9)  # raid hits, not traced
+        ref.piracy.bags.force('raid', True)
+        ref.piracy.bags.force('trace', False)  # raid hits, not traced
         tid = move(ref)['payload']['transit_id']
         pub = ref.piracy.status()
         self.assertIsNone(pub['recent_raids'][0]['sponsor'])
@@ -255,7 +259,8 @@ class TestPiracy(unittest.TestCase):
     def test_ransom_split_with_sponsor(self):
         ref = game(odds=(0.0001, 0.0001))
         ref.piracy.hire('zero', 'amos')
-        ref.piracy.rng = Fixed(0.0, 0.9)
+        ref.piracy.bags.force('raid', True)
+        ref.piracy.bags.force('trace', False)
         tid = move(ref)['payload']['transit_id']
         zc = ref.get_balance('zero', 'CR')
         ref.piracy.respond('amos', tid, 'pay')
@@ -266,7 +271,8 @@ class TestPiracy(unittest.TestCase):
         ref = game(odds=(0.0001, 0.0001))
         ref.piracy.hire('zero', 'amos')
         zc = ref.get_balance('zero', 'CR')
-        ref.piracy.rng = Fixed(0.0, 0.0)  # raid hits, traced
+        ref.piracy.bags.force('raid', True)
+        ref.piracy.bags.force('trace', True)  # raid hits, traced
         tid = move(ref)['payload']['transit_id']
         fine = min(P.PRIV_COST * P.PRIV_FINE, zc)
         self.assertEqual(ref.get_balance('zero', 'CR'), zc - fine)
@@ -284,7 +290,8 @@ class TestPiracy(unittest.TestCase):
         with ref.lock, ref.conn:
             z = ref.get_balance('zero', 'CR')
             ref.piracy._move('test-drain', (('zero', 'CR', -(z - left)), ('SYSTEM', 'CR', z - left)))
-        ref.piracy.rng = Fixed(0.0, 0.0)
+        ref.piracy.bags.force('raid', True)
+        ref.piracy.bags.force('trace', True)
         move(ref)
         self.assertEqual(ref.get_balance('zero', 'CR'), 0)
         clean(self, ref)
@@ -375,7 +382,8 @@ class TestPiracyHTTP(unittest.TestCase):
         self.assertEqual(code, 200, r)
         code, r = self._post('/referee/privateers', {'target': 'amos'}, 'tz')
         self.assertEqual(code, 400)
-        self.ref.piracy.rng = Fixed(0.0, 0.9)  # raid, not traced
+        self.ref.piracy.bags.force('raid', True)
+        self.ref.piracy.bags.force('trace', False)  # raid, not traced
         code, r = self._post('/stations/transit', {'destination': 'mars', 'commodity': 'FRAG',
                                                    'cargo_qty': CARGO, 'escort': True}, 'ta')
         self.assertEqual(code, 200, r)
