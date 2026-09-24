@@ -1,3 +1,4 @@
+import math
 """
 agora.server - Standard library HTTP/REST server for AgoraReferee.
 Implements Section 3 endpoints of docs/wire-spec.md:
@@ -1875,6 +1876,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                     'galnet_feed': 'GET /galnet/feed?limit=15',
                     'galnet_events': 'GET /galnet/events',
                     'galnet_drift': 'GET /galnet/drift?station_id=ceres&commodity=FUEL',
+                    'galnet_trend': 'GET /galnet/trend?station_id=mars&commodity=FRAG (un-fogged price trajectory & active stories)',
                     'galnet_step': 'POST /galnet/step',
                     'galnet_shock': 'POST /galnet/shock',
                     'station_prices': 'GET /stations/prices?station_id=mars&commodity=FRAG',
@@ -1951,6 +1953,25 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 'station_id': station_id,
                 'commodity': commodity,
                 'drift_bias': engine.get_active_drift(station_id, commodity)
+            })
+        elif path == '/galnet/trend':
+            engine = self.galnet_engine or (self.referee.galnet if self.referee else None)
+            if not engine:
+                engine = GalNetEngine()
+                self.galnet_engine = engine
+            station_id = query_params.get('station_id', ['ceres'])[0].lower()
+            commodity = query_params.get('commodity', ['FUEL'])[0].upper()
+            fogged_spot_param = query_params.get('fogged_spot', [None])[0]
+            try:
+                fogged_spot = float(fogged_spot_param) if fogged_spot_param is not None else None
+                if fogged_spot is not None and not math.isfinite(fogged_spot):
+                    fogged_spot = None
+            except ValueError:
+                fogged_spot = None
+            self._send_json(200, {
+                'status': 'ok',
+                'round': getattr(self.referee, 'current_round', engine.current_round),
+                **engine.infer_trend(station_id, commodity, fogged_spot=fogged_spot)
             })
         elif path == '/stations/prices':
             station_id = query_params.get('station_id', [None])[0]
@@ -2112,7 +2133,7 @@ def build_referee_from_env(db_path: str = 'agora.db', **overrides) -> AgoraRefer
         band_pct = 0.25
     kwargs = dict(depots=_on('AGORA_DEPOTS'), asymmetric=_on('AGORA_ASYMMETRIC'),
                         depot_model=os.environ.get('AGORA_DEPOT_MODEL', 'reactive').strip().lower(),
-                        band_pct=band_pct, shelf_skew=_float_env('AGORA_SHELF_SKEW', REACTIVE_SHELF_SKEW),
+                        band_pct=band_pct, shelf_skew=_float_env('AGORA_SHELF_SKEW', REACTIVE_SHELF_SKEW), galnet_auto_step=os.environ.get('AGORA_GALNET_AUTO_STEP', '0').strip().lower() in ('1', 'true', 'yes', 'on'),
                         peer_trades=_on('AGORA_PEER_TRADES'),
                         fog=_fog_from_env(), idle_fee=_int_env('AGORA_IDLE_FEE', 10),
                         rival_shares=_int_env('AGORA_RIVAL_SHARES', 100),

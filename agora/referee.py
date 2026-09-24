@@ -15,7 +15,7 @@ from typing import Optional, Dict, Any, Tuple, List
 from pathlib import Path
 
 from agora.order_book import OrderBook, Order, Trade
-from agora.galnet import GalNetEngine
+from agora.galnet import GalNetEngine, env_galnet_auto_step
 from agora.peer import PeerDesk, env_peer_trades
 from agora.contracts import ContractDesk, env_contracts
 from agora.corporate import CorporateDesk, env_corporate
@@ -124,6 +124,7 @@ class AgoraReferee:
         order_flow: Optional[bool] = None,
         standing: Optional[bool] = None,
         ship_hold: Optional[int] = None,
+        galnet_auto_step: Optional[bool] = None,
     ):
         self.db_path = db_path
         # Cargo units each ship's hold carries (agora/fleet.py SHIP_HOLD; the
@@ -172,6 +173,7 @@ class AgoraReferee:
         self.lock = threading.RLock()
         self.default_instrument = instrument or 'FRAG'
         self.galnet = galnet or GalNetEngine()
+        self.galnet_auto_step = env_galnet_auto_step() if galnet_auto_step is None else bool(galnet_auto_step)
         self.spatial = spatial or StationPriceEngine()
         self.depots_enabled = depots
         self.asymmetric_enabled = asymmetric
@@ -720,6 +722,7 @@ class AgoraReferee:
         events: Optional[bool] = None,
         order_flow: Optional[bool] = None,
         standing: Optional[bool] = None,
+        galnet_auto_step: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Full clean-slate reset, callable live via POST /referee/admin/reset:
@@ -761,6 +764,8 @@ class AgoraReferee:
             self.order_flow.enabled = bool(order_flow)
         if standing is not None:
             self.standing.enabled = bool(standing)
+        if galnet_auto_step is not None:
+            self.galnet_auto_step = bool(galnet_auto_step)
         self._active_this_round = set()
         self.asymmetric_enabled = asymmetric
         if asymmetric or spawn_map:
@@ -814,6 +819,7 @@ class AgoraReferee:
         events: Optional[bool] = None,
         order_flow: Optional[bool] = None,
         standing: Optional[bool] = None,
+        galnet_auto_step: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Wipes the board exactly like reset_to_genesis(), but rolls a genuinely
@@ -856,6 +862,8 @@ class AgoraReferee:
             self.order_flow.enabled = bool(order_flow)
         if standing is not None:
             self.standing.enabled = bool(standing)
+        if galnet_auto_step is not None:
+            self.galnet_auto_step = bool(galnet_auto_step)
         self._active_this_round = set()
         self.asymmetric_enabled = asymmetric
         if asymmetric or spawn_map:
@@ -867,16 +875,20 @@ class AgoraReferee:
                         (home_station, agent_id)
                     )
         self._wipe_trading_state("new game via POST /referee/admin/new_game")
-        self.galnet = GalNetEngine()
-
         roll_seed = seed if seed is not None else random.SystemRandom().randrange(1, 2**31)
+        self.galnet = GalNetEngine(seed=roll_seed)
+
         engine = StationPriceEngine(seed=roll_seed)
         rounds_to_roll = (
             warmup_rounds if warmup_rounds is not None
             else random.SystemRandom().randint(3, 8)
         )
         for r in range(1, rounds_to_roll + 1):
-            engine.step_round(r, galnet_engine=self.galnet)
+            if self.galnet_auto_step and hasattr(self, 'galnet') and self.galnet is not None:
+                ev = self.galnet.step_round(r)
+                if ev:
+                    self.record_news(ev.to_dict(r))
+            engine.step_round(r, galnet_engine=self.galnet if self.galnet_auto_step else None)
         self.spatial = engine
 
         opening_prices = self.spatial.get_prices()
@@ -1694,6 +1706,12 @@ class AgoraReferee:
                 # against the depot quotes the fleets saw, before prices move.
                 order_flow_report = self.order_flow.step_locked(self.current_round)
             self.current_round = new_round
+
+            # Advance GalNet news & exogenous shocks (#123)
+            if self.galnet_auto_step and hasattr(self, 'galnet') and self.galnet is not None:
+                ev = self.galnet.step_round(new_round)
+                if ev:
+                    self.record_news(ev.to_dict(new_round))
 
             # Advance prices
             spot_prices = self.spatial.step_round(new_round, galnet_engine=self.galnet)
