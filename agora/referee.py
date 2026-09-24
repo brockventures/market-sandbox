@@ -111,8 +111,12 @@ class AgoraReferee:
         events: Optional[bool] = None,
         order_flow: Optional[bool] = None,
         standing: Optional[bool] = None,
+        ship_hold: Optional[int] = None,
     ):
         self.db_path = db_path
+        # Cargo units each ship's hold carries (agora/fleet.py SHIP_HOLD; the
+        # live server sets it). 0 = no limit, the conservative default for tests.
+        self.ship_hold = max(0, int(ship_hold)) if ship_hold is not None else 0
         # Debt, distress sales, bankruptcy and takeovers (agora/corporate.py).
         self.corporate_enabled = env_corporate() if corporate is None else bool(corporate)
         # Ship upgrades that cut hazard / piracy odds (agora/upgrades.py).
@@ -191,6 +195,10 @@ class AgoraReferee:
         self.salvage = DerelictSalvageEngine(self.conn, self)
         self.circuit_breaker = CircuitBreakerEngine(self.conn, self, band_pct=self.band_pct)
         self._migrate_rng_bags()
+        # A database from before the hold limit (or one started with a bigger
+        # hold): unload what docked ships hold over capacity into their
+        # station holds. Idempotent; flying ships are unloaded as they land.
+        self._unload_overflow_all()
         if self.depots_enabled:
             self.seed_depots()
         if asymmetric:
@@ -525,6 +533,15 @@ class AgoraReferee:
             self.conn.execute("DELETE FROM rng_bags WHERE ns = 'piracy' AND event = 'raid' AND fleet NOT LIKE '%|%'")
             self.conn.execute(f"DELETE FROM rng_bags WHERE ns = 'covert' AND event = 'sabotage_trace' AND fleet IN {roster}")
 
+    def _unload_overflow_all(self) -> None:
+        """Every docked ship over its hold capacity unloads the excess into its
+        corp's hold at that station (agora/fleet.py). A no-op without a limit."""
+        if not self.ship_hold:
+            return
+        with self.lock, self.conn:
+            for (vid,) in self.conn.execute("SELECT vessel_id FROM vessels WHERE status = 'docked'").fetchall():
+                self.fleet.unload_overflow_locked(vid)
+
     def _seed_genesis_from_roster(self) -> None:
         """
         Turn fleet_roster rows into real accounts/ledger_entries/vessel_locations
@@ -571,6 +588,9 @@ class AgoraReferee:
                 "INSERT OR REPLACE INTO vessels (vessel_id, agent_id, name, station_id, docked_since, status) VALUES (?, ?, ?, ?, 0, 'docked')",
                 (f"{r['agent_id']}/1", r['agent_id'], f"{r['agent_id']} Ship 1", r['home_station'])
             )
+        # Genesis goods beyond one hold wait in the corp's hold at home (#95).
+        for r in roster:
+            self.fleet.unload_overflow_locked(f"{r['agent_id']}/1", txn=f"genesis-hold-{r['agent_id']}")
 
     def _seed_genesis_equities(self) -> None:
         """Mint each fleet's synthetic equity (FLEET_EQUITIES) at genesis."""
@@ -1627,6 +1647,10 @@ class AgoraReferee:
                     # Docks the ship (current_round is already new_round); a
                     # hull absorbed over its owner's cap is scrapped here (#164).
                     self._dock_vessel_locked(ag_id, dest, v_id)
+                    # Normally a no-op: only a ship that left before the hold
+                    # limit (or with a bigger one) lands over it (#95).
+                    if hold != ag_id:
+                        self.fleet.unload_overflow_locked(v_id)
 
                     arrival_payload = {
                         'transit_id': t_id,
@@ -2022,6 +2046,19 @@ class AgoraReferee:
                     f"Account '{agent_id}' available {currency} balance {available_funds} "
                     f"(balance {buyer_balance} - committed {committed_funds}) insufficient for bid requirement {max_cost}"
                 )
+            # The ship must have room for the goods, beside what its other
+            # resting bids already keep (agora/fleet.py): a fill can then
+            # never overflow the hold (#95).
+            room = self.fleet.room(order_acct, instrument) if order_acct else None
+            if room is not None and qty > room:
+                h = self.fleet.hold_status(order_acct)
+                return self._reject_envelope(
+                    order_id, agent_id, 'hold_full',
+                    f"Ship '{order_acct}' has room for {room} more {instrument}, not {qty}: hold capacity "
+                    f"{h['hold_capacity']}, used {h['hold_used']}, kept for resting bids {h['hold_reserved']}"
+                    + (f" (FUEL up to {h['fuel_tank']} rides in the tank)" if instrument == 'FUEL' else '')
+                    + ". Sell or transfer cargo, or bid for less."
+                )
         elif side == 'ask':
             goods_acct = order_acct or agent_id
             committed_commodity = self.committed(agent_id, instrument, goods_acct)
@@ -2380,6 +2417,7 @@ class AgoraReferee:
         (all its bids' CR, or all its asks of that good). Depots and SYSTEM
         are left alone: their quotes are re-funded at every refresh."""
         pruned = []
+        room: Dict[str, Optional[int]] = {}  # per ship: hold room left for this book's bids, in priority order
         for o in list(book.bids if side == 'bid' else book.asks):
             a = o.agent_id
             if a == 'SYSTEM' or a.startswith('depot_'):
@@ -2388,6 +2426,18 @@ class AgoraReferee:
                 need = sum(x.remaining_qty * x.limit_price for st_books in self.books.values()
                            for b in st_books.values() for x in b.bids if x.agent_id == a)
                 have = self.get_balance(a, self.get_currency_instrument(a))
+                # A bid its ship can no longer hold (#95): normally never, as
+                # placement keeps room for every resting bid.
+                acct = getattr(o, 'acct', None)
+                if acct and have >= need and o.instrument in GOODS:
+                    if acct not in room:
+                        room[acct] = self.fleet.room(acct, o.instrument, reserved=False)
+                    if room[acct] is not None:
+                        if o.remaining_qty > room[acct]:
+                            self._cancel_order_locked(a, o.order_id)
+                            pruned.append(o.order_id)
+                            continue
+                        room[acct] -= o.remaining_qty
             else:
                 need = self.committed(a, o.instrument, o.goods_acct)
                 have = self._account_balance(o.goods_acct, o.instrument)
@@ -2587,6 +2637,16 @@ class AgoraReferee:
         """)
         for row in cur.fetchall():
             errors.append(f"Vessel breach: trip {row['transit_id']} flies unknown ship {row['vessel_id']}")
+
+        # Invariant 6 (#95): no docked ship holds more cargo than its hold
+        # carries. (A ship that took off before the limit existed may fly
+        # over it; it unloads the excess when it lands.)
+        if self.ship_hold:
+            cur.execute("SELECT vessel_id FROM vessels WHERE status = 'docked'")
+            for (vid,) in cur.fetchall():
+                h = self.fleet.hold_status(vid)
+                if h['hold_capacity'] is not None and h['hold_used'] > h['hold_capacity']:
+                    errors.append(f"Hold breach: {vid} carries {h['hold_used']} cargo units, capacity {h['hold_capacity']}")
 
         return len(errors) == 0, errors
 

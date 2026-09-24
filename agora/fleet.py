@@ -38,6 +38,38 @@ BOOK_PCT of its price. A bought ship can be scrapped while docked
 value, so scrapping stops the upkeep without moving net worth; its cargo is
 left in the corp's hold at that station. Ship 1 cannot be scrapped.
 
+Hold size (#95 follow-up; Ryan: "A hold size limit makes sense")
+---------
+Every ship's hold carries at most ref.ship_hold cargo units (SHIP_HOLD = 250
+live, AGORA_SHIP_HOLD; 0 = no limit, which is what a bare AgoraReferee()
+gives tests). A cargo unit is one unit of any good but FUEL. FUEL rides in
+the ship's tank, FUEL_TANK units, and only FUEL above the tank counts as
+cargo, so FUEL hauled for sale is cargo like any other good. Cargo a ship
+is flying (the trip's escrow) is still aboard and counts. A corp's station
+holds, '<corp>/@<st>', are warehouses with no limit.
+
+  load      = cargo units aboard + max(0, FUEL aboard - FUEL_TANK)
+  reserved  = what the ship's resting bids would add if they all filled
+  free      = capacity - load - reserved
+
+Orders. A bid whose goods would not fit (load + reserved + qty over the
+capacity) is refused at placement with reason 'hold_full', so a resting
+bid always has room kept for it and a fill can never overflow. Every fill
+path clips to the room actually left as a backstop (the circuit-breaker
+auction, NPC order flow), and a resting bid a ship can no longer hold is
+cancelled before matching, like an unfunded one.
+Transfers onto a ship that has no room for them are refused ('hold_full').
+Deliveries nobody chose the size of -- piracy and sabotage loot, salvage
+bounties, a stranded ship's leftover escrow, peer goods collected or
+refunded -- fill the ship up to its free space and leave the rest in the
+corp's hold at the ship's station (the trip's destination if it is flying),
+so nothing is destroyed and nothing overflows (stow_locked). Anything a
+ship holds over its capacity when it docks -- genesis goods (1000 FRAG
+against a 250 hold), a database from before the limit -- is unloaded into
+its hold at that station (unload_overflow_locked), and
+verify_ledger_invariants checks that no docked ship is over capacity.
+A rescue's FUEL that would not fit is refused ('hold_full').
+
 Takeovers (#164): the raider absorbs every ship of the target, renamed to
 '<raider>/<next free n>' with a balanced transfer of its hold in the same
 transaction. The raider keeps its own ships first, then the absorbed ones in
@@ -70,6 +102,11 @@ MAX_SHIPS = 5            # with Guild standing: ship_4, ship_5
 BOOK_PCT = 0.5           # net worth counts a bought ship at this share of its price
 SCRAP_PCT = 0.5          # a scrapped hull pays this share of vessels.cost
 STANDING_GATES = {4: 'ship_4', 5: 'ship_5'}
+
+# Hold size (see the docstring). 250 is the default approved in #95's
+# follow-up; tools/economy_sim.py --scenario styles was checked against it.
+SHIP_HOLD = 250          # cargo units a ship's hold carries (FUEL in the tank not counted)
+FUEL_TANK = 500          # FUEL a ship carries outside its hold (the genesis FUEL)
 
 _SHIP_RE = re.compile(r'^[^/]+/(\d+)$')
 
@@ -246,6 +283,138 @@ class FleetDesk:
     def upkeep_due(self, agent: str) -> int:
         return max(0, len(self.ships(agent)) - 1) * SHIP_UPKEEP
 
+    # ------------------------------------------------------------ hold size
+
+    def capacity(self, acct: str) -> Optional[int]:
+        """Cargo units `acct` carries, or None for no limit: the limit is off,
+        or `acct` is not a ship (a station hold, a depot, a test agent)."""
+        cap = int(getattr(self.ref, 'ship_hold', 0) or 0)
+        if cap <= 0 or ship_number(acct) is None:
+            return None
+        return cap
+
+    @staticmethod
+    def load_of(goods: Dict[str, int]) -> int:
+        """Cargo units a set of goods takes: every good but FUEL, plus FUEL
+        above the tank."""
+        cargo = sum(max(0, q) for inst, q in goods.items() if inst in GOODS and inst != 'FUEL')
+        return cargo + max(0, goods.get('FUEL', 0) - FUEL_TANK)
+
+    def aboard(self, acct: str) -> Dict[str, int]:
+        """Goods on a ship: its account plus the cargo of the trip it is
+        flying (escrowed with SYSTEM, still in the hold)."""
+        with self.ref.lock:
+            goods = {i: q for i, q in self._balances(acct).items() if i in GOODS}
+            for r in self.ref.conn.execute("SELECT commodity, cargo_qty FROM transits "
+                                           "WHERE vessel_id = ? AND status = 'in_transit' AND cargo_qty > 0", (acct,)):
+                goods[r[0]] = goods.get(r[0], 0) + r[1]
+            return goods
+
+    def bids_for(self, acct: str) -> Dict[str, int]:
+        """Goods the ship's resting bids would bring aboard if they all filled."""
+        out: Dict[str, int] = {}
+        for books in self.ref.books.values():
+            for inst, b in books.items():
+                if inst not in GOODS:
+                    continue
+                for o in b.bids:
+                    if getattr(o, 'acct', None) == acct and o.remaining_qty > 0:
+                        out[inst] = out.get(inst, 0) + o.remaining_qty
+        return out
+
+    def room(self, acct: str, inst: str, reserved: bool = True) -> Optional[int]:
+        """Units of `inst` that can still come aboard `acct` (None: no
+        limit). reserved: leave the room the ship's resting bids keep (every
+        path but a fill of one of those bids)."""
+        cap = self.capacity(acct)
+        if cap is None or inst not in GOODS:
+            return None
+        with self.ref.lock:
+            goods = self.aboard(acct)
+            if reserved:
+                for i, q in self.bids_for(acct).items():
+                    goods[i] = goods.get(i, 0) + q
+        free = max(0, cap - self.load_of(goods))
+        if inst == 'FUEL':
+            return free + max(0, FUEL_TANK - goods.get('FUEL', 0))
+        return free
+
+    def hold_status(self, acct: str) -> Dict[str, Any]:
+        """What GET /referee/vessels and the briefing show for one ship."""
+        cap = self.capacity(acct)
+        with self.ref.lock:
+            goods = self.aboard(acct)
+            bids = self.bids_for(acct)
+        used = self.load_of(goods)
+        both = dict(goods)
+        for i, q in bids.items():
+            both[i] = both.get(i, 0) + q
+        reserved = self.load_of(both) - used
+        return {'hold_capacity': cap, 'hold_used': used, 'hold_reserved': reserved,
+                'hold_free': None if cap is None else max(0, cap - used - reserved),
+                'fuel_tank': FUEL_TANK, 'fuel': goods.get('FUEL', 0)}
+
+    def overflow_station(self, acct: str) -> Optional[str]:
+        """Where goods that do not fit aboard `acct` are left: the ship's
+        station, or the destination of the trip it is flying."""
+        st = self.station_of(acct)
+        if st:
+            return st
+        loc = self.ref.vessel_location(acct)
+        dest = ((loc.get('transit') or {}).get('destination') or '').lower()
+        return dest if dest in STATIONS else None
+
+    def stow_locked(self, acct: str, inst: str, qty: int) -> List[Tuple[str, int]]:
+        """Split a delivery nobody sized (loot, salvage, a refund, a peer
+        pickup) between `acct` and its corp's hold: the ship takes what fits,
+        the rest goes to the corp's hold at the ship's station (or the trip's
+        destination). [(account, qty), ...], no zero entries. Caller holds
+        ref.lock and builds the ledger legs."""
+        qty = int(qty)
+        room = self.room(acct, inst)
+        if room is None or qty <= room:
+            return [(acct, qty)] if qty > 0 else []
+        st = self.overflow_station(acct)
+        if st is None:  # a ship neither docked nor flying: never expected; its corp's home
+            with self.ref.lock:
+                r = self.ref.conn.execute("SELECT home_station FROM fleet_roster WHERE agent_id = ?",
+                                          (corp_of(acct),)).fetchone()
+            st = r[0] if r and r[0] in STATIONS else 'ceres'
+        out = [(acct, room)] if room > 0 else []
+        return out + [(hold_account(corp_of(acct), st), qty - room)]
+
+    def unload_overflow_locked(self, acct: str, txn: Optional[str] = None) -> Dict[str, int]:
+        """Unload whatever a docked ship holds over its capacity into its
+        corp's hold at that station: FUEL above the tank first, then goods in
+        name order. Returns what moved. Caller holds ref.lock and a transaction."""
+        cap = self.capacity(acct)
+        st = self.station_of(acct) if cap is not None else None
+        if cap is None or st is None or hold_station(acct):
+            return {}
+        goods = {i: q for i, q in self._balances(acct).items() if i in GOODS}
+        over = self.load_of(goods) - cap
+        if over <= 0:
+            return {}
+        moved: Dict[str, int] = {}
+        order = ['FUEL'] + sorted(i for i in goods if i != 'FUEL')
+        for inst in order:
+            if over <= 0:
+                break
+            have = goods.get(inst, 0)
+            spare = have - FUEL_TANK if inst == 'FUEL' else have
+            n = min(over, max(0, spare))
+            if n > 0:
+                moved[inst] = n
+                over -= n
+        hold = hold_account(corp_of(acct), st)
+        legs = []
+        for inst, n in moved.items():
+            legs += [(acct, inst, -n), (hold, inst, n)]
+        # A resting ask this leaves unfunded is pruned before it can match
+        # (AgoraReferee._prune_unfunded_locked), as after any other debit.
+        self._move(txn or f"hold-overflow-{acct}-r{self.ref.current_round}-{self.ref._get_next_seq()}", legs)
+        return moved
+
     def _free_id(self, agent: str, taken: Optional[set] = None) -> str:
         """The lowest ship number `agent` is not using (nor in `taken`). Caller holds ref.lock."""
         used = {ship_number(r[0]) for r in self.ref.conn.execute("SELECT vessel_id FROM vessels WHERE agent_id = ?", (agent,))}
@@ -349,6 +518,12 @@ class FleetDesk:
             have = ref.available_account(a, inst)
             if have < qty:
                 return _reject('insufficient_balance', f"{a} has {have} {inst} available, not {qty}")
+            room = self.room(b, inst)
+            if room is not None and qty > room:
+                h = self.hold_status(b)
+                return _reject('hold_full', f"{b}'s hold has room for {room} more {inst}, not {qty} "
+                                            f"(capacity {h['hold_capacity']}, used {h['hold_used']}, "
+                                            f"kept for resting bids {h['hold_reserved']})")
             self._move(f"vtransfer-{a}-{b}-{inst}-r{ref.current_round}-{ref._get_next_seq()}",
                        ((a, inst, -qty), (b, inst, qty)))
         return {'v': 1, 'kind': 'transfer_ok', 'payload': {
@@ -490,7 +665,8 @@ class FleetDesk:
             ships = []
             for v in self.ships(agent, active_only=False):
                 loc = ref.vessel_location(v['vessel_id'])
-                ships.append(dict(v, hold=self._balances(v['vessel_id']), location=loc))
+                ships.append(dict(v, hold=self._balances(v['vessel_id']), location=loc,
+                                  **self.hold_status(v['vessel_id'])))
             holds = {hold_station(a): self._balances(a) for a in self.accounts_of(agent) if hold_station(a)}
             n = len(self.ships(agent))
             cap = self.ship_cap(agent) if self.is_corp(agent) else 1
@@ -502,4 +678,5 @@ class FleetDesk:
                               if n + 1 <= MAX_SHIPS else None),
                 'upkeep_per_round': self.upkeep_due(agent), 'upkeep_per_extra_ship': SHIP_UPKEEP,
                 'prices': dict(SHIP_PRICES), 'book_value': self.book_value(agent),
+                'hold_per_ship': self.capacity(f"{agent}/1"), 'fuel_tank': FUEL_TANK,
             }

@@ -190,17 +190,23 @@ class PeerDesk:
             if row['seller'] != seller:
                 return _reject('unauthorized', f"Offer '{escrow_id}' belongs to {row['seller']}")
             self._move(f"peer-cancel-{escrow_id}", (('SYSTEM', row['instrument'], -row['qty']),
-                                                    (self._refund_account(row), row['instrument'], row['qty'])))
+                                                    *self._deliver(self._refund_account(row), row['instrument'], row['qty'])))
             ref.conn.execute("UPDATE station_escrow SET status = 'cancelled' WHERE escrow_id = ?", (escrow_id,))
         return {'v': 1, 'kind': 'peer_cancel_ok', 'payload': self.get(escrow_id)}
 
     # ------------------------------------------------------------ settlement
 
+    def _deliver(self, acct: str, inst: str, qty: int):
+        """Ledger legs putting qty goods on `acct`: a ship takes what its hold
+        has room for, the rest waits in its corp's hold at the ship's station
+        (#95, FleetDesk.stow_locked)."""
+        return [(a, inst, n) for a, n in self.ref.fleet.stow_locked(acct, inst, qty)]
+
     def _collect_locked(self, escrow_id: str, acct: str) -> None:
         row = self._row(escrow_id)
         cost = row['qty'] * row['price']
         self._move(f"peer-collect-{escrow_id}", (
-            ('SYSTEM', row['instrument'], -row['qty']), (acct, row['instrument'], row['qty']),
+            ('SYSTEM', row['instrument'], -row['qty']), *self._deliver(acct, row['instrument'], row['qty']),
             ('SYSTEM', 'CR', -cost), (row['seller'], 'CR', cost)))
         self.ref.conn.execute("UPDATE station_escrow SET status = 'collected' WHERE escrow_id = ?", (escrow_id,))
 
@@ -217,7 +223,7 @@ class PeerDesk:
             elif round_num > row['pickup_deadline']:
                 cost = row['qty'] * row['price']
                 self._move(f"peer-expire-{row['escrow_id']}", (
-                    ('SYSTEM', row['instrument'], -row['qty']), (self._refund_account(row), row['instrument'], row['qty']),
+                    ('SYSTEM', row['instrument'], -row['qty']), *self._deliver(self._refund_account(row), row['instrument'], row['qty']),
                     ('SYSTEM', 'CR', -cost), (row['buyer'], 'CR', cost)))
                 ref.conn.execute("UPDATE station_escrow SET status = 'expired' WHERE escrow_id = ?", (row['escrow_id'],))
                 done['expired'].append(row['escrow_id'])

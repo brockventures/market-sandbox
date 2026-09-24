@@ -227,12 +227,29 @@ def available(ref: AgoraReferee, agent: str, inst: str, vessel: Optional[str] = 
     return ref.available(agent, inst, vessel)
 
 
+NO_LIMIT = 10 ** 9
+
+
+def hold_free(ref: AgoraReferee, agent: str, comm: str, vessel: Optional[str] = None) -> int:
+    """GET /referee/vessels?agent_id=: units of `comm` this ship (ship 1
+    unless vessel) can still take on, beside what its resting bids keep
+    (hold_free; FUEL fills the tank first). NO_LIMIT when holds have none (#95)."""
+    room = ref.fleet.room(vessel or f"{agent}/1", comm)
+    return NO_LIMIT if room is None else room
+
+
+def hold_capacity(ref: AgoraReferee, agent: str) -> int:
+    """GET /referee/vessels?agent_id=: fleet.hold_per_ship, or NO_LIMIT."""
+    return ref.fleet.capacity(f"{agent}/1") or NO_LIMIT
+
+
 def load_hold(ref: AgoraReferee, agent: str, vessel: Optional[str], st: str, stats) -> None:
     """POST /referee/vessels/transfer: take on whatever the fleet's hold at
-    this station keeps (loot waiting at the fence, a refunded offer), #175."""
+    this station keeps (loot waiting at the fence, a refunded offer, genesis
+    goods beyond one hold), as much as the ship has room for, #175 / #95."""
     hold = fleet_mod.hold_account(agent, st)
     for c in TRADED:
-        q = ref.available_account(hold, c)
+        q = min(ref.available_account(hold, c), hold_free(ref, agent, c, vessel))
         if q > 0 and ref.fleet.transfer(agent, f"@{st}", vessel or f"{agent}/1", c, q).get("kind") == "transfer_ok":
             stats["hold_loads"] = stats.get("hold_loads", 0) + 1
 
@@ -411,7 +428,7 @@ def contract_value(ref: AgoraReferee, agent: str, c: dict, view, one_hop: bool =
         slack = DEADLINE_SLACK if one_hop else 0
         if not leg1 or not leg2 or r + leg1["rounds"] + leg2["rounds"] + slack > c["deadline"]:
             continue
-        qty = min(rem, 500, max(0, cash // ask))
+        qty = min(rem, 500, hold_capacity(ref, agent), max(0, cash // ask))
         fuel_px = view[st]["FUEL"]["best_ask"] or 20
         cost = (trip_fuel(ref, agent, leg1) + trip_fuel(ref, agent, leg2)) * fuel_px + leg1.get("toll", 0) + leg2.get("toll", 0)
         short = ref.contract_desk.penalty_rate(agent) * c["price"] * (rem - qty)
@@ -543,7 +560,7 @@ class PeerMarket:
             for c in my_contracts(ref, seller):  # goods it holds for its own contracts are not for sale
                 owed[c["instrument"]] = owed.get(c["instrument"], 0) + c["qty_remaining"]
             for comm in ("FRAG", "FOOD", "ORE", "FUEL"):
-                have = min(self.MAX_LOT, available(ref, seller, comm) - owed.get(comm, 0)
+                have = min(self.MAX_LOT, hold_capacity(ref, seller), available(ref, seller, comm) - owed.get(comm, 0)
                            - (self.FUEL_RESERVE if comm == "FUEL" else 0))
                 ask = sv[st][comm]["best_ask"]
                 if have < self.MIN_LOT or not ask:
@@ -691,6 +708,7 @@ class Hauler:
         owned = [c["station_id"] for c in sorted(my_contracts(ref, self.agent), key=lambda c: -c["price"])
                  if c["station_id"] != st and self._contract_run(ref, st, c["instrument"], c["station_id"])]
         best = None
+        room = {c: hold_free(ref, self.agent, c, v) for c in ("FRAG", "FOOD", "ORE")}  # #95
         for dest in (owned[:1] or waiting[:1] or STATIONS):
             if dest == st:
                 continue
@@ -702,10 +720,10 @@ class Hauler:
                     continue
                 ask = quotes[st][comm]["best_ask"]
                 bid = quotes[dest][comm]["best_bid"] or 0
-                cap = 500
+                cap = min(500, room[comm])
                 c = contract_for(ref, self.agent, dest, comm, ref.current_round + route["rounds"])
                 if c and c["price"] > bid:
-                    bid, cap = c["price"], min(500, c["qty_remaining"])
+                    bid, cap = c["price"], min(cap, c["qty_remaining"])
                 if not ask or not bid:
                     continue
                 if not band_ok(ref, st, comm, ask) and not self.tolerate_halts:
@@ -903,6 +921,12 @@ class Maker:
     held, the ask leans one CR lower above half of that, and nothing is
     bought with the last CR_RESERVE. Never claims contracts or hauls.
 
+    With a sized ship hold (#95) the maker keeps its stock in its station
+    hold, loads only what it offers each round, quotes each side at half
+    its clip, gives the hold's room to the widest spreads first, and joins
+    the depot touch instead of stepping inside it (a unit of room earns
+    the full spread). That applies to "inside_maker" too.
+
     Before #162 the maker only joined the depot's quotes at home with a
     fixed clip; "inside_maker" (the "market" scenario) still quotes at home
     with a fixed clip (relocate=False)."""
@@ -941,12 +965,26 @@ class Maker:
         cancel_all(ref, self.agent)
         flow = ref.order_flow if getattr(ref, "order_flow", None) is not None and ref.order_flow.enabled else None
         cash = available(ref, self.agent, "CR") - self.CR_RESERVE
+        ship, hold = f"{self.agent}/1", fleet_mod.hold_account(self.agent, st)
+        # A hold with a size (#95): the maker keeps its stock in its station
+        # hold (a warehouse, POST /referee/vessels/transfer) and each round
+        # loads only what it offers, so the ship's hold is room for its bids.
+        warehouse = bool(ref.fleet.capacity(ship))
+        if warehouse:
+            for comm in ("FRAG", "FOOD", "ORE"):
+                q = ref.available_account(ship, comm)
+                if q > 0:
+                    ref.fleet.transfer(self.agent, ship, f"@{st}", comm, q)
+        plan = []
         for comm in TRADED:
             q = quotes[st][comm]
             bid, ask = q["best_bid"], q["best_ask"]
             if not bid or not ask:
                 continue
-            if self.inside and ask - bid >= 3:
+            # With a sized hold each unit of room is scarce, so the maker joins
+            # the depot touch (a fleet order fills first at the same price)
+            # and keeps the full spread per unit instead of stepping inside.
+            if self.inside and ask - bid >= 3 and not warehouse:
                 bid, ask = bid + 1, ask - 1
             if flow is not None and self.relocate:
                 exp = flow.expected(st, comm)
@@ -956,16 +994,48 @@ class Maker:
                 clip_b = clip_a = self.clip
                 cap = 10 ** 9
             keep = FUEL_KEEP if comm == "FUEL" else 0
-            held = available(ref, self.agent, comm) - keep
+            stored = ref.available_account(hold, comm) if warehouse else 0
+            held = available(ref, self.agent, comm) + stored - keep
             if held > cap // 2 and ask - 1 > bid:
                 ask -= 1
-            want = min(clip_b, max(0, cap - held))
+            plan.append((comm, bid, ask, clip_b, clip_a, cap, held, stored))
+        # A sized hold (#95) is shared between the goods its asks offer
+        # (they must be aboard) and the room its bids keep. Each good quotes
+        # each side at half its clip (0.75x the expected flow; the stock
+        # reloads from the warehouse every round), and the room goes to the
+        # widest spreads first: a unit of hold earns the spread. FUEL trades
+        # inside the tank, so its bids never take hold room. Tuned on the
+        # styles scenario, seeds 1-10 (see the PR).
+        sizes = {}
+        for comm, bid, ask, clip_b, clip_a, cap, held, stored in plan:
+            if warehouse and comm != "FUEL":
+                clip_a, clip_b = max(1, clip_a // 2), max(1, clip_b // 2)
+            sizes[comm] = [min(clip_a, max(0, held)), min(clip_b, max(0, cap - held))]
+        if warehouse:
+            room = max(0, ref.fleet.capacity(ship) - ref.fleet.hold_status(ship)["hold_used"])
+            spread = {p[0]: p[2] - p[1] for p in plan}
+            for c in sorted((c for c in sizes if c != "FUEL"), key=lambda c: -spread[c]):
+                for side in (0, 1):
+                    sizes[c][side] = min(sizes[c][side], room)
+                    room -= sizes[c][side]
+            if "FUEL" in sizes:
+                sizes["FUEL"][1] = min(sizes["FUEL"][1], max(0, fleet_mod.FUEL_TANK - ref.get_balance(ship, "FUEL")))
+        for comm, bid, ask, clip_b, clip_a, cap, held, stored in plan:
+            n = sizes[comm][0]
+            if n > 0 and band_ok(ref, st, comm, ask):
+                aboard = held - stored
+                if aboard < n and stored > 0:
+                    ref.fleet.transfer(self.agent, f"@{st}", ship, comm,
+                                       min(n - aboard, stored, hold_free(ref, self.agent, comm)))
+                n = min(n, available(ref, self.agent, comm) - (FUEL_KEEP if comm == "FUEL" else 0))
+                if n > 0:
+                    order(ref, self.agent, "ask", n, ask, comm, st, "ma")
+        for comm, bid, ask, clip_b, clip_a, cap, held, stored in plan:
+            want = sizes[comm][1]
             if cash > 0 and want > 0 and band_ok(ref, st, comm, bid):
-                n = min(want, cash // bid)
+                n = min(want, cash // bid, hold_free(ref, self.agent, comm))
                 if n > 0 and order(ref, self.agent, "bid", n, bid, comm, st, "mb").get("kind") != "reject":
                     cash -= n * bid
-            if held > 0 and band_ok(ref, st, comm, ask):
-                order(ref, self.agent, "ask", min(clip_a, held), ask, comm, st, "ma")
 
 
 class Idler:
@@ -1063,7 +1133,7 @@ class Novice:
                 ask, bid = quotes[st][comm]["best_ask"], quotes[dest][comm]["best_bid"]
                 if not ask or not bid:
                     continue
-                qty = min(500, max(0, (inv["CR"] - 300) // ask))
+                qty = min(500, hold_free(ref, self.agent, comm), max(0, (inv["CR"] - 300) // ask))
                 if qty <= 0:
                     continue
                 fuel_cost = trip_fuel(ref, self.agent, route) * (quotes[st]["FUEL"]["best_ask"] or 20)
@@ -1271,6 +1341,14 @@ class DayTrader:
         if st is None:
             return
         cancel_all(ref, self.agent)
+        if ref.fleet.capacity(f"{self.agent}/1"):
+            # A hold with a size (#95): cargo it did not buy (genesis goods,
+            # loot) is sold like a position, or it would fill the hold for
+            # good; then it takes on what waits in its station hold.
+            for comm in ("FRAG", "FOOD", "ORE"):
+                p = self.pos.setdefault(comm, [0, 0])
+                p[0] = max(p[0], available(ref, self.agent, comm))
+            load_hold(ref, self.agent, None, st, stats)
         for comm in ("FRAG", "FOOD", "ORE"):
             q = quotes[st][comm]
             bid, ask = q["best_bid"], q["best_ask"]
@@ -1294,7 +1372,8 @@ class DayTrader:
                     stats["day_trades"] = stats.get("day_trades", 0) + (1 if sold else 0)
                 self.pos[comm] = [qty, held if qty else 0]
             elif ask <= avg * (1 - self.DIP) and band_ok(ref, st, comm, ask):
-                n = min(q["ask_depth"] or 0, self.LOT_CR // ask, max(0, (available(ref, self.agent, "CR") - 500) // ask))
+                n = min(q["ask_depth"] or 0, self.LOT_CR // ask, max(0, (available(ref, self.agent, "CR") - 500) // ask),
+                        hold_free(ref, self.agent, comm))
                 if n > 0:
                     before = ref.get_balance(self.agent, comm)
                     order(ref, self.agent, "bid", n, ask, comm, st, "dtbuy")
@@ -1458,7 +1537,7 @@ class MakerHauler(Hauler):
             if not bid or not ask or ask - bid < 3:
                 continue
             bid, ask = bid + 1, ask - 1
-            n = min(self.CLIP, budget // bid)
+            n = min(self.CLIP, budget // bid, hold_free(ref, self.agent, comm))
             if n > 0 and band_ok(ref, st, comm, bid) and \
                     order(ref, self.agent, "bid", n, bid, comm, st, "mb").get("kind") != "reject":
                 budget -= n * bid

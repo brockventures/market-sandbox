@@ -391,16 +391,23 @@ class CovertDesk:
         seq = ref._get_next_seq()
         txn = f"sabotage-loot-{actor}-{target}-r{rnd}"
         dest = actor
+        legs = [(actor, cut)]
         if getattr(ref, 'fleet', None) is not None and ref.fleet.is_corp(actor):
             dest = f"{actor}/1"
-        for acct, d in (('SYSTEM', -cut), (dest, cut)):
+            # What ship 1's hold cannot take waits in the saboteur's hold at
+            # the ship's station (#95, FleetDesk.stow_locked).
+            legs = ref.fleet.stow_locked(dest, comm, cut)
+        for acct, d in [('SYSTEM', -cut)] + legs:
             ref.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, ?, 0)", (acct, comm))
             ref.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?",
                              (d, acct, comm))
             ref.conn.execute(
                 "INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)",
                 (txn, seq, acct, comm, d))
-        return {'commodity': comm, 'qty': cut, 'value_cr': ref_value(comm, cut), 'to': dest}
+        out = {'commodity': comm, 'qty': cut, 'value_cr': ref_value(comm, cut), 'to': dest}
+        if len(legs) > 1 or (legs and legs[0][0] != dest):
+            out['stowed'] = {acct: n for acct, n in legs}
+        return out
 
     # ------------------------------------------------------------ Rivalry Scoreboard (#152)
 

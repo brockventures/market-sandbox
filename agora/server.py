@@ -24,6 +24,7 @@ from agora.referee import AgoraReferee
 from agora.exchange import DEFAULT_VOL
 from agora.hazards import DEFAULT_P_DELAY, DEFAULT_P_LOSS
 from agora import piracy as _piracy
+from agora import fleet as fleet_mod
 from agora.galnet import GalNetEngine
 from agora.spatial import STATIONS, COMMODITIES, ROUTES, get_route, get_alignment_windows
 from agora.websocket import handle_terminal_websocket
@@ -1690,6 +1691,9 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             ag = query_params.get('agent_id', [None])[0]
             with ref.lock:
                 vessels = ref.get_vessels(ag)
+                for v in vessels:  # hold size (#95): cargo units aboard and what the hold carries
+                    h = ref.fleet.hold_status(v['vessel_id'])
+                    v['hold_used'], v['hold_capacity'] = h['hold_used'], h['hold_capacity']
                 out = {'status': 'ok', 'vessels': vessels}
                 if ag and ref.fleet.is_corp(ag):
                     out['fleet'] = ref.fleet.summary(ag)
@@ -1979,6 +1983,8 @@ def build_referee_from_env(db_path: str = 'agora.db', **overrides) -> AgoraRefer
       AGORA_EVENTS=1           secrecy and exposure: private/secret corp events, leak rolls, GalNet scandals
       AGORA_ORDER_FLOW=1       station order flow: NPC buyers and sellers fill fleet quotes before the depot
       AGORA_STANDING=1         earned institutional standing by income lane; gates lane tech (#187)
+      AGORA_SHIP_HOLD=250      cargo units each ship's hold carries (agora/fleet.py SHIP_HOLD; FUEL up to
+                               FUEL_TANK rides outside it); 0 = no limit
 
     overrides: AgoraReferee keyword arguments that replace the env-derived
     ones. The server passes none. The simulator passes only what its CLI
@@ -2006,7 +2012,8 @@ def build_referee_from_env(db_path: str = 'agora.db', **overrides) -> AgoraRefer
                         piracy=os.environ.get('AGORA_PIRACY', '0.15,0.04'),
                         events=_on('AGORA_EVENTS'),
                         order_flow=_on('AGORA_ORDER_FLOW'),
-                        standing=_on('AGORA_STANDING'))
+                        standing=_on('AGORA_STANDING'),
+                        ship_hold=_int_env('AGORA_SHIP_HOLD', fleet_mod.SHIP_HOLD))
     kwargs.update(overrides)
     return AgoraReferee(db_path=db_path, **kwargs)
 

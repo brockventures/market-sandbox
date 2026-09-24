@@ -208,6 +208,9 @@ class OrderFlowDesk:
                 can = ref._account_balance(o.goods_acct, comm)
             else:
                 can = ref.get_balance(o.agent_id, 'CR') // o.limit_price
+                room = ref.fleet.room(o.goods_acct, comm, reserved=False)  # the ship's hold (#95)
+                if room is not None:
+                    can = min(can, room)
             qty = min(want - filled, o.remaining_qty, max(0, can))
             if qty <= 0:
                 continue
