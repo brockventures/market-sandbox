@@ -149,8 +149,8 @@ MARKET = ('trade-', 'flow-', 'auction-', 'trd-auc-')
 
 SCHEMA = [
     """CREATE TABLE IF NOT EXISTS standing_income (
-        agent_id TEXT NOT NULL, round INTEGER NOT NULL, lane TEXT NOT NULL, cr INTEGER NOT NULL,
-        PRIMARY KEY (agent_id, round, lane))""",
+        agent_id TEXT NOT NULL, tick INTEGER NOT NULL, lane TEXT NOT NULL, cr INTEGER NOT NULL,
+        PRIMARY KEY (agent_id, tick, lane))""",
     """CREATE TABLE IF NOT EXISTS standing_lanes (
         agent_id TEXT NOT NULL, lane TEXT NOT NULL,
         cum_profit INTEGER NOT NULL DEFAULT 0, tier INTEGER NOT NULL DEFAULT 0,
@@ -247,7 +247,7 @@ class StandingDesk:
                 # First boot against a database with history: start from its end.
                 top = ref.conn.execute("SELECT COALESCE(MAX(entry_id), 0) FROM ledger_entries").fetchone()[0]
                 seq = ref.conn.execute("SELECT COALESCE(MAX(seq), 0) FROM book_events").fetchone()[0]
-                self._save_meta({'ledger_cursor': top, 'trade_cursor': seq, 'book': self._empty_book()})
+                self._save_meta({'ledger_cursor': top, 'trade_cursor': seq, 'tick': 0, 'book': self._empty_book()})
         self._load()
 
     # ---------------------------------------------------------- state
@@ -268,13 +268,16 @@ class StandingDesk:
             meta = {r[0]: json.loads(r[1]) for r in self.ref.conn.execute("SELECT key, value FROM standing_meta")}
         self.ledger_cursor = int(meta.get('ledger_cursor', 0))
         self.trade_cursor = int(meta.get('trade_cursor', 0))
+        # The desk's own round counter: the referee's current_round is not
+        # restored from the DB on a restart, so the window is kept in ticks.
+        self.tick = int(meta.get('tick', 0))
         self.book = meta.get('book') or self._empty_book()
 
     def reset_locked(self) -> None:
         """Called by _wipe_trading_state (tables already emptied): the ledger
         was wiped too, so read it from the start."""
-        self.ledger_cursor, self.trade_cursor, self.book = 0, 0, self._empty_book()
-        self._save_meta({'ledger_cursor': 0, 'trade_cursor': 0, 'book': self.book})
+        self.ledger_cursor, self.trade_cursor, self.tick, self.book = 0, 0, 0, self._empty_book()
+        self._save_meta({'ledger_cursor': 0, 'trade_cursor': 0, 'tick': 0, 'book': self.book})
 
     def _corps(self) -> List[str]:
         return [r[0] for r in self.ref.conn.execute("SELECT agent_id FROM fleet_roster ORDER BY agent_id")]
@@ -537,14 +540,14 @@ class StandingDesk:
         conn = self.ref.conn
         corps = self._corps()
         income = self._ingest(set(corps))
+        self.tick += 1
         for agent, lanes in income.items():
             for lane, v in lanes.items():
                 v = int(round(v))
                 if v:
-                    conn.execute("""INSERT INTO standing_income (agent_id, round, lane, cr) VALUES (?, ?, ?, ?)
-                                    ON CONFLICT(agent_id, round, lane) DO UPDATE SET cr = cr + excluded.cr""",
-                                 (agent, round_num, lane, v))
-        conn.execute("DELETE FROM standing_income WHERE round <= ?", (round_num - WINDOW,))
+                    conn.execute("INSERT INTO standing_income (agent_id, tick, lane, cr) VALUES (?, ?, ?, ?)",
+                                 (agent, self.tick, lane, v))
+        conn.execute("DELETE FROM standing_income WHERE tick <= ?", (self.tick - WINDOW,))
         trailing: Dict[str, Dict[str, int]] = {}
         for a, lane, v in conn.execute("SELECT agent_id, lane, SUM(cr) FROM standing_income GROUP BY agent_id, lane"):
             trailing.setdefault(a, {})[lane] = int(v)
@@ -565,7 +568,8 @@ class StandingDesk:
                     self._post_news(agent, lane, move, tier, round_num)
                     changes.append({'agent_id': agent, 'lane': lane, 'institution': INSTITUTIONS[lane]['cap'],
                                     'move': move, 'tier': tier})
-        self._save_meta({'ledger_cursor': self.ledger_cursor, 'trade_cursor': self.trade_cursor, 'book': self.book})
+        self._save_meta({'ledger_cursor': self.ledger_cursor, 'trade_cursor': self.trade_cursor, 'tick': self.tick,
+                         'book': self.book})
         return {'changes': changes} if changes else None
 
     def _post_news(self, agent: str, lane: str, move: str, tier: int, round_num: int) -> None:

@@ -256,12 +256,14 @@ class TestDesk(unittest.TestCase):
             book_trade(ref, 'trd-1', 'ceres', 'zero', 'depot_ceres', 'ORE', 10, 10)
             ref.step_round()
             ref.conn.close()
-            ref2 = AgoraReferee(db_path=path, standing=True)
-            ref2.current_round = 1
+            ref2 = AgoraReferee(db_path=path, standing=True)  # current_round restarts at 0
             self.assertTrue(ref2.standing.allows('zero', 'freight_guild'))
             self.assertEqual(ref2.standing.book['lots']['zero']['ORE'], [['ceres', 'bought', 10, 100.0]])
             ref2.step_round()
             self.assertEqual(lanes(ref2, 'zero')['hauling'], 50_000)
+            z = ref2.standing.report('zero')['corps']['zero']['lanes']['hauling']
+            self.assertEqual(z['trailing_cr'], 50_000)  # the window survived, and was not counted twice
+            self.assertEqual(ref2.standing.tick, 3)  # the desk's own counter carried over the restart
             ref2.conn.close()
         finally:
             os.unlink(path)
