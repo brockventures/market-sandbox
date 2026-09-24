@@ -520,6 +520,24 @@ class CorporateDesk:
                     self._event("winner", candidate, f"{candidate} has won the game: Corporate Monopoly (majority board control in all surviving corps)")
                     break
 
+            # Financial Hegemony Victory (#165)
+            # 1. Dominant equity stakes (>= 200 shares in every active rival)
+            # 2. Overwhelming financial dominance (>= 500k CR or >= 50% system net worth)
+            if not self.ref.conn.execute("SELECT 1 FROM corp_events WHERE kind = 'winner'").fetchone():
+                leaderboard = {b['agent_id']: b['net_worth'] for b in ref.get_leaderboard()}
+                total_nw = sum(leaderboard.get(a, 0) for a in act)
+                for candidate in act:
+                    rivals = [r for r in act if r != candidate]
+                    has_dominant_stakes = bool(rivals) and all(
+                        ref.get_balance(candidate, self._sym(rival) or '') >= 200 for rival in rivals
+                    )
+                    nw = leaderboard.get(candidate, 0)
+                    hegemony_nw = (nw >= 500_000) or (total_nw > 0 and (nw / total_nw) >= 0.50 and nw >= 100_000)
+                    if has_dominant_stakes or hegemony_nw:
+                        reason = "dominant equity stakes across all rival corps" if has_dominant_stakes else f"overwhelming financial capitalization ({nw:,} CR)"
+                        self._event("winner", candidate, f"{candidate} achieved Financial Hegemony ({reason}) and wins the game")
+                        break
+
     # ------------------------------------------------------------ Hostile M&A Levers (#164)
 
     def create_tender_offer(self, raider: str, target: str, price: int, shares: int) -> Dict[str, Any]:
@@ -1015,6 +1033,52 @@ class CorporateDesk:
                 if ref.get_balance(borrower, "CR") > 0:
                     self._pay_down(borrower)
 
+    def _distribute_dividends_locked(self, round_num: int) -> None:
+        """Passive dividend distribution: profitable corporations distribute a modest
+        dividend yield (e.g. 1-5 CR per share) to outside shareholders (#165)."""
+        ref = self.ref
+        for issuer in self.active():
+            sym = self._sym(issuer)
+            if not sym:
+                continue
+            # N2: Debt gating - indebted corporations cannot distribute dividends
+            if self._row(issuer).get("debt", 0) > 0:
+                continue
+            # N4: Consider available cash after reservations/escrow, not raw balance
+            avail = ref.peer._available(issuer, 'CR') if hasattr(ref, 'peer') else ref.get_balance(issuer, 'CR')
+            # N2: Require cash strictly above starting genesis capital (10,000 CR)
+            # Dividends are funded only from earned surplus profits
+            GENESIS_CASH = 10_000
+            if avail <= GENESIS_CASH:
+                continue
+            excess = avail - GENESIS_CASH
+            budget = int(excess * 0.05)
+            if budget <= 0:
+                continue
+            holders = ref.conn.execute(
+                "SELECT a.agent_id, a.balance FROM accounts a "
+                "JOIN fleet_roster f ON a.agent_id = f.agent_id "
+                "WHERE a.instrument = ? AND a.balance > 0 AND a.agent_id != ?",
+                (sym, issuer)).fetchall()
+            total_outside_shares = sum(h['balance'] for h in holders)
+            if total_outside_shares <= 0:
+                continue
+            div_per_share = min(5, budget // total_outside_shares)
+            if div_per_share <= 0:
+                continue
+            for h in holders:
+                holder_agent = h['agent_id']
+                amount = h['balance'] * div_per_share
+                if amount <= 0:
+                    continue
+                seq = ref._get_next_seq()
+                txn = f"dividend-{issuer}-{holder_agent}-r{round_num}"
+                ref.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = ? AND instrument = 'CR'", (amount, issuer))
+                ref.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = 'CR'", (amount, holder_agent))
+                ref.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, 'CR', ?)",
+                                 (txn, seq, issuer, -amount))
+                ref.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, 'CR', ?)",
+                                 (txn, seq, holder_agent, amount))
     # ------------------------------------------------------------ rounds
 
     def step_locked(self, round_num: int) -> Dict[str, Any]:
@@ -1035,4 +1099,6 @@ class CorporateDesk:
                 self._bankrupt(agent)
         self._check_loan_maturities(round_num)
         self._takeovers()
+        if getattr(self.ref, 'dividends_enabled', False):
+            self._distribute_dividends_locked(round_num)
         return {"active": self.active()}

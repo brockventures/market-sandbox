@@ -51,14 +51,15 @@ CATALOG: Dict[str, Dict[str, Any]] = {
                   "what": "tier 1: trips of 3+ rounds take one round less; tier 2: every trip "
                           "burns 40% less fuel"},
     "boarding_pods": {"prices": [5_000], "factors": [0.80], "unlocks": [10],
-                      
                       "what": "syndicate boarding pods increase cargo yield stolen during raids from 50% to 80%"},
     "ecm_jammers":   {"prices": [6_500], "factors": [0.50], "unlocks": [60],
-                      
                       "what": "lowers the chance of a privateer contract being traced by 50%, evading referee fines and exposure"},
     "stealth_drives": {"prices": [7_000], "factors": [0.50], "unlocks": [90],
-                       
                        "what": "cuts raid risk by 50% across belt and inner shipping lanes through low-emissions cloaking"},
+    "algo_desk": {"prices": [6_000], "factors": [0.2], "unlocks": [20],
+                  "what": "cuts exchange transaction fee from 0.5% to 0.1% and grants priority order matching ahead of NPC flow"},
+    "telemetry": {"prices": [5_000], "factors": [1.0], "unlocks": [15],
+                  "what": "gives real-time Level 2 depth telemetry and visibility into resting order books across all stations without visiting them"},
 }
 
 # hold: the size of a cargo loss, by tier held (tier 0 first).
@@ -80,7 +81,14 @@ def standing_gate(kind: str, tier: int):
     return gates[tier - 1] if tier - 1 < len(gates) else None
 
 
-NEWS_NOUN = {"shielding": "SHIELDING", "hold": "HARDENED HOLDS", "armor": "ARMOR PLATING", "engines": "ENGINES"}
+NEWS_NOUN = {
+    "shielding": "SHIELDING",
+    "hold": "HARDENED HOLDS",
+    "armor": "ARMOR PLATING",
+    "engines": "ENGINES",
+    "algo_desk": "ALGO EXECUTION DESKS",
+    "telemetry": "DEPTH TELEMETRY",
+}
 
 
 def unlock_round(kind: str, tier: int) -> int:
@@ -155,6 +163,29 @@ class UpgradeDesk:
             return fuel
         cut = ENGINE_FUEL_CUT[min(self.tier(agent, 'engines'), len(ENGINE_FUEL_CUT) - 1)]
         return max(1, int(round(fuel * (1.0 - cut)))) if cut else fuel
+
+    DEFAULT_EXCHANGE_FEE = 0.005  # 0.5% baseline
+    ALGO_DESK_EXCHANGE_FEE = 0.001  # 0.1% with Algo Execution Desk
+
+    def fee_rate(self, agent: str) -> float:
+        """Exchange transaction fee rate for agent. 0.1% with algo_desk, else 0.5%."""
+        if not getattr(self.ref, 'upgrades_enabled', False):
+            return 0.0
+        if not agent or agent in ('SYSTEM', 'ceres_exchange', 'station_flow'):
+            return 0.0
+        return self.ALGO_DESK_EXCHANGE_FEE if self.has_algo_desk(agent) else self.DEFAULT_EXCHANGE_FEE
+
+    def has_algo_desk(self, agent: str) -> bool:
+        """Returns True if agent has fitted the Algo Execution Desk."""
+        if not getattr(self.ref, 'upgrades_enabled', False):
+            return False
+        return self.tier(agent, 'algo_desk') > 0
+
+    def has_telemetry(self, agent: str) -> bool:
+        """Returns True if agent has fitted Level 2 Depth Telemetry."""
+        if not getattr(self.ref, 'upgrades_enabled', False):
+            return False
+        return self.tier(agent, 'telemetry') > 0
 
     def book_value(self, agent: str) -> int:
         """Fitted upgrades as an asset: CAPITAL_PCT of every tier's price."""

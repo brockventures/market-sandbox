@@ -1137,7 +1137,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             self._send_json(400 if result.get('kind') == 'reject' else 200, result)
             return
 
-        if path in ('/referee/covert/wiretap', '/referee/covert/sabotage'):
+        if path in ('/referee/covert/wiretap', '/referee/covert/sabotage', '/referee/covert/rumor'):
             auth_agent, auth_err = self._authenticate_request()
             if auth_err:
                 self._send_json(401, auth_err)
@@ -1145,6 +1145,10 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             try:
                 length = int(self.headers.get('Content-Length', 0))
                 data = json.loads(self.rfile.read(length).decode('utf-8')) if length else {}
+                if not isinstance(data, dict):
+                    self._send_json(400, {'v': 1, 'kind': 'reject',
+                                          'payload': {'reason': 'invalid_format', 'detail': 'Request body must be a JSON object'}})
+                    return
             except Exception as e:
                 self._send_json(400, {'v': 1, 'kind': 'reject',
                                       'payload': {'reason': 'invalid_format', 'detail': f'Malformed JSON: {e}'}})
@@ -1161,9 +1165,18 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 return
             if path == '/referee/covert/wiretap':
                 result = ref.covert.plant_wiretap(agent, str(data.get('target', '')))
-            else:
+            elif path == '/referee/covert/sabotage':
                 result = ref.covert.execute_sabotage(agent, str(data.get('target', '')), str(data.get('mode', 'auto')),
                                                      target_vessel=data.get('target_vessel'))
+            else:
+                result = ref.covert.plant_rumor(
+                    agent,
+                    str(data.get('station_id') or data.get('station', 'ceres')),
+                    str(data.get('commodity', 'FRAG')),
+                    str(data.get('direction', 'bullish')),
+                    headline=data.get('headline'),
+                    body=data.get('body')
+                )
             self._send_json(400 if result.get('kind') == 'reject' else 200, result)
             return
 
@@ -1768,6 +1781,14 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             result = ref.covert.get_intel(viewer, target)
             self._send_json(400 if result.get('kind') == 'reject' else 200, result)
             return
+        elif path == '/referee/covert/insider_taps':
+            viewer = self._reader()
+            if not viewer:
+                self._send_json(401, {'error': 'unauthorized', 'detail': 'Authentication required'})
+                return
+            self._send_json(200, {'status': 'ok', 'round': ref.current_round,
+                                  'insider_taps': ref.covert.get_insider_taps(viewer)})
+            return
         elif path == '/referee/corporate/rivalry':
             viewer = self._reader()
             self._send_json(200, {'status': 'ok', **ref.covert.rivalry_scoreboard(viewer)})
@@ -2149,6 +2170,7 @@ def build_referee_from_env(db_path: str = 'agora.db', **overrides) -> AgoraRefer
       AGORA_EXCHANGE_VOL=0.12  per-round volatility of the exchange's stock prices
       AGORA_CONTRACTS=1        owned, tradable station contracts (25% deposit, 50% lapse penalty; 25% for a corp's first)
       AGORA_CORPORATE=1        debt, distress share sales, bankruptcy, 51% takeovers
+      AGORA_DIVIDENDS=1        passive dividend distributions from profitable corporate treasuries (#165)
       AGORA_UPGRADES=1         ship upgrades (shielding, hold, armor, engines) that cut hazard/piracy odds
       AGORA_HAZARDS=0.2,0.2    per-trip chance of a 1-3 round delay, and of losing 10-20% of the cargo; 0 = off
       AGORA_PIRACY=0.15,0.04   raid chance on belt (tolled) and inner routes, before hot-station and cargo-value scaling; 0 = off

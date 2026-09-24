@@ -156,7 +156,7 @@ HAULING_CR = ('toll-', 'contract-', 'piracy-escort-')
 COVERT_CR = ('piracy-hire-', 'piracy-fine-', 'piracy-fence-', 'piracy-tribute-', 'covert-', 'wiretap-', 'sabotage-')
 # A victim's receipts on these covert txns are compensation, not covert income.
 COVERT_VICTIM_RECEIPTS = ('sabotage-fine-', 'sabotage-restitution-')
-TRADING_CR = ('fee-', 'feecol-')
+TRADING_CR = ('fee-', 'feecol-', 'exchange-fee-')
 VICTIM_GOODS_LOSS = ('sabotage-dock-', 'sabotage-fuel-')
 MARKET = ('trade-', 'flow-', 'auction-', 'trd-auc-')
 
