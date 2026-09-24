@@ -107,6 +107,7 @@ SHOCKS: Dict[str, tuple] = {
     'privateer_contract': ('actor', -0.08),   # fires only on exposure
     'sabotage':           ('actor', -0.08),   # fires only on exposure
     'stake_20':           ('victim', 0.03),   # takeover premium
+    'deregulation_enacted': ('actor', 0.03), # planetary council lobbying shock (#134)
 }
 # Cargo lost to a hazard or pirates: LOSS_PER of the price per LOSS_UNIT CR
 # lost (valued at agora.piracy.REF_PRICE), capped at LOSS_CAP.

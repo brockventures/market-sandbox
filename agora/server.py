@@ -1369,6 +1369,64 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             self._send_json(400 if result.get('kind') == 'reject' else 200, result)
             return
 
+                # Lobbying (#134): POST /referee/lobbying/influence, POST /referee/lobbying/action
+        if path in ('/referee/lobbying/influence', '/referee/lobbying/action'):
+            auth_agent, auth_err = self._authenticate_request()
+            if auth_err:
+                self._send_json(401, auth_err)
+                return
+            try:
+                length = int(self.headers.get('Content-Length', 0))
+                data = json.loads(self.rfile.read(length).decode('utf-8')) if length else {}
+            except Exception as e:
+                self._send_json(400, {'v': 1, 'kind': 'reject',
+                                      'payload': {'reason': 'invalid_format', 'detail': f'Malformed JSON: {e}'}})
+                return
+            ref = self.referee or AgoraReferee()
+            agent = data.get('agent_id') if auth_agent in ('admin', 'combine') else auth_agent
+            if not agent:
+                self._send_json(400, {'v': 1, 'kind': 'reject',
+                                      'payload': {'reason': 'agent_required', 'detail': 'agent_id is required with this token'}})
+                return
+            if path == '/referee/lobbying/influence':
+                tokens_raw = data.get('tokens', 1)
+                try:
+                    tokens = int(tokens_raw)
+                except (ValueError, TypeError):
+                    self._send_json(400, {'v': 1, 'kind': 'reject',
+                                          'payload': {'reason': 'invalid_format', 'detail': 'tokens must be an integer'}})
+                    return
+                result = ref.lobbying.buy_influence(agent, str(data.get('station_id', '')), tokens)
+            else:
+                rounds_raw = data.get('rounds')
+                param_raw = data.get('param_value')
+                rounds = None
+                param_value = None
+                if rounds_raw is not None:
+                    try:
+                        rounds = int(rounds_raw)
+                    except (ValueError, TypeError):
+                        self._send_json(400, {'v': 1, 'kind': 'reject',
+                                              'payload': {'reason': 'invalid_format', 'detail': 'rounds must be an integer'}})
+                        return
+                if param_raw is not None:
+                    try:
+                        param_value = int(param_raw)
+                    except (ValueError, TypeError):
+                        self._send_json(400, {'v': 1, 'kind': 'reject',
+                                              'payload': {'reason': 'invalid_format', 'detail': 'param_value must be an integer'}})
+                        return
+                result = ref.lobbying.enact_action(
+                    agent,
+                    str(data.get('action_type', '')),
+                    str(data.get('station_id', '')),
+                    target=data.get('target'),
+                    rounds=rounds,
+                    param_value=param_value,
+                )
+            self._send_json(400 if result.get('kind') == 'reject' else 200, result)
+            return
+
         if path not in ('/referee/orders', '/referee/quick_order'):
             self._send_json(404, {'error': 'not_found', 'path': self.path})
             return
@@ -1728,6 +1786,13 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             status = query_params.get('status', ['offered'])[0]
             self._send_json(200, {'status': 'ok', 'peer_trades': ref.peer_trades,
                                   'offers': ref.peer.list(station_id=st, status=status)})
+        elif path == '/referee/lobbying/status':
+            ag = query_params.get('agent_id', [None])[0] or self._reader() or 'zero'
+            st = query_params.get('station_id', [None])[0]
+            self._send_json(200, {'status': 'ok', **ref.lobbying.get_influence(ag, st)})
+        elif path == '/referee/lobbying/actions':
+            st = query_params.get('station_id', [None])[0]
+            self._send_json(200, {'status': 'ok', 'actions': ref.lobbying.get_active_actions(st)})
         elif path == '/referee/fleets':
             rows = ref.conn.execute(
                 "SELECT agent_id, display_name, home_station, genesis_cr, genesis_frag, genesis_fuel FROM fleet_roster ORDER BY agent_id"

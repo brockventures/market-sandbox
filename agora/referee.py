@@ -25,6 +25,7 @@ from agora.covert import CovertDesk
 from agora.fog import FogEngine, env_fog, parse_fog
 from agora.order_flow import OrderFlowDesk, env_order_flow
 from agora.fleet import FleetDesk, GOODS, corp_of, is_ship_account, VESSEL_LOCATIONS_VIEW
+from agora.lobbying import LobbyingDesk
 
 STOCK_EXCHANGE_STATION = 'ceres'  # the one book every fleet stock trades on
 
@@ -206,6 +207,7 @@ class AgoraReferee:
         self.equity = SyndicateEquityEngine(self.conn, self)
         self.salvage = DerelictSalvageEngine(self.conn, self)
         self.circuit_breaker = CircuitBreakerEngine(self.conn, self, band_pct=self.band_pct)
+        self.lobbying = LobbyingDesk(self)
         self.history_engine = PriceHistoryEngine(self.conn)
         self._migrate_rng_bags()
         # A database from before the hold limit (or one started with a bigger
@@ -694,6 +696,7 @@ class AgoraReferee:
         self.equity = SyndicateEquityEngine(self.conn, self)
         self.salvage = DerelictSalvageEngine(self.conn, self)
         self.circuit_breaker = CircuitBreakerEngine(self.conn, self, band_pct=self.band_pct)
+        self.lobbying = LobbyingDesk(self)
 
     def reset_to_genesis(
         self,
@@ -980,6 +983,8 @@ class AgoraReferee:
                 continue
             if any(l.get('status') != 'docked' for l in self.fleet_locations(agent)):
                 continue  # a ship in flight: the fleet is working
+            if hasattr(self, 'lobbying') and self.lobbying and self.lobbying.is_idle_exempt(agent):
+                continue
             fee = min(self.idle_fee, max(0, self.get_balance(agent, 'CR')))
             if fee <= 0:
                 continue
@@ -1750,6 +1755,16 @@ class AgoraReferee:
                             self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, 'SYSTEM', ?, ?)", (f"release-{t_id}", next_seq, comm, -deliver_qty))
 
                     self.conn.execute("UPDATE transits SET status = 'arrived', decayed_qty = ? WHERE transit_id = ?", (decay_qty, t_id))
+                    if hasattr(self, 'lobbying') and self.lobbying and dest:
+                        tariff = self.lobbying.get_docking_tariff(ag_id, dest)
+                        if tariff > 0:
+                            actual_tariff = min(tariff, max(0, self.get_balance(ag_id, 'CR')))
+                            if actual_tariff > 0:
+                                t_seq = self._get_next_seq()
+                                self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = ? AND instrument = 'CR'", (actual_tariff, ag_id))
+                                self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = 'SYSTEM' AND instrument = 'CR'", (actual_tariff,))
+                                self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, 'CR', ?)", (f"tariff-dock-{t_id}", t_seq, ag_id, -actual_tariff))
+                                self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, 'SYSTEM', 'CR', ?)", (f"tariff-dock-{t_id}", t_seq, actual_tariff))
                     # Docks the ship (current_round is already new_round); a
                     # hull absorbed over its owner's cap is scrapped here (#164).
                     self._dock_vessel_locked(ag_id, dest, v_id)
