@@ -157,6 +157,10 @@ class DerelictSalvageEngine:
                 return {'ok': False, 'reason': 'transit_not_found', 'detail': f"No transit '{transit_id}' found"}
             if t_row['agent_id'] != agent_id:
                 return {'ok': False, 'reason': 'unauthorized', 'detail': f"Transit '{transit_id}' belongs to '{t_row['agent_id']}', not '{agent_id}'"}
+            if t_row['status'] == 'arrived':
+                return {'ok': False, 'reason': 'transit_already_arrived', 'detail': f"Cannot broadcast distress: transit '{transit_id}' has already arrived"}
+            if t_row['status'] != 'in_transit':
+                return {'ok': False, 'reason': 'transit_not_in_transit', 'detail': f"Cannot broadcast distress: transit '{transit_id}' is {t_row['status']}"}
             origin = t_row['origin']
             destination = t_row['destination']
             if not location:
@@ -363,6 +367,14 @@ class DerelictSalvageEngine:
         beacon_id = row['beacon_id']
         rfq_id = row['rfq_id']
         transit_id = row['transit_id']
+        if transit_id:
+            t_chk = self.conn.execute("SELECT status FROM transits WHERE transit_id = ?", (transit_id,)).fetchone()
+            if t_chk and t_chk['status'] == 'arrived':
+                return {
+                    'ok': False,
+                    'reason': 'transit_already_arrived',
+                    'detail': f"Cannot accept rescue: transit '{transit_id}' has already arrived"
+                }
 
         # 1. Audit solvency: stranded agent must have price_cr available
         if self.referee:
@@ -530,42 +542,84 @@ class DerelictSalvageEngine:
             if transit_id:
                 # Fetch transit record
                 t_row = self.conn.execute(
-                    "SELECT agent_id, vessel_id, origin, destination, commodity, cargo_qty, status FROM transits WHERE transit_id = ?",
+                    "SELECT agent_id, vessel_id, origin, destination, commodity, cargo_qty, status, perishable, decay_rate, departure_round, arrival_round FROM transits WHERE transit_id = ?",
                     (transit_id,)).fetchone()
+                if not t_row:
+                    return {'ok': False, 'reason': 'transit_not_found', 'detail': f"Linked transit '{transit_id}' not found"}
+
+                # Reject claims if transit already arrived or is no longer in transit (#211)
+                if t_row['status'] == 'arrived':
+                    return {
+                        'ok': False,
+                        'reason': 'transit_already_arrived',
+                        'detail': f"Cannot claim salvage: transit '{transit_id}' has already arrived"
+                    }
+                if t_row['status'] != 'in_transit':
+                    return {
+                        'ok': False,
+                        'reason': 'transit_not_in_transit',
+                        'detail': f"Cannot claim salvage: transit '{transit_id}' is {t_row['status']}"
+                    }
 
                 # Cancel the linked transit if still under way, and dock the
                 # fleet back at the transit's ORIGIN (#198).
                 cancelled = self.conn.execute(
                     "UPDATE transits SET status = 'cancelled' WHERE transit_id = ? AND status = 'in_transit'",
                     (transit_id,)).rowcount
-                if cancelled == 1 and t_row:
-                    if self.referee:
-                        self.referee._dock_vessel_locked(t_row['agent_id'], t_row['origin'], t_row['vessel_id'])
+                if cancelled != 1:
+                    return {
+                        'ok': False,
+                        'reason': 'transit_not_in_transit',
+                        'detail': f"Cannot claim salvage: transit '{transit_id}' is no longer in transit"
+                    }
 
-                    comm = t_row['commodity']
-                    transit_cargo = t_row['cargo_qty'] or 0
+                if self.referee:
+                    self.referee._dock_vessel_locked(t_row['agent_id'], t_row['origin'], t_row['vessel_id'])
 
-                    # Cap bounty at transit's actual escrowed cargo (#205)
-                    declared_bounty = cargo_bounty.get(comm, 0) if comm else 0
-                    bounty_to_pay = min(max(0, declared_bounty), transit_cargo)
-                    leftover_escrow = transit_cargo - bounty_to_pay
+                comm = t_row['commodity']
+                transit_cargo = t_row['cargo_qty'] or 0
+                is_perish = bool(t_row['perishable'])
+                decay_rate = t_row['decay_rate'] or 0.0
+                dep_round = t_row['departure_round'] if t_row['departure_round'] is not None else current_round
+                arr_round = t_row['arrival_round'] if t_row['arrival_round'] is not None else current_round
+                total_rounds = max(1, arr_round - dep_round)
+                elapsed_rounds = max(0, min(total_rounds, current_round - dep_round))
 
-                    # 1. Transfer capped cargo bounty to salvager from SYSTEM escrow
-                    if bounty_to_pay > 0:
-                        self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = 'SYSTEM' AND instrument = ?", (bounty_to_pay, comm))
-                        self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, 'SYSTEM', ?, ?)", (txn_id, next_seq, comm, -bounty_to_pay))
-                        self._credit(txn_id, next_seq, salvager_hold, comm, bounty_to_pay, stowed)
-                        claimed_cargo[comm] = bounty_to_pay
+                # Perishable escrow refund spoilage: decay elapsed transit spoilage (#211)
+                decay_qty = (
+                    min(transit_cargo, int(round(transit_cargo * decay_rate * elapsed_rounds)))
+                    if (is_perish and decay_rate > 0) else 0
+                )
+                surviving_cargo = max(0, transit_cargo - decay_qty)
 
-                    # 2. Return leftover escrow to the stranded fleet (#205):
-                    # into the stranded ship's own hold, docked back at its origin (#175).
-                    if leftover_escrow > 0:
-                        stranded_agent = self._goods_acct(t_row['agent_id'], transit_id)
-                        refund_seq = self.referee._get_next_seq() if self.referee else next_seq
-                        refund_txn = f"refund-{claim_id}"
-                        self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = 'SYSTEM' AND instrument = ?", (leftover_escrow, comm))
-                        self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, 'SYSTEM', ?, ?)", (refund_txn, refund_seq, comm, -leftover_escrow))
-                        self._credit(refund_txn, refund_seq, stranded_agent, comm, leftover_escrow, stowed)
+                # Cap bounty at transit's surviving escrowed cargo (#205, #211)
+                declared_bounty = cargo_bounty.get(comm, 0) if comm else 0
+                bounty_to_pay = min(max(0, declared_bounty), surviving_cargo)
+                leftover_escrow = max(0, surviving_cargo - bounty_to_pay)
+
+                # Record decayed_qty on cancelled transit
+                if decay_qty > 0:
+                    self.conn.execute(
+                        "UPDATE transits SET decayed_qty = ? WHERE transit_id = ?",
+                        (decay_qty, transit_id)
+                    )
+
+                # 1. Transfer capped cargo bounty to salvager from SYSTEM escrow
+                if bounty_to_pay > 0:
+                    self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = 'SYSTEM' AND instrument = ?", (bounty_to_pay, comm))
+                    self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, 'SYSTEM', ?, ?)", (txn_id, next_seq, comm, -bounty_to_pay))
+                    self._credit(txn_id, next_seq, salvager_hold, comm, bounty_to_pay, stowed)
+                    claimed_cargo[comm] = bounty_to_pay
+
+                # 2. Return surviving leftover escrow to the stranded fleet (#205, #211):
+                # into the stranded ship's own hold, docked back at its origin (#175).
+                if leftover_escrow > 0:
+                    stranded_agent = self._goods_acct(t_row['agent_id'], transit_id)
+                    refund_seq = self.referee._get_next_seq() if self.referee else next_seq
+                    refund_txn = f"refund-{claim_id}"
+                    self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = 'SYSTEM' AND instrument = ?", (leftover_escrow, comm))
+                    self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, 'SYSTEM', ?, ?)", (refund_txn, refund_seq, comm, -leftover_escrow))
+                    self._credit(refund_txn, refund_seq, stranded_agent, comm, leftover_escrow, stowed)
             else:
                 for comm, qty in cargo_bounty.items():
                     if qty <= 0:
