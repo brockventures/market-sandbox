@@ -167,6 +167,26 @@ TRANSFER_PATTERN = re.compile(
     re.IGNORECASE
 )
 
+PIRACY_RESPOND_PATTERN = re.compile(
+    r"(?:!|/|@referee\s+)?\b(?:RESPOND|RANSOM)\s+([A-Za-z0-9_\-]+)\s+(PAY|SURRENDER|FIGHT)\b",
+    re.IGNORECASE
+)
+
+PRIVATEER_PATTERN = re.compile(
+    r"(?:!|/|@referee\s+)?\bPRIVATEERS?\s+([A-Za-z0-9_\-]+)(?:\s+(\d+))?\b",
+    re.IGNORECASE
+)
+
+PIRACY_STATUS_PATTERN = re.compile(
+    r"(?:!|/|@referee\s+)?\b(?:PIRACY|RAIDS|UNDERWORLD)\b",
+    re.IGNORECASE
+)
+
+HAZARDS_STATUS_PATTERN = re.compile(
+    r"(?:!|/|@referee\s+)?\b(?:HAZARDS?|WEATHER|SOLAR)\b",
+    re.IGNORECASE
+)
+
 AUTHOR_MAP = {
     "1468012353206354197": "amos",   # Amos
     "1541205716948353074": "amos",   # Ivy
@@ -757,6 +777,182 @@ def format_fleet_roster(fleet_res: dict, agent_id: str) -> str:
     return "\n".join(lines)
 
 
+def format_piracy_status(data: dict) -> str:
+    """Format space-lane security and piracy report for Discord."""
+    hot_station = str(data.get("hot_station") or "none").title()
+    hot_until = data.get("hot_until", "?")
+    odds = data.get("odds") or [0.15, 0.04]
+    p_belt = int(odds[0] * 100) if len(odds) > 0 else 15
+    p_inner = int(odds[1] * 100) if len(odds) > 1 else 4
+
+    hot_str = f"**{hot_station}** (2x raid risk through Round #{hot_until})" if hot_station != "None" else "No active hot station"
+
+    contracts = data.get("active_contracts") or []
+    contracts_str = f"{len(contracts)} privateer contract(s) active" if contracts else "No active privateer contracts"
+
+    raids = data.get("recent_raids") or []
+    if raids:
+        recent_raid = raids[0]
+        v_name = FLEET_NAMES.get(recent_raid.get("agent_id"), recent_raid.get("agent_id", "").upper())
+        st_name = str(recent_raid.get("destination") or recent_raid.get("origin") or "?").title()
+        raids_str = f"Latest: {v_name} raided near {st_name} (Round #{recent_raid.get('round', '?')})"
+    else:
+        raids_str = "No recent raids reported"
+
+    lines = [
+        "🏴‍☠️ **[Agora Trade Terminal] Space-Lane Security & Piracy Briefing**",
+        f"> **Hot Station:** {hot_str}",
+        f"> **Route Danger:** Asteroid Belt routes: **{p_belt}%** | Inner routes: **{p_inner}%**",
+        f"> **Defensive Escorts:** Cuts raid risk by 75% (`!transit <dest> with <cargo> escort`)",
+        f"> **Privateers:** {contracts_str} (`!privateer <target> [duration]`)",
+        f"> **Recent Raids:** {raids_str}",
+        "> **Extortion Response:** Use `!respond <transit_id> <pay|surrender|fight>` when intercepted."
+    ]
+    return "\n".join(lines)
+
+
+def format_hazards_status(data: dict) -> str:
+    """Format space weather and flight hazards report for Discord."""
+    enabled = data.get("enabled", False)
+    rnd = data.get("round", "?")
+    odds = data.get("odds") or {}
+    p_delay = int(odds.get("delay", 0.20) * 100)
+    p_loss = int(odds.get("loss", 0.25) * 100)
+
+    recent = data.get("recent") or []
+    if recent:
+        rec = recent[0]
+        ag = rec.get("agent_id", "fleet")
+        fl_name = FLEET_NAMES.get(ag, ag.upper())
+        incidents_str = f"Latest: {fl_name} — {rec.get('note', 'flight incident')} (Round #{rec.get('round', '?')})"
+    else:
+        incidents_str = "All transit corridors nominal; no active casualties"
+
+    status_str = "Active Space Weather Alerts (CME / Solar Radiation)" if enabled else "Space Weather Calibration Nominal"
+
+    lines = [
+        "🛰️ **[Agora Trade Terminal] Space Weather & Corridor Hazards Briefing**",
+        f"> **Current Round:** Round #{rnd}",
+        f"> **Space Weather Index:** {status_str}",
+        f"> **Flight Corridor Risk:** Delay Chance: **{p_delay}%** (1-3 rounds) | Hull Loss: **{p_loss}%** (10-20% cargo)",
+        f"> **Upgrade Mitigation:** Shielding mitigates delays; reinforced hold reduces cargo breaches.",
+        f"> **Incident Log:** {incidents_str}"
+    ]
+    return "\n".join(lines)
+
+
+def submit_piracy_respond_to_referee(cmd: dict, ref_token: str) -> dict:
+    """Submit piracy extortion response to POST /referee/piracy/{transit_id}/respond."""
+    transit_id = cmd["transit_id"]
+    url = f"{REFEREE_BASE_URL.rstrip('/')}/referee/piracy/{transit_id}/respond"
+    body = {
+        "agent_id": cmd["agent_id"],
+        "choice": cmd["choice"]
+    }
+    payload = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {ref_token}",
+            "Content-Type": "application/json",
+            "User-Agent": "AgoraTradeTerminal/2.0"
+        },
+        method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8")
+        try:
+            return {"status": "error", "http_code": e.code, "error": json.loads(raw)}
+        except Exception:
+            return {"status": "error", "http_code": e.code, "error": raw}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def submit_privateer_to_referee(cmd: dict, ref_token: str) -> dict:
+    """Submit privateer contract to POST /referee/privateers."""
+    url = f"{REFEREE_BASE_URL.rstrip('/')}/referee/privateers"
+    body = {
+        "agent_id": cmd["sponsor"],
+        "target": cmd["target"],
+        "duration": cmd.get("duration", 10)
+    }
+    payload = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {ref_token}",
+            "Content-Type": "application/json",
+            "User-Agent": "AgoraTradeTerminal/2.0"
+        },
+        method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8")
+        try:
+            return {"status": "error", "http_code": e.code, "error": json.loads(raw)}
+        except Exception:
+            return {"status": "error", "http_code": e.code, "error": raw}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def fetch_piracy_from_referee(ref_token: str) -> dict:
+    """Fetch space-lane security & piracy status from GET /referee/piracy."""
+    url = f"{REFEREE_BASE_URL.rstrip('/')}/referee/piracy"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {ref_token}",
+            "User-Agent": "AgoraTradeTerminal/2.0"
+        },
+        method="GET"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8")
+        try:
+            return {"status": "error", "http_code": e.code, "error": json.loads(raw)}
+        except Exception:
+            return {"status": "error", "http_code": e.code, "error": raw}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def fetch_hazards_from_referee(ref_token: str) -> dict:
+    """Fetch space weather & flight hazards status from GET /referee/hazards."""
+    url = f"{REFEREE_BASE_URL.rstrip('/')}/referee/hazards"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {ref_token}",
+            "User-Agent": "AgoraTradeTerminal/2.0"
+        },
+        method="GET"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8")
+        try:
+            return {"status": "error", "http_code": e.code, "error": json.loads(raw)}
+        except Exception:
+            return {"status": "error", "http_code": e.code, "error": raw}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
 def parse_discord_fleet_cmd(content: str, author_id: str, author_name: str = "") -> Optional[dict]:
     """Parse !fleet or !vessels command to query fleet status."""
     m = FLEET_PATTERN.search(content)
@@ -941,6 +1137,128 @@ def parse_discord_contract_cmd(content: str, author_id: str, author_name: str = 
     return None
 
 
+def parse_discord_piracy_respond_cmd(content: str, author_id: str, author_name: str = "") -> Optional[dict]:
+    """Parse !respond <transit_id> <pay|surrender|fight> or !ransom ..."""
+    m = PIRACY_RESPOND_PATTERN.search(content)
+    if not m:
+        return None
+    tid = m.group(1).strip()
+    choice = m.group(2).lower().strip()
+    agent = None
+    agent_override = re.search(r"\b(?:as|agent:?)\s+(amos|marvin|zero|aerial)\b", content, re.I)
+    if agent_override:
+        agent = agent_override.group(1).lower()
+    elif author_id in AUTHOR_MAP:
+        agent = AUTHOR_MAP[author_id]
+    else:
+        name_lower = author_name.lower()
+        if "amos" in name_lower or "carmody" in name_lower or "mike" in name_lower:
+            agent = "amos"
+        elif "marvin" in name_lower or "alex" in name_lower:
+            agent = "marvin"
+        elif "zero" in name_lower or "brock" in name_lower or "ryan" in name_lower:
+            agent = "zero"
+        elif "aerial" in name_lower:
+            agent = "aerial"
+    if not agent:
+        agent = "zero"
+    return {
+        "action": "piracy_respond",
+        "transit_id": tid,
+        "choice": choice,
+        "agent_id": agent
+    }
+
+
+def parse_discord_privateer_cmd(content: str, author_id: str, author_name: str = "") -> Optional[dict]:
+    """Parse !privateer <target> [duration] command."""
+    m = PRIVATEER_PATTERN.search(content)
+    if not m:
+        return None
+    target_raw = m.group(1).strip().lower()
+    if target_raw in ("status", "list"):
+        return None
+    duration_raw = m.group(2)
+    duration = int(duration_raw) if duration_raw and duration_raw.isdigit() else 10
+
+    agent = None
+    agent_override = re.search(r"\b(?:as|agent:?)\s+(amos|marvin|zero|aerial)\b", content, re.I)
+    if agent_override:
+        agent = agent_override.group(1).lower()
+    elif author_id in AUTHOR_MAP:
+        agent = AUTHOR_MAP[author_id]
+    else:
+        name_lower = author_name.lower()
+        if "amos" in name_lower or "carmody" in name_lower or "mike" in name_lower:
+            agent = "amos"
+        elif "marvin" in name_lower or "alex" in name_lower:
+            agent = "marvin"
+        elif "zero" in name_lower or "brock" in name_lower or "ryan" in name_lower:
+            agent = "zero"
+        elif "aerial" in name_lower:
+            agent = "aerial"
+    if not agent:
+        agent = "zero"
+    return {
+        "action": "privateer",
+        "sponsor": agent,
+        "target": target_raw,
+        "duration": duration
+    }
+
+
+def parse_discord_piracy_status_cmd(content: str, author_id: str, author_name: str = "") -> Optional[dict]:
+    """Parse !piracy, !raids, or !underworld command."""
+    if not PIRACY_STATUS_PATTERN.search(content):
+        return None
+    if PIRACY_RESPOND_PATTERN.search(content) or PRIVATEER_PATTERN.search(content):
+        return None
+    agent = None
+    agent_override = re.search(r"\b(?:as|agent:?)\s+(amos|marvin|zero|aerial)\b", content, re.I)
+    if agent_override:
+        agent = agent_override.group(1).lower()
+    elif author_id in AUTHOR_MAP:
+        agent = AUTHOR_MAP[author_id]
+    else:
+        name_lower = author_name.lower()
+        if "amos" in name_lower or "carmody" in name_lower or "mike" in name_lower:
+            agent = "amos"
+        elif "marvin" in name_lower or "alex" in name_lower:
+            agent = "marvin"
+        elif "zero" in name_lower or "brock" in name_lower or "ryan" in name_lower:
+            agent = "zero"
+        elif "aerial" in name_lower:
+            agent = "aerial"
+    if not agent:
+        agent = "zero"
+    return {"action": "piracy_status", "agent_id": agent}
+
+
+def parse_discord_hazards_cmd(content: str, author_id: str, author_name: str = "") -> Optional[dict]:
+    """Parse !hazards, !weather, or !solar command."""
+    if not HAZARDS_STATUS_PATTERN.search(content):
+        return None
+    agent = None
+    agent_override = re.search(r"\b(?:as|agent:?)\s+(amos|marvin|zero|aerial)\b", content, re.I)
+    if agent_override:
+        agent = agent_override.group(1).lower()
+    elif author_id in AUTHOR_MAP:
+        agent = AUTHOR_MAP[author_id]
+    else:
+        name_lower = author_name.lower()
+        if "amos" in name_lower or "carmody" in name_lower or "mike" in name_lower:
+            agent = "amos"
+        elif "marvin" in name_lower or "alex" in name_lower:
+            agent = "marvin"
+        elif "zero" in name_lower or "brock" in name_lower or "ryan" in name_lower:
+            agent = "zero"
+        elif "aerial" in name_lower:
+            agent = "aerial"
+    if not agent:
+        agent = "zero"
+    return {"action": "hazards_status", "agent_id": agent}
+
+
 def parse_discord_transit(content: str, author_id: str, author_name: str) -> Optional[dict]:
     """Parse natural language transit command from Discord chat, with multi-ship support."""
     if TRADE_PATTERN.search(content) and not re.search(r"\b(?:MOVE|TRANSIT)\b", content, re.I):
@@ -960,6 +1278,13 @@ def parse_discord_transit(content: str, author_id: str, author_name: str) -> Opt
     dest = m_dest.group(1).lower().strip()
     if dest not in STATION_PROFILES and dest not in ("earth", "luna", "mars", "ceres"):
         return None
+
+    # Defensive escort (#145)
+    escort = False
+    m_esc = re.search(r"\b(?:WITH\s+)?ESCORT\b", content_clean, re.I)
+    if m_esc:
+        escort = True
+        content_clean = re.sub(r"\b(?:WITH\s+)?ESCORT\b", "", content_clean, flags=re.I).strip()
 
     qty = 0
     comm = "FRAG"
@@ -1009,7 +1334,8 @@ def parse_discord_transit(content: str, author_id: str, author_name: str) -> Opt
         "agent_id": agent,
         "destination": dest,
         "commodity": comm,
-        "cargo_qty": qty
+        "cargo_qty": qty,
+        "escort": escort
     }
     if vessel_id:
         res["vessel_id"] = vessel_id
@@ -1409,6 +1735,130 @@ def poll_and_execute_trades(channel: str, bot_token: str, ref_token: str, active
                     post_discord(channel, kickoff, bot_token)
             continue
 
+        # Check piracy extortion response (!respond <tx_id> <pay|surrender|fight> / !ransom ...)
+        piracy_respond_cmd = parse_discord_piracy_respond_cmd(content, author.get("id", ""), author.get("username", ""))
+        if piracy_respond_cmd:
+            ag_id = piracy_respond_cmd["agent_id"]
+            fl_name = FLEET_NAMES.get(ag_id, ag_id.upper())
+            tid = piracy_respond_cmd["transit_id"]
+            choice = piracy_respond_cmd["choice"]
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Detected piracy respond from {author.get('username')}: {piracy_respond_cmd}")
+            sys.stdout.flush()
+            res = submit_piracy_respond_to_referee(piracy_respond_cmd, ref_token)
+            if res.get("status") == "error" or res.get("kind") == "reject":
+                err_obj = res.get("error") if isinstance(res.get("error"), dict) else {}
+                err_detail = err_obj.get("payload", {}).get("detail") or res.get("payload", {}).get("detail") or res.get("error") or str(res)
+                add_discord_reaction(channel, msg_id, "❌", bot_token)
+                reject_msg = (
+                    f"⚠️ **[Agora Trade Terminal] Extortion Response Rejected**\n"
+                    f"> **Syndicate:** {fl_name}\n"
+                    f"> **Transit:** `{tid}`\n"
+                    f"> **Reason:** `{err_detail}`"
+                )
+                post_discord(channel, reject_msg, bot_token)
+            else:
+                add_discord_reaction(channel, msg_id, "🏴‍☠️", bot_token)
+                add_discord_reaction(channel, msg_id, "✅", bot_token)
+                payload = res.get("payload") or {}
+                if choice == "pay":
+                    r_cr = payload.get("ransom_paid", payload.get("ransom", 0))
+                    rcpt = (
+                        f"🏴‍☠️ **[Agora Trade Terminal] Pirate Ransom Paid**\n"
+                        f"> **Syndicate:** {fl_name}\n"
+                        f"> **Transit:** `{tid}`\n"
+                        f"> **Terms:** Paid **{r_cr:,} CR** ransom to raiders.\n"
+                        f"> **Status:** Cargo untouched; fleet proceeding to destination."
+                    )
+                elif choice == "surrender":
+                    s_qty = payload.get("surrendered_qty", payload.get("surrender_qty", 0))
+                    comm = payload.get("commodity", "goods")
+                    rcpt = (
+                        f"🏴‍☠️ **[Agora Trade Terminal] Cargo Surrendered to Pirates**\n"
+                        f"> **Syndicate:** {fl_name}\n"
+                        f"> **Transit:** `{tid}`\n"
+                        f"> **Terms:** Surrendered **{s_qty:,} {comm}** to raiders.\n"
+                        f"> **Status:** Corsairs departed; vessel resuming transit."
+                    )
+                else:
+                    outcome = payload.get("combat_outcome", "Raiders engaged")
+                    rcpt = (
+                        f"⚔️ **[Agora Trade Terminal] Raiders Engaged**\n"
+                        f"> **Syndicate:** {fl_name}\n"
+                        f"> **Transit:** `{tid}`\n"
+                        f"> **Combat Report:** {outcome}"
+                    )
+                post_discord(channel, rcpt, bot_token)
+            continue
+
+        # Check privateer hiring (!privateer <target> [duration])
+        privateer_cmd = parse_discord_privateer_cmd(content, author.get("id", ""), author.get("username", ""))
+        if privateer_cmd:
+            ag_id = privateer_cmd["sponsor"]
+            fl_name = FLEET_NAMES.get(ag_id, ag_id.upper())
+            tgt = privateer_cmd["target"]
+            tgt_name = FLEET_NAMES.get(tgt, tgt.upper())
+            dur = privateer_cmd["duration"]
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Detected privateer hire from {author.get('username')}: {privateer_cmd}")
+            sys.stdout.flush()
+            res = submit_privateer_to_referee(privateer_cmd, ref_token)
+            if res.get("status") == "error" or res.get("kind") == "reject":
+                err_obj = res.get("error") if isinstance(res.get("error"), dict) else {}
+                err_detail = err_obj.get("payload", {}).get("detail") or res.get("payload", {}).get("detail") or res.get("error") or str(res)
+                add_discord_reaction(channel, msg_id, "❌", bot_token)
+                reject_msg = (
+                    f"⚠️ **[Agora Trade Terminal] Privateer Contract Rejected**\n"
+                    f"> **Sponsor:** {fl_name}\n"
+                    f"> **Target:** {tgt_name}\n"
+                    f"> **Reason:** `{err_detail}`"
+                )
+                post_discord(channel, reject_msg, bot_token)
+            else:
+                add_discord_reaction(channel, msg_id, "🏴‍☠️", bot_token)
+                add_discord_reaction(channel, msg_id, "✅", bot_token)
+                payload = res.get("payload") or {}
+                cost = payload.get("cost", 2000)
+                exp = payload.get("expires_round", "?")
+                rcpt = (
+                    f"🏴‍☠️ **[Agora Trade Terminal] Privateer Contract Issued**\n"
+                    f"> **Sponsor:** {fl_name}\n"
+                    f"> **Target Syndicate:** {tgt_name}\n"
+                    f"> **Duration:** {dur} rounds (Expires Round #{exp})\n"
+                    f"> **Cost:** **{cost:,} CR**\n"
+                    f"> **Terms:** Corsairs deployed against {tgt_name}. 50% of intercepted loot credited to {fl_name}."
+                )
+                post_discord(channel, rcpt, bot_token)
+            continue
+
+        # Check piracy status (!piracy / !raids)
+        piracy_status_cmd = parse_discord_piracy_status_cmd(content, author.get("id", ""), author.get("username", ""))
+        if piracy_status_cmd:
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Detected piracy status query from {author.get('username')}")
+            sys.stdout.flush()
+            res = fetch_piracy_from_referee(ref_token)
+            if res.get("status") == "error":
+                add_discord_reaction(channel, msg_id, "❌", bot_token)
+                post_discord(channel, f"⚠️ **[Agora Trade Terminal] Piracy Query Failed:** `{res.get('error')}`", bot_token)
+            else:
+                add_discord_reaction(channel, msg_id, "🏴‍☠️", bot_token)
+                msg_text = format_piracy_status(res)
+                post_discord(channel, msg_text, bot_token)
+            continue
+
+        # Check hazards status (!hazards / !weather)
+        hazards_cmd = parse_discord_hazards_cmd(content, author.get("id", ""), author.get("username", ""))
+        if hazards_cmd:
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Detected hazards query from {author.get('username')}")
+            sys.stdout.flush()
+            res = fetch_hazards_from_referee(ref_token)
+            if res.get("status") == "error":
+                add_discord_reaction(channel, msg_id, "❌", bot_token)
+                post_discord(channel, f"⚠️ **[Agora Trade Terminal] Hazards Query Failed:** `{res.get('error')}`", bot_token)
+            else:
+                add_discord_reaction(channel, msg_id, "🛰️", bot_token)
+                msg_text = format_hazards_status(res)
+                post_discord(channel, msg_text, bot_token)
+            continue
+
         # Check fleet commands (!fleet / !vessels)
         fleet_cmd = parse_discord_fleet_cmd(content, author.get("id", ""), author.get("username", ""))
         if fleet_cmd:
@@ -1644,6 +2094,31 @@ def poll_and_execute_trades(channel: str, bot_token: str, ref_token: str, active
 
                     add_discord_reaction(channel, msg_id, "🚀", bot_token)
                     add_discord_reaction(channel, msg_id, "✅", bot_token)
+                    escort_line = ""
+                    if payload.get("escort") or transit.get("escort"):
+                        esc_fee = payload.get("escort_fee", 0)
+                        fee_str = f" (**{esc_fee:,} CR**)" if esc_fee > 0 else ""
+                        escort_line = f"\n> **Escort:** 🛡️ Defensive escort secured{fee_str} (raid risk -75%)"
+
+                    hazard_line = ""
+                    hz = payload.get("hazard") or {}
+                    if hz and hz.get("note"):
+                        hazard_line = f"\n> **Hazard Alert:** ⚠️ {hz['note']}"
+
+                    piracy_line = ""
+                    pir = payload.get("piracy") or {}
+                    if pir.get("raided") and pir.get("demand"):
+                        dm = pir["demand"]
+                        r_cr = dm.get("ransom_cr", 0)
+                        s_qty = dm.get("surrender_qty", 0)
+                        comm_name = dm.get("commodity", "")
+                        tid = payload.get("transit_id", "")
+                        piracy_line = (
+                            f"\n> **Piracy Raid:** 🏴‍☠️ Raiders intercepted vessel! "
+                            f"Demand: **{r_cr:,} CR** ransom or **{s_qty:,} {comm_name}** surrender. "
+                            f"Reply: `!respond {tid} pay` or `!respond {tid} surrender` or `!respond {tid} fight`"
+                        )
+
                     receipt_msg = (
                         f"🚀 **[Agora Trade Terminal] Interplanetary Transit Dispatched**\n"
                         f"> **Syndicate:** {fl_name}\n"
@@ -1651,6 +2126,7 @@ def poll_and_execute_trades(channel: str, bot_token: str, ref_token: str, active
                         f"> **Propellant:** Burned **{fuel_burned} FUEL**\n"
                         f"> **ETA:** Arriving at {dest_disp} on **Round #{arrival_rnd}** ({duration} round(s))\n"
                         f"> **Status:** Fleet undocked and in transfer orbit."
+                        f"{escort_line}{hazard_line}{piracy_line}"
                     )
                     post_discord(channel, receipt_msg, bot_token)
             continue
