@@ -63,7 +63,8 @@ class TestLeaderboardCommodityMarks(unittest.TestCase):
             ref.conn.execute("UPDATE vessel_locations SET station_id='earth' WHERE agent_id='amos'")
         initial_nw = self._entry(ref, 'amos')['net_worth']
         book = ref.books['earth']['FOOD']
-        ask = book.best_ask()
+        ask_before = book.best_ask()
+        # Buy 500 units to clear the top ask level and move the depot's best ask
         env = {
             'kind': 'order',
             'payload': {
@@ -71,15 +72,16 @@ class TestLeaderboardCommodityMarks(unittest.TestCase):
                 'agent_id': 'amos',
                 'instrument': 'FOOD',
                 'side': 'bid',
-                'qty': 100,
-                'limit_price': ask,
+                'qty': 500,
+                'limit_price': ask_before,
                 'station_id': 'earth'
             }
         }
         res = ref.submit_envelope(env)
         self.assertEqual(res['kind'], 'market_tick')
+        self.assertGreater(book.best_ask(), ask_before)
         after_nw = self._entry(ref, 'amos')['net_worth']
-        # Buying at Earth depot must NOT inflate net worth: ask >= spot
+        # Buying at Earth depot must NOT inflate net worth even when moving depot ask: ask >= spot
         self.assertLessEqual(after_nw, initial_nw)
 
 

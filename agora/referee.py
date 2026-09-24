@@ -2414,12 +2414,24 @@ class AgoraReferee:
 
             board = []
             # Goods and CR held in peer escrow still count toward whoever owns them.
-            escrow = self.peer.holdings_adjustment() if getattr(self, 'peer', None) else {}
+            # Goods in escrow stay at their escrow station until collected, and are
+            # valued at that station's spot price (#196).
+            peer_escrow = self.peer.holdings_adjustment_by_station() if getattr(self, 'peer', None) else {}
+            escrow_cr: Dict[str, int] = {}
+            escrow_goods_val: Dict[str, int] = {}
+            for agent, data in peer_escrow.items():
+                escrow_cr[agent] = data.get('CR', 0)
+                for st, inst, qty in data.get('goods', []):
+                    st_key = st if st in STATIONS else 'ceres'
+                    comm_key = 'FRAG' if inst in ('FRAG', 'BANANA') else inst
+                    if comm_key in ('FRAG', 'FOOD', 'ORE'):
+                        mark = station_marks.get(st_key, {}).get(comm_key, 0)
+                        escrow_goods_val[agent] = escrow_goods_val.get(agent, 0) + qty * mark
+
             # Contract deposits are still the owner's money.
             bonds = self.contract_desk.holdings_adjustment() if getattr(self, 'contract_desk', None) else {}
             for agent, cr in bonds.items():
-                escrow.setdefault(agent, {})
-                escrow[agent]['CR'] = escrow[agent].get('CR', 0) + cr
+                escrow_cr[agent] = escrow_cr.get(agent, 0) + cr
             upgrades = getattr(self, 'upgrades', None)
 
             # Cargo in transit (transits table, status='in_transit') is escrowed to
@@ -2455,7 +2467,6 @@ class AgoraReferee:
                     transit_val[tx['agent_id']] = transit_val.get(tx['agent_id'], 0) + net_qty * t_mark
 
             for r in rows:
-                adj = escrow.get(r['agent_id'], {})
                 in_flight = transit_cargo.get(r['agent_id'], {})
                 in_flight_val = transit_val.get(r['agent_id'], 0)
 
@@ -2470,9 +2481,9 @@ class AgoraReferee:
 
                 fleet_marks = station_marks[st_id]
 
-                docked_frags = (r['frags'] or 0) + adj.get('FRAG', 0)
-                docked_food = (r['food'] or 0) + adj.get('FOOD', 0)
-                docked_ore = (r['ore'] or 0) + adj.get('ORE', 0)
+                docked_frags = r['frags'] or 0
+                docked_food = r['food'] or 0
+                docked_ore = r['ore'] or 0
 
                 docked_cargo_val = (docked_frags * fleet_marks['FRAG']
                                     + docked_food * fleet_marks['FOOD']
@@ -2481,7 +2492,12 @@ class AgoraReferee:
                 # Fitted ship upgrades at half their cost (agora/upgrades.py,
                 # #151); nothing for a corp that is out of the game.
                 fitted = upgrades.book_value(r['agent_id']) if upgrades and not self.fleet_out(r['agent_id']) else 0
-                net_worth = r['liquid'] + adj.get('CR', 0) + docked_cargo_val + in_flight_val + fitted
+                net_worth = (r['liquid']
+                             + escrow_cr.get(r['agent_id'], 0)
+                             + docked_cargo_val
+                             + escrow_goods_val.get(r['agent_id'], 0)
+                             + in_flight_val
+                             + fitted)
                 board.append({
                     'agent_id': r['agent_id'],
                     'net_worth': net_worth,

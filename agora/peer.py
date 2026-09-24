@@ -209,3 +209,27 @@ class PeerDesk:
                 adj.setdefault(r['seller'], {}).setdefault('CR', 0)
                 adj[r['seller']]['CR'] += r['qty'] * r['price']
         return adj
+
+    def holdings_adjustment_by_station(self) -> Dict[str, Dict[str, Any]]:
+        """What escrow owes each fleet, partitioned by station for local spot marks:
+        {agent_id: {'CR': cr_amount, 'goods': [(station_id, instrument, qty), ...]}}
+        Offered goods belong to the seller; accepted goods belong to the buyer,
+        held at the escrow's station until collected (#196).
+        """
+        adj: Dict[str, Dict[str, Any]] = {}
+        for r in self.ref.conn.execute("SELECT * FROM station_escrow WHERE status IN ('offered', 'accepted')"):
+            st = r['station_id'].lower().strip()
+            inst = r['instrument']
+            qty = r['qty']
+            if r['status'] == 'offered':
+                seller = r['seller']
+                adj.setdefault(seller, {'CR': 0, 'goods': []})
+                adj[seller]['goods'].append((st, inst, qty))
+            else:
+                buyer = r['buyer']
+                seller = r['seller']
+                adj.setdefault(buyer, {'CR': 0, 'goods': []})
+                adj[buyer]['goods'].append((st, inst, qty))
+                adj.setdefault(seller, {'CR': 0, 'goods': []})
+                adj[seller]['CR'] += qty * r['price']
+        return adj
