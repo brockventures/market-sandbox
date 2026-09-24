@@ -9,7 +9,7 @@ import os
 import unittest
 from unittest import mock
 
-from agora.referee import AgoraReferee, REACTIVE_TARGET
+from agora.referee import AgoraReferee, REACTIVE_TARGET, REACTIVE_SHELF_SKEW, BASE_PRICES
 
 
 def make(**kw):
@@ -108,6 +108,35 @@ class TestReactiveDepots(unittest.TestCase):
                     if q is not None and b["upper_limit"] - b["lower_limit"] > 1:
                         self.assertGreaterEqual(q.limit_price, b["lower_limit"] - 1)
                         self.assertLessEqual(q.limit_price, b["upper_limit"] + 1)
+
+    def test_shelf_skew_damps_price_inflation(self):
+        # #188: When shelf is depleted to minimum (100 units = 5% of REACTIVE_TARGET),
+        # shelf_ratio is 20.0. With REACTIVE_SHELF_SKEW = 0.20, multiplier is 20^0.20 ~= 1.82,
+        # rather than 20^0.50 ~= 4.47 (which clamped at 3.0x spot).
+        ref = make(band_pct=0.95)
+        ref._reactive["shelf"][("ceres", "ORE")] = int(REACTIVE_TARGET * 0.05)
+        with ref.lock, ref.conn:
+            ref._refresh_reactive_depots_locked()
+        q = depot_quote(ref, "ceres", "ORE", "ask")
+        spot = BASE_PRICES["ceres"]["ORE"]
+        # Ask should be around spot * 1.03 * 1.82 ~= 1.875 * spot (approx 23 CR for 12.4 spot),
+        # strictly less than 2.2 * spot (approx 27 CR), whereas old skew yielded ~38 CR (3.0x).
+        self.assertLess(q.limit_price, int(round(spot * 2.2)))
+        self.assertGreater(q.limit_price, int(round(spot * 1.5)))
+
+    def test_shelf_skew_env_and_kwarg(self):
+        ref = make(shelf_skew=0.35)
+        self.assertEqual(ref.shelf_skew, 0.35)
+        ref.new_game(seed=3, depots=True, asymmetric=True, depot_model="reactive", shelf_skew=0.15)
+        self.assertEqual(ref.shelf_skew, 0.15)
+        with mock.patch.dict(os.environ, {"AGORA_SHELF_SKEW": "0.28"}):
+            ref_env = AgoraReferee(depots=True, depot_model="reactive")
+            self.assertEqual(ref_env.shelf_skew, 0.28)
+
+    def test_shelf_skew_summary_reporting(self):
+        ref = make(shelf_skew=0.22)
+        summary = ref.get_depot_summary()
+        self.assertEqual(summary.get("shelf_skew"), 0.22)
 
     def test_long_run_stays_solvent_and_balanced(self):
         ref = make()
