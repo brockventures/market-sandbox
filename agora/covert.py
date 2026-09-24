@@ -320,8 +320,9 @@ class CovertDesk:
                     else:
                         damage_detail = "docking clamps locked for 1 round"
 
-            # Roll trace: a marble from the saboteur's bag (#214)
-            traced = self.bags.draw('sabotage_trace', actor, SABOTAGE_TRACE)
+            # Roll trace: a marble from the saboteur's bag for this target ship
+            # (#214; per ship since #175, key '<actor>><target ship>').
+            traced = self.bags.draw('sabotage_trace', f"{actor}>{ship}", SABOTAGE_TRACE)
             fine_paid = 0
             detail_actor = f"{target} suffered covert sabotage: {damage_detail}"
 

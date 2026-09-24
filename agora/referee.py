@@ -190,6 +190,7 @@ class AgoraReferee:
         self.equity = SyndicateEquityEngine(self.conn, self)
         self.salvage = DerelictSalvageEngine(self.conn, self)
         self.circuit_breaker = CircuitBreakerEngine(self.conn, self, band_pct=self.band_pct)
+        self._migrate_rng_bags()
         if self.depots_enabled:
             self.seed_depots()
         if asymmetric:
@@ -503,6 +504,26 @@ class AgoraReferee:
                                       (d, acct, r['instrument']))
                     self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)",
                                       (txn, seq, acct, r['instrument'], d))
+
+    def _migrate_rng_bags(self) -> None:
+        """#175: a trip's luck is its ship's. Bags a pre-ships database keyed
+        by corp move to that corp's ship 1 (hazard delay/loss, fight escape).
+        Raid luck used to be one credit per corp; raids now draw from bags per
+        ship, protection level and trip conditions (PiracyDesk.raid_key), so
+        the old credits are dropped, as are sabotage-trace bags keyed by the
+        saboteur alone (now per saboteur and target ship). Idempotent."""
+        with self.lock, self.conn:
+            if not self.conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'rng_bags'").fetchone():
+                return
+            roster = "(SELECT agent_id FROM fleet_roster)"
+            for ns, events in (('hazards', ('delay', 'loss')), ('piracy', ('escape',))):
+                marks = ','.join('?' for _ in events)
+                self.conn.execute(f"UPDATE OR IGNORE rng_bags SET fleet = fleet || '/1' "
+                                  f"WHERE ns = ? AND event IN ({marks}) AND fleet IN {roster}", (ns, *events))
+                self.conn.execute(f"DELETE FROM rng_bags WHERE ns = ? AND event IN ({marks}) AND fleet IN {roster}",
+                                  (ns, *events))
+            self.conn.execute("DELETE FROM rng_bags WHERE ns = 'piracy' AND event = 'raid' AND fleet NOT LIKE '%|%'")
+            self.conn.execute(f"DELETE FROM rng_bags WHERE ns = 'covert' AND event = 'sabotage_trace' AND fleet IN {roster}")
 
     def _seed_genesis_from_roster(self) -> None:
         """
@@ -1415,7 +1436,7 @@ class AgoraReferee:
                 cargo_qty if cargo_qty > 0 else 0,
                 delay_factor=self.upgrades.factor(agent_id, 'shielding'),
                 loss_factor=self.upgrades.factor(agent_id, 'hold'),
-                loss_size_factor=self.upgrades.loss_size_factor(agent_id), agent_id=agent_id)
+                loss_size_factor=self.upgrades.loss_size_factor(agent_id), agent_id=vid)
             # Engines upgrade: tier 1 cuts a round off trips of 3+ rounds
             # (agora/upgrades.py ENGINE_CUTS); tier 2 cut the fuel above.
             base_rounds = route['rounds'] - self.upgrades.engine_cut(agent_id, route['rounds'])
@@ -1460,7 +1481,7 @@ class AgoraReferee:
                 self.piracy.charge_escort_locked(transit_id, agent_id, escort_fee)
                 piracy = self.piracy.roll_departure_locked(
                     transit_id, agent_id, origin, dest, toll_required > 0, comm,
-                    max(0, cargo_qty - hz_lost), escort, escort_fee, dep_round)
+                    max(0, cargo_qty - hz_lost), escort, escort_fee, dep_round, vessel_id=vid)
 
                 # 5. The ship
                 self.conn.execute("""

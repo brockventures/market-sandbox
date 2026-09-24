@@ -84,13 +84,15 @@ class HazardEngine:
     def roll(self, cargo_qty: int, delay_factor: float = 1.0, loss_factor: float = 1.0,
              loss_size_factor: float = 1.0, agent_id: str = '') -> Tuple[int, int, str]:
         """(extra rounds, units lost, note). Always draws the same number of
-        values so one trip's outcome does not shift the next trip's."""
+        values so one trip's outcome does not shift the next trip's.
+        agent_id keys the bags: the ship making the trip ('<corp>/<n>',
+        #175), so each ship has its own luck."""
         if not self.odds:
             return 0, 0, ''
         p_delay, p_loss = self.odds
         d, f = self.rng.randint(*DELAY_ROUNDS), self.rng.uniform(*LOSS_FRACTION)
         # *_factor: ship upgrades (agora/upgrades.py) scale the odds and the loss.
-        # Whether it happens is a marble from this fleet's bag (#214).
+        # Whether it happens is a marble from this ship's bag (#214, #175).
         delay = d if self.bags.draw('delay', agent_id, p_delay * delay_factor) else 0
         lost = int(cargo_qty * f * loss_size_factor) if (cargo_qty > 0 and self.bags.draw('loss', agent_id, p_loss * loss_factor)) else 0
         notes = []
