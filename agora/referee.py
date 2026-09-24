@@ -876,6 +876,8 @@ class AgoraReferee:
             else random.SystemRandom().randint(3, 8)
         )
         for r in range(1, rounds_to_roll + 1):
+            if hasattr(self, 'galnet') and self.galnet is not None:
+                self.galnet.step_round(r)
             engine.step_round(r, galnet_engine=self.galnet)
         self.spatial = engine
 
@@ -1694,6 +1696,10 @@ class AgoraReferee:
                 # against the depot quotes the fleets saw, before prices move.
                 order_flow_report = self.order_flow.step_locked(self.current_round)
             self.current_round = new_round
+
+            # Advance GalNet news & exogenous shocks (#123)
+            if hasattr(self, 'galnet') and self.galnet is not None:
+                self.galnet.step_round(new_round)
 
             # Advance prices
             spot_prices = self.spatial.step_round(new_round, galnet_engine=self.galnet)

@@ -174,6 +174,28 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
                        "(`Authorization: Bearer <your token>`) to see exact prices where you are docked.")
     out.extend(_price_table(depots))
     out.append("")
+
+    galnet = getattr(ref, 'galnet', None)
+    if galnet and (galnet.active_shocks or galnet.events):
+        out.append("## GalNet news & price trends")
+        out.append("GalNet news reports Sol system supply shocks that drive un-fogged price trends. "
+                   "Under Fog of War, remote station quotes lag behind reality; a careful trader can "
+                   "read active stories to infer whether actual remote spot prices are surging or falling before quotes update.")
+        out.append("")
+        if galnet.active_shocks:
+            out.append("### Active market shocks")
+            for ev in galnet.active_shocks:
+                rem = ev.rounds_remaining(rnd)
+                arrow = "▲" if ev.drift_bias > 0 else "▼"
+                out.append(f"- **{ev.headline}** ({ev.station_id.capitalize()} {ev.commodity} {arrow} {ev.pct_impact}): "
+                           f"{ev.body} *(active through round {ev.expires_round}, {rem} round{'s' if rem != 1 else ''} remaining)*")
+            out.append("")
+        elif galnet.events:
+            out.append("### Recent news dispatches")
+            for ev in reversed(galnet.events[-3:]):
+                arrow = "▲" if ev.drift_bias > 0 else "▼"
+                out.append(f"- **{ev.headline}** ({ev.station_id.capitalize()} {ev.commodity} {arrow} {ev.pct_impact}, round {ev.round}): {ev.body}")
+            out.append("")
     history_engine = getattr(ref, 'history_engine', None)
     if history_engine:
         v_station = 'earth'

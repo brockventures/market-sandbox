@@ -22,8 +22,43 @@ class GalNetNewsEvent:
     drift_bias: float
     duration_rounds: int
 
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+    @property
+    def expires_round(self) -> int:
+        return self.round + self.duration_rounds
+
+    @property
+    def direction(self) -> str:
+        if self.drift_bias > 0:
+            return "up"
+        elif self.drift_bias < 0:
+            return "down"
+        return "neutral"
+
+    @property
+    def trend(self) -> str:
+        if self.drift_bias > 0:
+            return "SURGE"
+        elif self.drift_bias < 0:
+            return "DROP"
+        return "FLAT"
+
+    @property
+    def pct_impact(self) -> str:
+        pct = int(round(self.drift_bias * 100))
+        return f"+{pct}%" if pct > 0 else f"{pct}%"
+
+    def rounds_remaining(self, current_round: int) -> int:
+        return max(0, self.expires_round - current_round)
+
+    def to_dict(self, current_round: Optional[int] = None) -> Dict[str, Any]:
+        d = asdict(self)
+        d["direction"] = self.direction
+        d["trend"] = self.trend
+        d["pct_impact"] = self.pct_impact
+        d["expires_round"] = self.expires_round
+        if current_round is not None:
+            d["rounds_remaining"] = self.rounds_remaining(current_round)
+        return d
 
 
 # Sol orbital salvage lore news templates
@@ -124,6 +159,38 @@ NEWS_TEMPLATES = [
         "drift_bias": 0.35,
         "duration_rounds": 3,
     },
+    {
+        "station_id": "mars",
+        "commodity": "FOOD",
+        "headline": "VALLES MARINERIS AGRI-DOME SEALS RUPTURED",
+        "body": "Sub-surface permafrost heave cracked hydroponic bio-sectors in Valles Marineris. Red planet colony importing emergency rations at high premiums.",
+        "drift_bias": 0.30,
+        "duration_rounds": 4,
+    },
+    {
+        "station_id": "mars",
+        "commodity": "ORE",
+        "headline": "OLYMPUS STRIP-MINING AUTOMATION EXCEEDS QUOTAS",
+        "body": "Heavy autonomous bucket-wheel excavators breached magnetite veins near Olympus Mons. Martian refineries saturated with raw ores.",
+        "drift_bias": -0.25,
+        "duration_rounds": 3,
+    },
+    {
+        "station_id": "luna",
+        "commodity": "FOOD",
+        "headline": "CLAVIUS BIO-DOME VERTICAL CROP ROTATION PEAKS",
+        "body": "Low-g synthetic protein cultures yielded an unexpected surplus at Clavius Station. Lunar commissary discounting fresh organic nutrient bars.",
+        "drift_bias": -0.20,
+        "duration_rounds": 3,
+    },
+    {
+        "station_id": "luna",
+        "commodity": "ORE",
+        "headline": "MARE TRANQUILLITATIS RARE EARTH SINK DISCOVERED",
+        "body": "Lunar industrial park announces rapid expansion of mass-driver launch tracks. Raw ore requisitions driving prices higher.",
+        "drift_bias": 0.30,
+        "duration_rounds": 3,
+    },
 ]
 
 
@@ -198,10 +265,44 @@ class GalNetEngine:
                 net_drift += ev.drift_bias
         return round(net_drift, 4)
 
+    def infer_trend(self, station_id: str, commodity: str, fogged_spot: Optional[float] = None) -> Dict[str, Any]:
+        """
+        Calculates the active un-fogged price trajectory for a station & commodity (#123).
+        Enables players under Fog of War to deduce whether remote prices are surging or falling.
+        """
+        station_id = station_id.lower().strip()
+        commodity = commodity.upper().strip()
+        active = [ev for ev in self.active_shocks if ev.station_id == station_id and ev.commodity == commodity]
+        net_drift = self.get_active_drift(station_id, commodity)
+
+        if net_drift > 0:
+            trend = "SURGE"
+            direction = "up"
+            desc = f"Upward price pressure (+{int(round(net_drift * 100))}%); un-fogged spot trending higher than stale quotes."
+        elif net_drift < 0:
+            trend = "DROP"
+            direction = "down"
+            desc = f"Downward price pressure ({int(round(net_drift * 100))}%); un-fogged spot trending lower than stale quotes."
+        else:
+            trend = "FLAT"
+            direction = "neutral"
+            desc = "Stable mean-reversion drift; no active exogenous shock."
+
+        return {
+            "station_id": station_id,
+            "commodity": commodity,
+            "net_drift": net_drift,
+            "trend": trend,
+            "direction": direction,
+            "description": desc,
+            "active_stories": [ev.to_dict(self.current_round) for ev in active],
+            "fogged_spot": fogged_spot,
+        }
+
     def get_active_shocks(self) -> List[Dict[str, Any]]:
         """Returns list of currently active shock events."""
-        return [ev.to_dict() for ev in self.active_shocks]
+        return [ev.to_dict(self.current_round) for ev in self.active_shocks]
 
     def get_feed(self, limit: int = 15) -> List[Dict[str, Any]]:
         """Returns recent news feed in reverse chronological order."""
-        return [ev.to_dict() for ev in reversed(self.events[-limit:])]
+        return [ev.to_dict(self.current_round) for ev in reversed(self.events[-limit:])]
