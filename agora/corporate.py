@@ -1041,10 +1041,20 @@ class CorporateDesk:
             sym = self._sym(issuer)
             if not sym:
                 continue
-            cash = ref.get_balance(issuer, 'CR')
-            if cash <= 5_000:
+            # N2: Debt gating - indebted corporations cannot distribute dividends
+            if self._row(issuer).get("debt", 0) > 0:
                 continue
-            budget = int(cash * 0.05)
+            # N4: Consider available cash after reservations/escrow, not raw balance
+            avail = ref.peer._available(issuer, 'CR') if hasattr(ref, 'peer') else ref.get_balance(issuer, 'CR')
+            # N2: Require cash strictly above starting genesis capital (10,000 CR)
+            # Dividends are funded only from earned surplus profits
+            GENESIS_CASH = 10_000
+            if avail <= GENESIS_CASH:
+                continue
+            excess = avail - GENESIS_CASH
+            budget = int(excess * 0.05)
+            if budget <= 0:
+                continue
             holders = ref.conn.execute(
                 "SELECT a.agent_id, a.balance FROM accounts a "
                 "JOIN fleet_roster f ON a.agent_id = f.agent_id "

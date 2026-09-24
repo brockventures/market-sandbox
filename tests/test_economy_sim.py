@@ -24,7 +24,7 @@ class TestEconomySim(unittest.TestCase):
     def test_idler_pays_the_live_idle_fee(self):
         # Live: 10 CR a round for a docked fleet that did nothing, in any
         # round some other fleet acted. The idler's only loss is the fee.
-        r = run("mixed", "flat", seed=1, rounds=40, **KW)
+        r = run("mixed", "flat", seed=1, rounds=40, overrides={"dividends": False}, **KW)
         self.assertEqual(r["idle_fees"]["aerial"], 400)
         self.assertEqual(r["fleets"]["aerial"]["pnl"], -400)
         self.assertEqual(run("idle4", "flat", seed=1, rounds=20)["idle_fees_collected"], 0)  # nobody acted

@@ -285,12 +285,63 @@ class CovertDesk:
         if commodity not in ('FRAG', 'FOOD', 'ORE', 'FUEL'):
             return _reject('invalid_commodity', f"Unknown commodity '{commodity}'")
 
+        if not self.enabled:
+            return _reject('covert_disabled', "Covert operations and rumors are not enabled")
+
+        # N6: Direction validation
+        dir_clean = (direction or '').strip().lower()
+        if dir_clean not in ('bullish', 'spike', 'short_squeeze', 'shortage', 'bearish', 'glut', 'surplus', 'panic'):
+            return _reject('invalid_direction', f"Unknown direction '{direction}'. Must be bullish or bearish.")
+        is_bullish = dir_clean in ('bullish', 'spike', 'short_squeeze', 'shortage')
+
+        # N1 & N5: Strict string validation and length capping on headline & body
+        if headline is not None:
+            if not isinstance(headline, str):
+                return _reject('invalid_headline', "Headline must be a string")
+            headline = headline.strip()
+            if len(headline) > 280:
+                return _reject('invalid_headline', f"Headline exceeds maximum length of 280 characters ({len(headline)} chars)")
+        if body is not None:
+            if not isinstance(body, str):
+                return _reject('invalid_body', "Body must be a string")
+            body = body.strip()
+            if len(body) > 1000:
+                return _reject('invalid_body', f"Body exceeds maximum length of 1000 characters ({len(body)} chars)")
         cost = RUMOR_COST
         standing = getattr(ref, 'standing', None)
         if standing is not None and standing.allows(actor, 'rumor_discount'):
             cost = RUMOR_DISCOUNT_COST
 
         rnd = ref.current_round
+
+        # Calibrated rumor drift bias & duration (N2 & N3)
+        drift_bias = 0.08 if is_bullish else -0.08
+        duration = 2
+
+        if not headline:
+            action_word = "SUPPLY SHORTAGE LOOMS" if is_bullish else "MARKET FLOODED WITH SURPLUS"
+            headline = f"UNVERIFIED REPORTS: {station_id.upper()} {commodity} {action_word}"
+        if not body:
+            body = (f"GalNet anonymous dispatches allege upcoming logistics disruptions for {commodity} "
+                    f"docking at {station_id.title()}. Traders anticipate sharp volatility.")
+
+        event_id = f"gn-rumor-{rnd}-{self.rng.randint(1000, 9999)}"
+        galnet = getattr(ref, 'galnet', None)
+        ev = None
+        if galnet is not None:
+            from agora.galnet import GalNetNewsEvent
+            ev = GalNetNewsEvent(
+                id=event_id,
+                round=rnd,
+                timestamp=time.time(),
+                station_id=station_id,
+                commodity=commodity,
+                headline=headline,
+                body=body,
+                drift_bias=drift_bias,
+                duration_rounds=duration,
+            )
+
         with ref.lock, ref.conn:
             avail = ref.peer._available(actor, 'CR') if hasattr(ref, 'peer') else ref.get_balance(actor, 'CR')
             if avail < cost:
@@ -302,35 +353,6 @@ class CovertDesk:
                 ref.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = 'CR'", (d, acct))
                 ref.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, 'CR', ?)",
                                  (txn, seq, acct, d))
-
-            is_bullish = direction in ('bullish', 'spike', 'short_squeeze', 'shortage')
-            drift_bias = 0.35 if is_bullish else -0.30
-            duration = 3
-
-            if not headline:
-                action_word = "SUPPLY SHORTAGE LOOMS" if is_bullish else "MARKET FLOODED WITH SURPLUS"
-                headline = f"UNVERIFIED REPORTS: {station_id.upper()} {commodity} {action_word}"
-            if not body:
-                body = (f"GalNet anonymous dispatches allege upcoming logistics disruptions for {commodity} "
-                        f"docking at {station_id.title()}. Traders anticipate sharp volatility.")
-
-            event_id = f"gn-rumor-{rnd}-{self.rng.randint(1000, 9999)}"
-            galnet = getattr(ref, 'galnet', None)
-            if galnet is not None:
-                from agora.galnet import GalNetNewsEvent
-                ev = GalNetNewsEvent(
-                    id=event_id,
-                    round=rnd,
-                    timestamp=time.time(),
-                    station_id=station_id,
-                    commodity=commodity,
-                    headline=headline,
-                    body=body,
-                    drift_bias=drift_bias,
-                    duration_rounds=duration,
-                )
-                galnet.events.append(ev)
-                galnet.active_shocks.append(ev)
 
             ref.conn.execute("INSERT INTO book_events (seq, kind, payload) VALUES (?, 'news', ?)",
                              (seq, json.dumps({
@@ -360,12 +382,17 @@ class CovertDesk:
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (actor, station_id, commodity, headline, drift_bias, cost, 1 if traced else 0, rnd))
 
-            return {'v': 1, 'kind': 'rumor_ok', 'payload': {
-                'event_id': event_id, 'actor': actor, 'station_id': station_id, 'commodity': commodity,
-                'direction': 'bullish' if is_bullish else 'bearish', 'drift_bias': drift_bias,
-                'duration_rounds': duration, 'cost': cost, 'traced': traced, 'fine': fine_paid,
-                'headline': headline, 'round': rnd
-            }}
+        # N1: Mutate in-memory GalNet shock strictly POST-COMMIT
+        if galnet is not None and ev is not None:
+            galnet.events.append(ev)
+            galnet.active_shocks.append(ev)
+
+        return {'v': 1, 'kind': 'rumor_ok', 'payload': {
+            'event_id': event_id, 'actor': actor, 'station_id': station_id, 'commodity': commodity,
+            'direction': 'bullish' if is_bullish else 'bearish', 'drift_bias': drift_bias,
+            'duration_rounds': duration, 'cost': cost, 'traced': traced, 'fine': fine_paid,
+            'headline': headline, 'round': rnd
+        }}
 
     # ------------------------------------------------------------ Sabotage (#135)
 

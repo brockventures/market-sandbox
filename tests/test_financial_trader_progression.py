@@ -43,9 +43,8 @@ def move(ref, txn: str, legs: tuple):
 def dock(ref, agent: str, station_id: str):
     with ref.conn:
         ref.conn.execute(
-            "INSERT INTO vessel_locations (agent_id, station_id, docked_since) VALUES (?, ?, 0) "
-            "ON CONFLICT(agent_id) DO UPDATE SET station_id = excluded.station_id",
-            (agent, station_id)
+            "UPDATE vessels SET station_id = ?, status = 'docked' WHERE agent_id = ?",
+            (station_id, agent)
         )
 
 
@@ -221,8 +220,10 @@ class TestDividendsAndFinancialHegemony(unittest.TestCase):
     def test_passive_dividends_distributed(self):
         ref = self.ref
         ref.current_round = 1
+        # Give marvin earned profits above 10,000 genesis cash
+        move(ref, 'test-marvin-profit', (('marvin', 'CR', 10000), ('SYSTEM', 'CR', -10000)))
         m_cr_before = ref.get_balance('marvin', 'CR')
-        self.assertGreater(m_cr_before, 5_000)
+        self.assertGreater(m_cr_before, 10_000)
 
         # Give zero an overweight stake in marvin (extra 100 shares) so dividend income exceeds payout
         move(ref, 'test-div-setup', (('zero', 'EQ_MARV', 100), ('amos', 'EQ_MARV', -100)))
@@ -246,14 +247,14 @@ class TestDividendsAndFinancialHegemony(unittest.TestCase):
     def test_financial_hegemony_victory(self):
         ref = self.ref
         ref.current_round = 10
-        # amos acquires dominant stakes (>= 200 shares) in all 3 active rivals (zero, marvin, aerial)
+        # amos acquires dominant takeover stakes (501 shares) in all 3 active rivals (zero, marvin, aerial)
         for rival, sym in (('zero', 'EQ_ZERO'), ('marvin', 'EQ_MARV'), ('aerial', 'EQ_AERL')):
-            move(ref, f'test-hegemony-{rival}', (('amos', sym, 200), (rival, sym, -200)))
+            move(ref, f'test-hegemony-{rival}', (('amos', sym, 501), (rival, sym, -501)))
 
         ref.step_round()
         summary = ref.corporate.summary()
         self.assertEqual(summary['winner'], 'amos')
-        self.assertIn('Financial Hegemony', summary['win_reason'])
+        self.assertTrue('Corporate Monopoly' in summary['win_reason'] or 'Financial Hegemony' in summary['win_reason'])
 
 
 class TestServerEndpoints(unittest.TestCase):

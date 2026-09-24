@@ -265,6 +265,8 @@ class GalNetEngine:
         for ev in self.active_shocks:
             if ev.station_id == station_id and ev.commodity == commodity:
                 net_drift += ev.drift_bias
+        # Clamp total stacked drift to prevent runaway compounding (N3)
+        net_drift = max(-0.40, min(0.40, net_drift))
         return round(net_drift, 4)
 
     def infer_trend(self, station_id: str, commodity: str, fogged_spot: Optional[float] = None) -> Dict[str, Any]:
