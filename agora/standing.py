@@ -153,7 +153,7 @@ TECH: Dict[str, Tuple[str, int]] = {
 }
 
 HAULING_CR = ('toll-', 'contract-', 'piracy-escort-')
-COVERT_CR = ('piracy-hire-', 'piracy-fine-', 'covert-', 'wiretap-', 'sabotage-')
+COVERT_CR = ('piracy-hire-', 'piracy-fine-', 'piracy-fence-', 'piracy-tribute-', 'covert-', 'wiretap-', 'sabotage-')
 # A victim's receipts on these covert txns are compensation, not covert income.
 COVERT_VICTIM_RECEIPTS = ('sabotage-fine-', 'sabotage-restitution-')
 TRADING_CR = ('fee-', 'feecol-')

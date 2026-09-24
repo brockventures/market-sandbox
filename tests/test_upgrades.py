@@ -119,8 +119,10 @@ class TestStagedTiers181(unittest.TestCase):
     """#181 (Ryan 2026-09-23): three tiers (engines two) on one staggered
     shipyard schedule, each unlock after round 0 announced on GalNet."""
 
-    SCHEDULE = {0: [('armor', 1), ('shielding', 1)], 40: [('engines', 1)], 50: [('hold', 1)],
-                75: [('shielding', 2)], 100: [('armor', 2)], 125: [('hold', 2)], 175: [('shielding', 3)],
+    SCHEDULE = {0: [('armor', 1), ('shielding', 1)], 10: [('boarding_pods', 1)],
+                40: [('engines', 1)], 50: [('hold', 1)], 60: [('ecm_jammers', 1)],
+                75: [('shielding', 2)], 90: [('stealth_drives', 1)], 100: [('armor', 2)],
+                125: [('hold', 2)], 175: [('shielding', 3)],
                 200: [('armor', 3)], 225: [('hold', 3)], 250: [('engines', 2)]}
 
     def test_catalog_values(self):

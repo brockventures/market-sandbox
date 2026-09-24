@@ -126,6 +126,18 @@ REF_PRICE = {c: sum(BASE_PRICES[s][c] for s in STATIONS) / len(STATIONS) for c i
 
 SCHEMA = (
     """
+    CREATE TABLE IF NOT EXISTS piracy_tributes (
+        tribute_id   TEXT PRIMARY KEY,
+        demander     TEXT NOT NULL,
+        target       TEXT NOT NULL,
+        amount_cr    INTEGER NOT NULL,
+        rounds       INTEGER NOT NULL,
+        start_round  INTEGER NOT NULL,
+        end_round    INTEGER NOT NULL,
+        status       TEXT NOT NULL DEFAULT 'active'
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS piracy_raids (
         transit_id     TEXT PRIMARY KEY,
         agent_id       TEXT NOT NULL,
@@ -281,6 +293,14 @@ class PiracyDesk:
         armor = self.ref.upgrades.factor(agent, 'armor') if hasattr(self.ref, 'upgrades') else 1.0
         armor_tier = self.ref.upgrades.tier(agent, 'armor') if hasattr(self.ref, 'upgrades') else 0
         p *= armor
+        stealth = 1.0
+        stealth_tier = 0
+        if hasattr(self.ref, 'upgrades') and self.ref.upgrades:
+            st = self.ref.upgrades.tier(agent, 'stealth_drives') if hasattr(self.ref.upgrades, 'tier') else 0
+            if isinstance(st, int) and st > 0:
+                stealth = self.ref.upgrades.factor(agent, 'stealth_drives')
+                stealth_tier = st
+                p *= stealth
         return {'odds': round(min(1.0, p), 4), 'exact_odds': min(1.0, p), 'base': base, 'hot': hot, 'value': value,
                 'value_mult': round(vm, 3), 'privateers': priv, 'escort': bool(escort), 'armor': armor,
                 'armor_tier': armor_tier, 'tolled': bool(tolled)}
@@ -296,7 +316,7 @@ class PiracyDesk:
         ship's escorted bag."""
         return (f"{vessel_id}|{'belt' if c.get('tolled') else 'inner'}|{'hot' if c.get('hot') else 'cool'}"
                 f"|v{c.get('value_mult')}|{'priv' if c.get('privateers') else 'free'}"
-                f"|a{c.get('armor_tier', 0)}|{'escort' if c.get('escort') else 'bare'}")
+                f"|a{c.get('armor_tier', 0)}|s{c.get('stealth_tier', 0)}|{'escort' if c.get('escort') else 'bare'}")
 
     @staticmethod
     def bag_odds(p: float) -> float:
@@ -358,7 +378,12 @@ class PiracyDesk:
                     'privateer_raid', 'private', actor=sponsor, victim=agent, link=contract['contract_id'],
                     detail=f"raided on the {origin.capitalize()}-{dest.capitalize()} run by privateers "
                            f"under contract (sponsor unknown until exposed)")
-            if self.bags.draw('trace', sponsor, PRIV_TRACE):
+            trace_odds = PRIV_TRACE
+            if hasattr(self.ref, 'upgrades') and self.ref.upgrades:
+                jt = self.ref.upgrades.tier(sponsor, 'ecm_jammers') if hasattr(self.ref.upgrades, 'tier') else 0
+                if isinstance(jt, int) and jt > 0:
+                    trace_odds *= self.ref.upgrades.factor(sponsor, 'ecm_jammers')
+            if self.bags.draw('trace', sponsor, trace_odds):
                 traced = 1
                 fine = min(contract['fee'] * PRIV_FINE, max(0, self.ref.get_balance(sponsor, 'CR')))
                 self._move(f"piracy-fine-{transit_id}", ((sponsor, 'CR', -fine), ('SYSTEM', 'CR', fine)))
@@ -426,6 +451,13 @@ class PiracyDesk:
         transit = self._transit(tid)
         cr_taken = qty_taken = delay = 0
         fenced = None
+        sponsor = row['sponsor']
+        boarding_boost = False
+        if sponsor and hasattr(ref, 'upgrades') and ref.upgrades:
+            bt = ref.upgrades.tier(sponsor, 'boarding_pods') if hasattr(ref.upgrades, 'tier') else 0
+            if isinstance(bt, int) and bt > 0:
+                boarding_boost = True
+
         if choice == 'pay':
             cr_taken = row['ransom']
             cut = int(cr_taken * PRIV_SHARE) if row['sponsor'] else 0
@@ -437,7 +469,8 @@ class PiracyDesk:
             self._move(f"piracy-ransom-{tid}", legs)
             status = 'paid'
         elif choice == 'surrender':
-            qty_taken, fenced = self._steal_locked(row, transit, row['surrender_qty'])
+            surrender_qty = int((transit['cargo_qty'] or 0) * 0.40) if boarding_boost and transit else row['surrender_qty']
+            qty_taken, fenced = self._steal_locked(row, transit, surrender_qty)
             status = 'surrendered'
         else:
             d = self.rng.randint(*FIGHT_DELAY)
@@ -448,7 +481,8 @@ class PiracyDesk:
                 status = 'escaped'
             else:
                 status = 'lost'
-                qty_taken, fenced = self._steal_locked(row, transit, int((transit['cargo_qty'] or 0) * FIGHT_LOSS))
+                loss_ratio = 0.80 if boarding_boost else FIGHT_LOSS
+                qty_taken, fenced = self._steal_locked(row, transit, int((transit['cargo_qty'] or 0) * loss_ratio))
                 delay = d
                 ref.conn.execute("UPDATE transits SET arrival_round = arrival_round + ? WHERE transit_id = ?", (delay, tid))
         ref.conn.execute("""UPDATE piracy_raids SET status = ?, choice = ?, timed_out = ?, cr_taken = ?, qty_taken = ?,
@@ -517,6 +551,8 @@ class PiracyDesk:
             if ref.conn.execute("SELECT 1 FROM piracy_privateers WHERE sponsor = ? AND expires_round > ?",
                                 (sponsor, r)).fetchone():
                 return _reject('contract_active', "You already have privateers under contract; one at a time")
+            if self.is_protected(sponsor, target):
+                return _reject('target_protected_by_tribute', f"{target} has an active protection tribute with {sponsor}")
             if self.active_contract(target, r):
                 return _reject('target_taken', f"Raiders are already under contract against {target}")
             have = ref.peer._available(sponsor, 'CR')
@@ -650,3 +686,154 @@ class PiracyDesk:
             'privateer_contracts': self.active_contracts(viewer),
         })
         return out
+
+    # ------------------------------------------------------------ syndicate progression & extortion (#166)
+
+    def is_protected(self, sponsor: str, target: str) -> bool:
+        r = getattr(self.ref, 'current_round', 0)
+        row = self.ref.conn.execute(
+            "SELECT 1 FROM piracy_tributes WHERE demander = ? AND target = ? AND end_round >= ? AND status = 'active'",
+            (sponsor, target, r)
+        ).fetchone()
+        return bool(row)
+
+    def extort(self, demander: str, target: str, amount_cr: int, rounds: int = 20) -> Dict[str, Any]:
+        ref = self.ref
+        ref.mark_active(demander)
+        target = (target or '').strip().lower()
+        demander = (demander or '').strip().lower()
+        out = self._out(demander)
+        if out:
+            return _reject('fleet_out', out)
+        if self._out(target):
+            return _reject('invalid_target', f"{target} is out of the game")
+        if target == demander:
+            return _reject('invalid_target', "Cannot extort yourself")
+        if amount_cr <= 0:
+            return _reject('invalid_amount', "Tribute amount must be positive")
+        if rounds <= 0:
+            return _reject('invalid_duration', "Tribute duration must be positive")
+
+        with ref.lock, ref.conn:
+            fleets = {r[0] for r in ref.conn.execute("SELECT agent_id FROM fleet_roster")}
+            if target not in fleets:
+                return _reject('invalid_target', f"Unknown fleet '{target}'")
+            have = ref.peer._available(target, 'CR')
+            if have < amount_cr:
+                return _reject('insufficient_credits', f"{target} only has {have} CR; requested {amount_cr} CR")
+
+            r = ref.current_round
+            tid = f"trib-{r}-{demander}-{target}"
+            self._move(f"piracy-tribute-{tid}", ((target, 'CR', -amount_cr), (demander, 'CR', amount_cr)))
+            ref.conn.execute(
+                """INSERT INTO piracy_tributes (tribute_id, demander, target, amount_cr, rounds, start_round, end_round, status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'active')""",
+                (tid, demander, target, amount_cr, rounds, r, r + rounds)
+            )
+            if self._secrecy:
+                ref.events.record_locked('extortion_tribute', 'secret', actor=demander, victim=target, link=tid,
+                                         amount=amount_cr, detail=f"{demander} extorted {amount_cr} CR tribute from {target} for {rounds} rounds protection")
+            row = ref.conn.execute("SELECT * FROM piracy_tributes WHERE tribute_id = ?", (tid,)).fetchone()
+        return {'v': 1, 'kind': 'extortion_ok', 'payload': dict(row)}
+
+    def tributes(self, viewer: Optional[str] = None) -> List[Dict[str, Any]]:
+        r = getattr(self.ref, 'current_round', 0)
+        with self.ref.lock, self.ref.conn:
+            rows = self.ref.conn.execute(
+                "SELECT * FROM piracy_tributes WHERE end_round >= ? AND status = 'active' ORDER BY end_round DESC",
+                (r,)
+            ).fetchall()
+            out = []
+            for row in rows:
+                d = dict(row)
+                if viewer in ('admin', 'combine') or not viewer or viewer in (d['demander'], d['target']):
+                    out.append(d)
+                else:
+                    out.append({'tribute_id': d['tribute_id'], 'end_round': d['end_round'], 'status': d['status'], 'protected': True})
+            return out
+
+    def fence_cargo(self, agent: str, commodity: str, qty: int, station_id: Optional[str] = None) -> Dict[str, Any]:
+        ref = self.ref
+        ref.mark_active(agent)
+        agent = (agent or '').strip().lower()
+        comm = (commodity or '').strip().upper()
+        out = self._out(agent)
+        if out:
+            return _reject('fleet_out', out)
+        if comm not in COMMODITIES:
+            return _reject('invalid_commodity', f"Unknown commodity '{commodity}'")
+        if qty <= 0:
+            return _reject('invalid_quantity', "Quantity must be positive")
+
+        rate = 0.95
+        if hasattr(ref, 'standing') and ref.standing and getattr(ref.standing, 'enabled', False):
+            # Syndicate shadow_fence standing gives premium 95% rate; baseline black market rate is 85%
+            rate = 0.95 if ref.standing.allows(agent, 'shadow_fence') else 0.85
+
+        with ref.lock, ref.conn:
+            have_ship = ref.get_balance(f"{agent}/1", comm) if hasattr(ref, 'fleet') and ref.fleet.is_corp(agent) else 0
+            have_agent = ref.get_balance(agent, comm)
+            acct = f"{agent}/1" if have_ship >= qty else agent
+            actual_have = ref.get_balance(acct, comm)
+            if actual_have < qty:
+                return _reject('insufficient_cargo', f"{agent} only holds {actual_have} {comm} in {acct}; requested {qty}")
+
+            unit_price = round(REF_PRICE[comm] * rate, 2)
+            payout_cr = int(qty * unit_price)
+            tid = f"piracy-fence-{ref.current_round}-{agent}-{comm}"
+            self._move(tid, ((acct, comm, -qty), (agent, 'CR', payout_cr)))
+
+
+
+            if self._secrecy:
+                ref.events.record_locked('black_market_fence', 'secret', actor=agent, amount=payout_cr,
+                                         detail=f"{agent} fenced {qty} {comm} on the black market for {payout_cr} CR")
+
+        return {'v': 1, 'kind': 'fence_ok', 'payload': {'agent_id': agent, 'commodity': comm, 'qty': qty, 'unit_price': unit_price, 'payout_cr': payout_cr}}
+
+    def syndicate_status(self, agent: str) -> Dict[str, Any]:
+        agent = (agent or '').strip().lower()
+        with self.ref.lock, self.ref.conn:
+            pv_row = self.ref.conn.execute(
+                "SELECT COALESCE(SUM(loot_cr), 0) as cr, COALESCE(SUM(loot_qty), 0) as qty FROM piracy_privateers WHERE sponsor = ?",
+                (agent,)
+            ).fetchone()
+            loot_cr = int(pv_row['cr'])
+            loot_qty = int(pv_row['qty'])
+
+            trib_row = self.ref.conn.execute(
+                "SELECT COALESCE(SUM(amount_cr), 0) as cr, COUNT(*) as cnt FROM piracy_tributes WHERE demander = ?",
+                (agent,)
+            ).fetchone()
+            tributes_cr = int(trib_row['cr'])
+            tributes_cnt = int(trib_row['cnt'])
+
+            total_plunder = loot_cr + tributes_cr
+            if total_plunder >= 25_000:
+                rank = "Syndicate Boss"
+                monopoly = True
+            elif total_plunder >= 10_000:
+                rank = "Syndicate Enforcer"
+                monopoly = False
+            elif total_plunder >= 3_000:
+                rank = "Syndicate Associate"
+                monopoly = False
+            else:
+                rank = "Street Freelancer"
+                monopoly = False
+
+            return {
+                'v': 1,
+                'kind': 'syndicate_status',
+                'payload': {
+                    'agent_id': agent,
+                    'plunder_cr': loot_cr,
+                    'loot_qty': loot_qty,
+                    'tributes_cr': tributes_cr,
+                    'tributes_count': tributes_cnt,
+                    'total_plunder_cr': total_plunder,
+                    'syndicate_rank': rank,
+                    'syndicate_monopoly': monopoly,
+                    'threshold_cr': 25_000,
+                }
+            }
