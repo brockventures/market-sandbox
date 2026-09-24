@@ -2059,26 +2059,14 @@ def run_server(host: Optional[str] = None, port: int = 8080, referee: Optional[A
         # (manual pause, or the inactivity watchdog) stays paused; one that
         # happened mid-run resumes with its quiet-round count intact instead
         # of losing that progress and needing to re-accumulate it.
-        ticker = TickerEngine.resume_from_persisted_state(
+        ticker = TickerEngine.boot_from_persisted_state(
             ref, interval_sec=interval, inactivity_rounds=inactivity_rounds
         )
-        if ticker is not None:
-            print(f"Background ticker resumed from persisted state: interval={interval}s, inactivity_watchdog={inactivity_rounds} quiet rounds")
-        else:
-            state = None
-            try:
-                state = ref.get_ticker_state()
-            except Exception:
-                pass
-            if state is None:
-                # Fresh database, no prior desired state recorded — default to running.
-                ticker = TickerEngine(ref, interval_sec=interval, inactivity_rounds=inactivity_rounds)
-                ticker.start()
-                print(f"Background ticker started (first boot): interval={interval}s, inactivity_watchdog={inactivity_rounds} quiet rounds")
-            else:
-                # Persisted desired state was 'paused' or 'stopped' — respect it.
-                ticker = TickerEngine(ref, interval_sec=interval, inactivity_rounds=inactivity_rounds)
-                print(f"Background ticker constructed but not started (persisted desired_state='{state.get('desired_state')}')")
+        st = ticker.status()
+        print(
+            f"Background ticker started: interval={interval}s, inactivity_watchdog={inactivity_rounds} quiet rounds, "
+            f"paused={st.get('paused')} ({st.get('pause_reason') or 'running'})"
+        )
     else:
         print("Background ticker disabled (AGORA_TICKER_ENABLED=0)")
 
@@ -2095,7 +2083,9 @@ def run_server(host: Optional[str] = None, port: int = 8080, referee: Optional[A
         pass
     finally:
         if ticker:
-            ticker.stop()
+            # Shutdown is not operator intent: leave desired_state as-is so
+            # the next boot resumes what was running.
+            ticker.stop(persist=False)
         server.server_close()
 
 

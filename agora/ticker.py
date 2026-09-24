@@ -95,18 +95,32 @@ class TickerEngine:
         self._thread = threading.Thread(target=self._run_loop, name="agora-ticker", daemon=True)
         self._thread.start()
 
-    def stop(self) -> None:
+    def stop(self, persist: bool = True) -> None:
+        """
+        Stop the ticker thread. `persist=False` is for process shutdown: a
+        server exiting is not an operator asking for the clock to stop, so
+        it must not overwrite the durable desired_state the next boot
+        reconciles against.
+        """
         self._stop_event.set()
         with self._lock:
             self._running = False
             self._next_tick_at = None
-        self._persist_state('stopped')
+        if persist:
+            self._persist_state('stopped')
 
     def pause(self, reason: str = "manual") -> None:
         with self._lock:
             self._paused = True
             self._pause_reason = reason
-        self._persist_state('paused')
+            # A burst pause (#62) is transient: the burst thread does not
+            # survive a restart, so persist what the continuous ticker returns
+            # to once the burst concludes, not the momentary pause. Otherwise
+            # a container bounce mid-burst would leave the clock paused for good.
+            durable = 'paused'
+            if reason.startswith("burst:") and self._burst_resume_ticker_after:
+                durable = 'running'
+        self._persist_state(durable)
 
     def resume(self) -> None:
         seq = getattr(self.referee, "current_seq", 0)
@@ -158,6 +172,31 @@ class TickerEngine:
         engine.start()  # start() resets quiet_round_count to 0 — restore the persisted value after
         with engine._lock:
             engine._quiet_round_count = max(0, int(state.get('quiet_round_count') or 0))
+        return engine
+
+    @staticmethod
+    def boot_from_persisted_state(referee, **kwargs) -> "TickerEngine":
+        """
+        Server boot path: always returns a *started* engine, so the admin
+        pause/resume endpoints keep working after a restart.
+          - no persisted state (fresh db) -> started, running
+          - persisted 'running'            -> started, quiet_round_count restored
+          - persisted 'paused'/'stopped'   -> started, then paused with reason
+            'restored_from_persisted_state:<state>'; admin resume revives it
+        An engine that was merely constructed would have no ticker thread, and
+        resume() only clears the pause flag, so it could never tick again.
+        """
+        engine = TickerEngine.resume_from_persisted_state(referee, **kwargs)
+        if engine is not None:
+            return engine
+        try:
+            state = referee.get_ticker_state()
+        except Exception:
+            state = None
+        engine = TickerEngine(referee, **kwargs)
+        engine.start()
+        if state is not None:
+            engine.pause(reason=f"restored_from_persisted_state:{state.get('desired_state')}")
         return engine
 
     def configure(
