@@ -126,6 +126,14 @@ REF_PRICE = {c: sum(BASE_PRICES[s][c] for s in STATIONS) / len(STATIONS) for c i
 
 SCHEMA = (
     """
+    CREATE TABLE IF NOT EXISTS piracy_looted_cargo (
+        agent_id       TEXT NOT NULL,
+        commodity      TEXT NOT NULL,
+        qty            INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (agent_id, commodity)
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS piracy_tributes (
         tribute_id   TEXT PRIMARY KEY,
         demander     TEXT NOT NULL,
@@ -134,7 +142,7 @@ SCHEMA = (
         rounds       INTEGER NOT NULL,
         start_round  INTEGER NOT NULL,
         end_round    INTEGER NOT NULL,
-        status       TEXT NOT NULL DEFAULT 'active'
+        status       TEXT NOT NULL DEFAULT 'pending'
     )
     """,
     """
@@ -226,6 +234,8 @@ class PiracyDesk:
                 ref.conn.execute(stmt)
         self.odds = odds
         self.bags = Bags(ref.conn, 'piracy')
+        self._tribute_counter = 0
+        self._fence_counter = 0
         self._reseed(seed)
 
     @property
@@ -303,7 +313,7 @@ class PiracyDesk:
                 p *= stealth
         return {'odds': round(min(1.0, p), 4), 'exact_odds': min(1.0, p), 'base': base, 'hot': hot, 'value': value,
                 'value_mult': round(vm, 3), 'privateers': priv, 'escort': bool(escort), 'armor': armor,
-                'armor_tier': armor_tier, 'tolled': bool(tolled)}
+                'armor_tier': armor_tier, 'stealth': stealth, 'stealth_tier': stealth_tier, 'tolled': bool(tolled)}
 
     @staticmethod
     def raid_key(vessel_id: str, c: Dict[str, Any]) -> str:
@@ -425,6 +435,7 @@ class PiracyDesk:
         fence = self._fence_account()
         legs = [('SYSTEM', comm, -(cut + (fence_qty if fence else 0)))]
         if cut:
+            self.record_loot(row['sponsor'], comm, cut)
             # The sponsor's cut is delivered to its ship 1 (#175): the raiders
             # carry it, as before ships, so #186's covert economics are unchanged.
             # What ship 1's hold cannot take waits in the sponsor's hold at
@@ -689,10 +700,31 @@ class PiracyDesk:
 
     # ------------------------------------------------------------ syndicate progression & extortion (#166)
 
+    def record_loot(self, agent: str, commodity: str, qty: int) -> None:
+        if qty <= 0:
+            return
+        agent = (agent or '').strip().lower()
+        comm = (commodity or '').strip().upper()
+        self.ref.conn.execute(
+            """INSERT INTO piracy_looted_cargo (agent_id, commodity, qty)
+               VALUES (?, ?, ?)
+               ON CONFLICT(agent_id, commodity) DO UPDATE SET qty = qty + ?""",
+            (agent, comm, qty, qty)
+        )
+
+    def get_looted_cargo(self, agent: str, commodity: str) -> int:
+        agent = (agent or '').strip().lower()
+        comm = (commodity or '').strip().upper()
+        row = self.ref.conn.execute(
+            "SELECT qty FROM piracy_looted_cargo WHERE agent_id = ? AND commodity = ?",
+            (agent, comm)
+        ).fetchone()
+        return int(row[0]) if row else 0
+
     def is_protected(self, sponsor: str, target: str) -> bool:
         r = getattr(self.ref, 'current_round', 0)
         row = self.ref.conn.execute(
-            "SELECT 1 FROM piracy_tributes WHERE demander = ? AND target = ? AND end_round >= ? AND status = 'active'",
+            "SELECT 1 FROM piracy_tributes WHERE demander = ? AND target = ? AND end_round > ? AND status = 'active'",
             (sponsor, target, r)
         ).fetchone()
         return bool(row)
@@ -711,8 +743,8 @@ class PiracyDesk:
             return _reject('invalid_target', "Cannot extort yourself")
         if amount_cr <= 0:
             return _reject('invalid_amount', "Tribute amount must be positive")
-        if rounds <= 0:
-            return _reject('invalid_duration', "Tribute duration must be positive")
+        if rounds <= 0 or rounds > 50:
+            return _reject('invalid_duration', "Tribute duration must be between 1 and 50 rounds")
 
         with ref.lock, ref.conn:
             fleets = {r[0] for r in ref.conn.execute("SELECT agent_id FROM fleet_roster")}
@@ -723,33 +755,84 @@ class PiracyDesk:
                 return _reject('insufficient_credits', f"{target} only has {have} CR; requested {amount_cr} CR")
 
             r = ref.current_round
-            tid = f"trib-{r}-{demander}-{target}"
-            self._move(f"piracy-tribute-{tid}", ((target, 'CR', -amount_cr), (demander, 'CR', amount_cr)))
+            self._tribute_counter += 1
+            tid = f"trib-{r}-{demander}-{target}-{self._tribute_counter}"
             ref.conn.execute(
                 """INSERT INTO piracy_tributes (tribute_id, demander, target, amount_cr, rounds, start_round, end_round, status)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, 'active')""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')""",
                 (tid, demander, target, amount_cr, rounds, r, r + rounds)
             )
             if self._secrecy:
-                ref.events.record_locked('extortion_tribute', 'secret', actor=demander, victim=target, link=tid,
-                                         amount=amount_cr, detail=f"{demander} extorted {amount_cr} CR tribute from {target} for {rounds} rounds protection")
+                ref.events.record_locked('extortion_demand', 'secret', actor=demander, victim=target, link=tid,
+                                         amount=amount_cr, detail=f"{demander} demanded {amount_cr} CR tribute from {target} for {rounds} rounds protection")
             row = ref.conn.execute("SELECT * FROM piracy_tributes WHERE tribute_id = ?", (tid,)).fetchone()
-        return {'v': 1, 'kind': 'extortion_ok', 'payload': dict(row)}
+        return {'v': 1, 'kind': 'extortion_demanded', 'payload': dict(row)}
+
+    def respond_tribute(self, target: str, tribute_id: str, action: str) -> Dict[str, Any]:
+        ref = self.ref
+        target = (target or '').strip().lower()
+        action = (action or '').strip().lower()
+        ref.mark_active(target)
+        out = self._out(target)
+        if out:
+            return _reject('fleet_out', out)
+        if action not in ('accept', 'refuse', 'reject'):
+            return _reject('invalid_action', "Action must be 'accept' or 'refuse'")
+
+        with ref.lock, ref.conn:
+            row = ref.conn.execute("SELECT * FROM piracy_tributes WHERE tribute_id = ?", (tribute_id,)).fetchone()
+            if not row:
+                return _reject('tribute_not_found', f"Tribute '{tribute_id}' not found")
+            d = dict(row)
+            if d['target'] != target:
+                return _reject('unauthorized', f"Only target '{d['target']}' can respond to this tribute")
+            if d['status'] != 'pending':
+                return _reject('tribute_closed', f"Tribute '{tribute_id}' is already {d['status']}")
+
+            amount_cr = d['amount_cr']
+            demander = d['demander']
+            r = ref.current_round
+
+            if action == 'accept':
+                have = ref.peer._available(target, 'CR')
+                if have < amount_cr:
+                    return _reject('insufficient_credits', f"{target} only has {have} CR; required {amount_cr} CR")
+
+                self._move(f"piracy-tribute-{tribute_id}", ((target, 'CR', -amount_cr), (demander, 'CR', amount_cr)))
+                ref.conn.execute(
+                    "UPDATE piracy_tributes SET status = 'active', start_round = ?, end_round = ? WHERE tribute_id = ?",
+                    (r, r + d['rounds'], tribute_id)
+                )
+                if self._secrecy:
+                    ref.events.record_locked('extortion_tribute', 'secret', actor=demander, victim=target, link=tribute_id,
+                                             amount=amount_cr, detail=f"{target} accepted tribute: paid {amount_cr} CR to {demander} for {d['rounds']} rounds protection")
+                res_row = ref.conn.execute("SELECT * FROM piracy_tributes WHERE tribute_id = ?", (tribute_id,)).fetchone()
+                return {'v': 1, 'kind': 'tribute_accepted', 'payload': dict(res_row)}
+            else:
+                ref.conn.execute(
+                    "UPDATE piracy_tributes SET status = 'rejected' WHERE tribute_id = ?",
+                    (tribute_id,)
+                )
+                if self._secrecy:
+                    ref.events.record_locked('extortion_refused', 'secret', actor=target, victim=demander, link=tribute_id,
+                                             detail=f"{target} refused extortion tribute of {amount_cr} CR from {demander}")
+                res_row = ref.conn.execute("SELECT * FROM piracy_tributes WHERE tribute_id = ?", (tribute_id,)).fetchone()
+                return {'v': 1, 'kind': 'tribute_refused', 'payload': dict(res_row)}
 
     def tributes(self, viewer: Optional[str] = None) -> List[Dict[str, Any]]:
         r = getattr(self.ref, 'current_round', 0)
         with self.ref.lock, self.ref.conn:
             rows = self.ref.conn.execute(
-                "SELECT * FROM piracy_tributes WHERE end_round >= ? AND status = 'active' ORDER BY end_round DESC",
+                "SELECT * FROM piracy_tributes WHERE (end_round > ? AND status = 'active') OR status = 'pending' ORDER BY end_round DESC",
                 (r,)
             ).fetchall()
             out = []
             for row in rows:
                 d = dict(row)
-                if viewer in ('admin', 'combine') or not viewer or viewer in (d['demander'], d['target']):
+                if viewer in ('admin', 'combine') or (viewer and viewer in (d['demander'], d['target'])):
                     out.append(d)
                 else:
-                    out.append({'tribute_id': d['tribute_id'], 'end_round': d['end_round'], 'status': d['status'], 'protected': True})
+                    out.append({'tribute_id': d['tribute_id'], 'end_round': d['end_round'], 'status': d['status'], 'protected': (d['status'] == 'active')})
             return out
 
     def fence_cargo(self, agent: str, commodity: str, qty: int, station_id: Optional[str] = None) -> Dict[str, Any]:
@@ -765,25 +848,43 @@ class PiracyDesk:
         if qty <= 0:
             return _reject('invalid_quantity', "Quantity must be positive")
 
-        rate = 0.95
-        if hasattr(ref, 'standing') and ref.standing and getattr(ref.standing, 'enabled', False):
-            # Syndicate shadow_fence standing gives premium 95% rate; baseline black market rate is 85%
-            rate = 0.95 if ref.standing.allows(agent, 'shadow_fence') else 0.85
-
         with ref.lock, ref.conn:
-            have_ship = ref.get_balance(f"{agent}/1", comm) if hasattr(ref, 'fleet') and ref.fleet.is_corp(agent) else 0
-            have_agent = ref.get_balance(agent, comm)
+            # 1. Restrict fencing to looted cargo
+            looted_have = self.get_looted_cargo(agent, comm)
+            if looted_have < qty:
+                return _reject('not_looted_cargo', f"{agent} only holds {looted_have} looted {comm}; cannot fence unlooted goods")
+
+            # 2. Check available goods account (respecting resting orders)
+            have_ship = ref.available(agent, comm, vessel_id='1') if hasattr(ref, 'fleet') and ref.fleet.is_corp(agent) else 0
+            have_agent = ref.available(agent, comm)
             acct = f"{agent}/1" if have_ship >= qty else agent
-            actual_have = ref.get_balance(acct, comm)
-            if actual_have < qty:
-                return _reject('insufficient_cargo', f"{agent} only holds {actual_have} {comm} in {acct}; requested {qty}")
+            actual_avail = ref.available_account(acct, comm)
+            if actual_avail < qty:
+                return _reject('insufficient_cargo', f"{agent} only holds {actual_avail} available {comm} in {acct}; requested {qty}")
 
-            unit_price = round(REF_PRICE[comm] * rate, 2)
+            # 3. Price strictly below lowest spot price across stations
+            lowest_spot = min(
+                ref.spatial.get_station_price(st, comm) if getattr(ref, 'spatial', None) else BASE_PRICES[st][comm]
+                for st in STATIONS
+            )
+            # Syndicate shadow_fence standing gives premium 80% rate; baseline black market rate is 70% of lowest spot
+            rate = 0.80 if (hasattr(ref, 'standing') and ref.standing and ref.standing.allows(agent, 'shadow_fence')) else 0.70
+            unit_price = round(lowest_spot * rate, 2)
             payout_cr = int(qty * unit_price)
-            tid = f"piracy-fence-{ref.current_round}-{agent}-{comm}"
-            self._move(tid, ((acct, comm, -qty), (agent, 'CR', payout_cr)))
 
+            # 4. Monotonic unique txn ID to avoid collision on repeat in same round
+            self._fence_counter += 1
+            tid = f"piracy-fence-{ref.current_round}-{agent}-{comm}-{self._fence_counter}"
 
+            # 5. Strict double-entry ledger conservation through SYSTEM legs
+            legs = ((acct, comm, -qty), ('SYSTEM', comm, qty), ('SYSTEM', 'CR', -payout_cr), (agent, 'CR', payout_cr))
+            self._move(tid, legs)
+
+            # 6. Deduct looted cargo balance
+            ref.conn.execute(
+                "UPDATE piracy_looted_cargo SET qty = qty - ? WHERE agent_id = ? AND commodity = ?",
+                (qty, agent, comm)
+            )
 
             if self._secrecy:
                 ref.events.record_locked('black_market_fence', 'secret', actor=agent, amount=payout_cr,
@@ -802,7 +903,7 @@ class PiracyDesk:
             loot_qty = int(pv_row['qty'])
 
             trib_row = self.ref.conn.execute(
-                "SELECT COALESCE(SUM(amount_cr), 0) as cr, COUNT(*) as cnt FROM piracy_tributes WHERE demander = ?",
+                "SELECT COALESCE(SUM(amount_cr), 0) as cr, COUNT(*) as cnt FROM piracy_tributes WHERE demander = ? AND status = 'active'",
                 (agent,)
             ).fetchone()
             tributes_cr = int(trib_row['cr'])
