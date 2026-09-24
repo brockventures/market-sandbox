@@ -111,7 +111,8 @@ class EventDesk:
     # ------------------------------------------------------------ writes
     # record() and expose() take ref.lock and a transaction. Code already
     # holding the lock (a round step, a transit, a hire) calls the _locked
-    # forms: ref.lock is not reentrant.
+    # forms: ref.lock is reentrant now (#197), but a nested `with ref.conn`
+    # would commit the caller's transaction halfway through.
 
     def record(self, actor: Optional[str], victim: Optional[str], kind: str, visibility: str,
                round: Optional[int] = None, detail: str = '', link: Optional[str] = None) -> int:
