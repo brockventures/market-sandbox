@@ -1715,9 +1715,10 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
         elif path == '/referee/contracts':
             status = query_params.get('status', ['open'])[0]
             st = query_params.get('station_id', [None])[0]
+            lot_type = query_params.get('lot_type', [None])[0]
             self._send_json(200, {'status': 'ok', 'contracts_enabled': ref.contracts_enabled,
                                   'round': ref.current_round,
-                                  'contracts': ref.contract_desk.list(status=status, station_id=st)})
+                                  'contracts': ref.contract_desk.list(status=status, station_id=st, lot_type=lot_type)})
         elif path == '/referee/piracy':
             self._send_json(200, {'status': 'ok', **ref.piracy.status(self._reader())})
         elif path == '/referee/order-flow':
