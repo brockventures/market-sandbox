@@ -233,9 +233,14 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
                    f"{E.LEAK_ROUNDS} rounds, and a traced raid exposes it at once; an exposed secret is public, named "
                    f"on GalNet as a scandal. A fleet's stake in a rival reaching {E.STAKE_PCT:.0%} is disclosed "
                    f"publicly. What your token can see: `GET /referee/corporate/events`.")
-        out.append('Espionage and sabotage: `POST /referee/covert/wiretap {"target": "<corp>"}` (2,500 CR, '
-                   'reveals secret actions for 10 rounds), `POST /referee/covert/sabotage {"target": "<corp>"}` '
-                   '(4,000 CR, strikes transit or docked cargo; 25% trace chance triggers a 12,000 CR restitution fine). '
+        from agora import covert as C
+        out.append(f'Espionage and sabotage: `POST /referee/covert/wiretap {{"target": "<corp>"}}` ({C.WIRETAP_COST:,} CR, '
+                   f'reveals secret actions and cargo for {C.WIRETAP_ROUNDS} rounds), '
+                   f'`POST /referee/covert/sabotage {{"target": "<corp>"}}` ({C.SABOTAGE_COST:,} CR: siphons '
+                   f'{C.TRANSIT_SIPHON:.0%} of cargo in flight and delays it a round, or takes {C.DOCK_STEAL:.0%} of a '
+                   f'docked hold; you keep {C.SABOTAGE_LOOT_SHARE:.0%} of what is taken; a target cannot be hit again '
+                   f'for {C.SABOTAGE_COOLDOWN} rounds; {C.SABOTAGE_TRACE:.0%} trace chance triggers a '
+                   f'{C.SABOTAGE_FINE:,} CR restitution fine to the victim). '
                    'Bilateral grievances and Bad Blood: `GET /referee/corporate/rivalry`.')
         mine = [e for e in ref.events.visible_to(viewer, max(0, rnd - 20), 20)
                 if e['visibility'] != 'public' or e['kind'] == 'stake_20']

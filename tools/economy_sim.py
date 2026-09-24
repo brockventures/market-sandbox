@@ -24,7 +24,14 @@ Strategies:
                 claims, trades and delivers contracts, buys upgrades, escorts
                 high-value belt trips, pays cheap ransoms and fights the rest,
                 takes peer offers and flies to collect them (#126)
-  privateer     a hauler that also hires privateers against the leader
+  privateer     a hauler that also hires privateers against the richest rival
+                seen flying
+  raider        a privateer that stops hauling at SWITCH_ROUND and lives by
+                privateers and sabotage (the covert specialist, styles_raider)
+  saboteur, spy haulers that also sabotage cargo in flight (the spy only
+                rivals it has wiretapped)
+  stock_hauler, maker_hauler   haulers that also trade rival stocks / make
+                markets while docked (the hybrid scenario, #186)
   maker         quotes both sides at its home station, joining the depot touch
   idler         does nothing (and pays the live idle fee for it)
   novice        a zero-context LLM player reading /referee/briefing: sees the
@@ -110,6 +117,7 @@ SCENARIOS = {
     # (the home station matters: a hauler starting at Ceres out-earns one
     # starting at Earth by 100k+).
     "styles": {"zero": "hauler", "amos": "stock_trader", "marvin": "maker", "aerial": "privateer"},
+    "styles_raider": {"zero": "hauler", "amos": "stock_trader", "marvin": "maker", "aerial": "raider"},
     # The same, with a novice in the stock trader's seat (#162, novice survival).
     "styles_novice": {"zero": "hauler", "amos": "novice", "marvin": "maker", "aerial": "privateer"},
     # #174: Covert ops strategies (saboteur and spy).
@@ -119,13 +127,26 @@ SCENARIOS = {
     "styles_spy": {"zero": "hauler", "amos": "spy", "marvin": "maker", "aerial": "privateer"},
     "styles_covert": {"zero": "hauler", "amos": "spy", "marvin": "maker", "aerial": "saboteur"},
 }
+# #186 / #187: every fleet hauls; one plain hauler per game, and three of the
+# five focuses layered on a hauler, rotated with the seed (see scenario_kinds).
+HYBRID_FOCUSES = ["privateer", "saboteur", "spy", "stock_hauler", "maker_hauler"]
+SCENARIOS["hybrid"] = {"zero": "hauler", "amos": "privateer", "marvin": "saboteur", "aerial": "spy"}
 # Scenarios whose styles rotate through the home stations with the seed.
-ROTATING = {"styles", "styles_novice", "styles_saboteur", "styles_spy", "styles_covert"}
+ROTATING = {"styles", "styles_raider", "styles_novice", "styles_saboteur", "styles_spy", "styles_covert"}
 
 
 def scenario_kinds(scenario: str, seed: int) -> Dict[str, str]:
     """Which fleet plays which strategy in this seed's game."""
     kinds = SCENARIOS[scenario]
+    if scenario == "hybrid":
+        # Seed s layers focuses s, s+1, s+2 (of five) on three haulers beside
+        # a plain one, then moves every seat s stations along: over 20 seeds
+        # each focus plays 12 games, at each home station 3 times, and every
+        # game has a plain hauler to pair it with.
+        n = len(HYBRID_FOCUSES)
+        styles = ["hauler"] + [HYBRID_FOCUSES[(seed + i) % n] for i in range(3)]
+        k = seed % len(FLEETS)
+        return {a: styles[(i + k) % len(FLEETS)] for i, a in enumerate(FLEETS)}
     if scenario not in ROTATING:
         return dict(kinds)
     styles = [kinds[a] for a in FLEETS]
@@ -135,7 +156,7 @@ def scenario_kinds(scenario: str, seed: int) -> Dict[str, str]:
 # Strategies that fly goods, so the only ones that claim, buy or deliver
 # contracts and trade on the peer desk: an idler or a market maker never
 # delivers, so a claim by one is a guaranteed penalty.
-CONTRACTORS = {"hauler", "novice", "privateer", "saboteur", "spy"}
+CONTRACTORS = {"hauler", "novice", "privateer", "raider", "saboteur", "spy", "stock_hauler", "maker_hauler"}
 
 # Bot thresholds for the live-only mechanics. Behaviour, not rules.
 UPGRADE_ORDER = ("armor", "hold", "shielding", "engines")
@@ -376,6 +397,15 @@ def contract_value(ref: AgoraReferee, agent: str, c: dict, view, one_hop: bool =
     return int(best)
 
 
+def contractor(market, agent: str, ref: AgoraReferee) -> bool:
+    """Whether `agent` claims contracts and trades on the peer desk now: a
+    flying strategy that is still hauling (a raider past its switch is not)."""
+    if market.kinds.get(agent) not in CONTRACTORS:
+        return False
+    fleet = (getattr(market, "fleets", None) or {}).get(agent)
+    return fleet is None or not hasattr(fleet, "_hauls") or fleet._hauls(ref)
+
+
 class ContractMarket:
     """How the contractor bots use the live contract desk each round:
     claim (first come, first served; the claim order rotates each round),
@@ -403,7 +433,7 @@ class ContractMarket:
         if not ref.contracts_enabled:
             return
         desk = ref.contract_desk
-        bidders = [a for a in active if self.kinds.get(a) in CONTRACTORS and debt(ref, a) <= 0]
+        bidders = [a for a in active if contractor(self, a, ref) and debt(ref, a) <= 0]
         k = ref.current_round % max(1, len(bidders))
         for a in bidders[k:] + bidders[:k]:
             if len(my_contracts(ref, a)) >= contracts_mod.MAX_OPEN:
@@ -476,7 +506,7 @@ class PeerMarket:
         ref, r = self.ref, self.ref.current_round
         if not ref.peer_trades:
             return
-        traders = [a for a in active if self.kinds.get(a) in CONTRACTORS]
+        traders = [a for a in active if contractor(self, a, ref)]
         mine = []
         for seller in traders:
             st = location(ref, seller)
@@ -595,7 +625,8 @@ class Hauler:
         self.rest = {c: r for c, r in self.rest.items() if r.get("live")}
         for r in self.rest.values():
             r["live"] = False
-        self._buy_upgrades(ref, stats)
+        if self._hauls(ref):
+            self._buy_upgrades(ref, stats)
         if resting:
             return  # stay docked: the NPC buyers fill at the next tick
         inv = inventory(ref, self.agent)
@@ -605,6 +636,9 @@ class Hauler:
                 c = self._contract_run(ref, st, comm)
                 self._fly(ref, st, c["station_id"] if c else dest, comm, inv, stats)
                 return
+
+        if not self._hauls(ref):
+            return
 
         # 2. Pick the best margin from here: a contract it owns first, then
         #    toward a peer pickup if one waits, then anywhere.
@@ -692,6 +726,10 @@ class Hauler:
 
     # Purchase decisions, as methods so tools/dominance.py can swap one
     # fleet's policy without copying the hauling loop.
+    def _hauls(self, ref: AgoraReferee) -> bool:
+        """Whether it buys cargo for a new trip this round (it always sells)."""
+        return True
+
     def _buy_upgrades(self, ref: AgoraReferee, stats) -> None:
         buy_upgrades(ref, self.agent, self.UPGRADE_CASH_MULT, stats)
 
@@ -739,14 +777,33 @@ class Hauler:
 
 class Privateer(Hauler):
     """A hauler that also keeps privateers (POST /referee/privateers) on the
-    richest rival whenever it has 3x their fee in cash and none under contract."""
+    richest rival seen flying lately (else the richest) whenever it has 3x
+    their fee in cash and none under contract."""
+
+    SEEN_ROUNDS = 10  # a rival seen in transit this recently counts as a hauler
+
+    def __init__(self, agent: str, tolerate_halts: bool = False, rest_asks: Optional[bool] = None):
+        super().__init__(agent, tolerate_halts=tolerate_halts, rest_asks=rest_asks)
+        self.seen_flying: Dict[str, int] = {}
 
     def act(self, ref: AgoraReferee, quotes, stats) -> None:
         self._hire(ref, stats)
         super().act(ref, quotes, stats)
 
     def _hire(self, ref: AgoraReferee, stats) -> None:
-        if not ref.piracy.enabled or debt(ref, self.agent) > 0:
+        if not ref.piracy.enabled:
+            return
+        # Raiders only take cargo in flight, so it watches who flies (GET
+        # /referee/vessels is public) and prefers a rival seen in transit
+        # lately. Before #186 it hired against the richest rival whatever it
+        # did, and 29% of contracts (styles, seeds 1-20) went to a market
+        # maker or stock trader that never flies.
+        seen = getattr(self, "seen_flying", None)
+        if seen is not None:
+            for b in FLEETS:
+                if b != self.agent and ref.get_vessel_location(b).get("status") == "in_transit":
+                    seen[b] = ref.current_round
+        if debt(ref, self.agent) > 0:
             return
         if available(ref, self.agent, "CR") < piracy_mod.PRIV_COST * 3:
             return
@@ -754,10 +811,34 @@ class Privateer(Hauler):
         if any(c["sponsor"] == self.agent for c in ref.piracy.active_contracts(viewer=self.agent)):
             return
         nw = {e["agent_id"]: e["net_worth"] for e in ref.get_leaderboard()}
-        for target in sorted((b for b in FLEETS if b != self.agent and not ref.fleet_out(b)),
-                             key=lambda b: -nw.get(b, 0)):
+        rivals = sorted((b for b in FLEETS if b != self.agent and not ref.fleet_out(b)), key=lambda b: -nw.get(b, 0))
+        window = getattr(self, "SEEN_ROUNDS", Privateer.SEEN_ROUNDS)
+        flying = [b for b in rivals if seen is not None and ref.current_round - seen.get(b, -999) <= window]
+        for target in flying + [b for b in rivals if b not in flying]:
             if ref.piracy.hire(self.agent, target).get("kind") == "privateer_hire_ok":
                 return
+
+
+class Raider(Privateer):
+    """The covert specialist (#186, #187): a privateer that hauls to build a
+    war chest, then from SWITCH_ROUND lives by raiding: it keeps privateers
+    on a rival that flies, sabotages cargo in flight (Saboteur's rules),
+    sells what it holds and what it takes, and buys no new cargo, upgrades,
+    contracts or peer offers."""
+
+    SWITCH_ROUND = 150
+
+    def __init__(self, agent: str, tolerate_halts: bool = False):
+        super().__init__(agent, tolerate_halts=tolerate_halts)
+        self.last_strike = -999
+
+    def act(self, ref: AgoraReferee, quotes, stats) -> None:
+        if not self._hauls(ref):
+            Saboteur._strike(self, ref, stats)
+        super().act(ref, quotes, stats)
+
+    def _hauls(self, ref: AgoraReferee) -> bool:
+        return ref.current_round < self.SWITCH_ROUND
 
 
 class Maker:
@@ -1084,6 +1165,9 @@ class StockTrader:
 
     def act(self, ref: AgoraReferee, quotes, stats) -> None:
         self._liquidate(ref, quotes)
+        self.trade_stocks(ref)
+
+    def trade_stocks(self, ref: AgoraReferee) -> None:
         marks = stock_navs(ref)
         before = ref.get_balance(self.agent, "CR")
         for issuer, sym in EQ_SYM.items():
@@ -1200,7 +1284,10 @@ class Saboteur(Hauler):
         nw = {e["agent_id"]: e["net_worth"] for e in ref.get_leaderboard()}
         rivals = sorted((b for b in FLEETS if b != fleet.agent and not ref.fleet_out(b)),
                         key=lambda b: -nw.get(b, 0))
-        for target in rivals:
+        # Strike cargo in flight, where the take is (GET /referee/vessels is
+        # public). Before #186 it hit the richest rival wherever it was, and a
+        # docked market maker or stock trader has little in its hold to lose.
+        for target in [b for b in rivals if ref.get_vessel_location(b).get("status") == "in_transit"]:
             res = ref.covert.execute_sabotage(fleet.agent, target, mode="auto")
             if res.get("kind") == "sabotage_ok":
                 fleet.last_strike = ref.current_round
@@ -1283,11 +1370,61 @@ class Spy(Hauler):
                     return
 
 
+class StockHauler(Hauler):
+    """Hybrid (#186): a hauler that also trades rival stocks with part of its
+    cash, by the stock trader's rules (StockTrader.trade_stocks) but never
+    selling its goods to fund it."""
+
+    STAKE = 0.2
+
+    def __init__(self, agent: str, tolerate_halts: bool = False):
+        super().__init__(agent, tolerate_halts=tolerate_halts)
+        self.desk = StockTrader(agent)
+        self.desk.STAKE = self.STAKE
+
+    def act(self, ref: AgoraReferee, quotes, stats) -> None:
+        super().act(ref, quotes, stats)
+        if location(ref, self.agent) is not None and not self.plan:
+            self.desk.trade_stocks(ref)
+
+
+class MakerHauler(Hauler):
+    """Hybrid (#186): a hauler that makes markets on the rounds it stays
+    docked with nothing resting (no profitable trip, or waiting to fly): one
+    CR inside the depot touch, clip CLIP a side, bidding with at most
+    CASH_SHARE of its CR so the hauling capital stays free. Until a corp can
+    park a second ship (#175) this is the whole of its market making."""
+
+    CLIP, CASH_SHARE = 30, 0.25
+
+    def act(self, ref: AgoraReferee, quotes, stats) -> None:
+        super().act(ref, quotes, stats)
+        st = location(ref, self.agent)
+        if st is None or self.rest or self.plan:
+            return
+        budget = int(available(ref, self.agent, "CR") * self.CASH_SHARE)
+        for comm in TRADED:
+            q = quotes[st][comm]
+            bid, ask = q["best_bid"], q["best_ask"]
+            if not bid or not ask or ask - bid < 3:
+                continue
+            bid, ask = bid + 1, ask - 1
+            n = min(self.CLIP, budget // bid)
+            if n > 0 and band_ok(ref, st, comm, bid) and \
+                    order(ref, self.agent, "bid", n, bid, comm, st, "mb").get("kind") != "reject":
+                budget -= n * bid
+            held = available(ref, self.agent, comm) - (FUEL_KEEP if comm == "FUEL" else 0)
+            if held > 0 and band_ok(ref, st, comm, ask):
+                order(ref, self.agent, "ask", min(self.CLIP, held), ask, comm, st, "ma")
+
+
 def build_fleet(agent: str, kind: str, seed: int, mode: str):
     if kind == "hauler":
         return Hauler(agent, tolerate_halts=(mode == "tolerant"))
     if kind == "privateer":
         return Privateer(agent, tolerate_halts=(mode == "tolerant"))
+    if kind == "raider":
+        return Raider(agent, tolerate_halts=(mode == "tolerant"))
     if kind == "novice":
         return Novice(agent, seed=seed)
     if kind == "inside_maker":
@@ -1298,6 +1435,10 @@ def build_fleet(agent: str, kind: str, seed: int, mode: str):
         return Saboteur(agent, tolerate_halts=(mode == "tolerant"))
     if kind == "spy":
         return Spy(agent, tolerate_halts=(mode == "tolerant"))
+    if kind == "stock_hauler":
+        return StockHauler(agent, tolerate_halts=(mode == "tolerant"))
+    if kind == "maker_hauler":
+        return MakerHauler(agent, tolerate_halts=(mode == "tolerant"))
     return {"idler": Idler, "stock_trader": StockTrader, "daytrader": DayTrader}[kind](agent)
 
 
@@ -1583,6 +1724,7 @@ def _run(scenario, genesis, seed, rounds, mode, check_every, overrides, equity_m
     stats = {"transits": 0, "halts_caused": 0, "band_blocked": 0, "stranded_events": 0, "contract_deliveries": 0}
     cmarket = ContractMarket(ref, kinds, seed)
     pmarket = PeerMarket(ref, kinds)
+    cmarket.fleets = pmarket.fleets = fleets
     corp_track = {"max_debt": 0, "rounds_in_debt": 0}
     first_negative_depot = None
     first_invariant_failure = None
@@ -1781,6 +1923,28 @@ def style_table(results: List[dict], key: str = "pnl_total") -> str:
     return "\n".join(lines)
 
 
+def hybrid_table(results: List[dict], key: str = "pnl_total") -> str:
+    """Markdown table for the hybrid scenario (#186): each focus against the
+    plain hauler in the same game. "vs hauler" is the median of the paired
+    difference (focus P&L minus that game's plain hauler P&L); "beats" is how
+    often the focus finished ahead of it."""
+    by: Dict[str, List[tuple]] = {}
+    for r in results:
+        base = [f[key] for f in r["fleets"].values() if f["strategy"] == "hauler"]
+        if not base:
+            continue
+        for f in r["fleets"].values():
+            by.setdefault(f["strategy"], []).append((f[key], f[key] - base[0]))
+    lines = ["| focus | games | median | p10 | p90 | vs hauler (median) | beats hauler |", "|---|---|---|---|---|---|---|"]
+    for k in sorted(by, key=lambda k: (k != "hauler", -_pct([x for x, _ in by[k]], 50))):
+        xs, ds = [x for x, _ in by[k]], [d for _, d in by[k]]
+        vs = "-" if k == "hauler" else f"{_pct(ds, 50):+,.0f}"
+        beats = "-" if k == "hauler" else f"{sum(d > 0 for d in ds)}/{len(ds)}"
+        lines.append(f"| {k} | {len(xs)} | {_pct(xs, 50):+,.0f} | {_pct(xs, 10):+,.0f} | {_pct(xs, 90):+,.0f} "
+                     f"| {vs} | {beats} |")
+    return "\n".join(lines)
+
+
 def _run_job(kw: dict) -> dict:
     faulthandler.dump_traceback_later(kw.pop("hang_timeout", 600), exit=True)
     return run(**kw)
@@ -1907,7 +2071,8 @@ def main() -> int:
         print(table(results))
         return 0
     if args.styles:
-        print(style_table(results))
+        hyb = [r for r in results if r["scenario"] == "hybrid"]
+        print(hybrid_table(hyb) if hyb and len(hyb) == len(results) else style_table(results))
         return 0
     for r in results:
         print(f"\n== {r['scenario']} / {r['genesis']} genesis / {r['mode']} / seed {r['seed']} / {r['rounds']} rounds "

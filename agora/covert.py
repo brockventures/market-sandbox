@@ -2,10 +2,11 @@
 agora/covert.py - Corporate espionage, wiretaps, targeted sabotage, and rivalry (#133, #135, #152).
 
 Ryan & Amos, #the-banana-stand 2026-09-23:
-- Corp-targeted wiretaps (2,500 CR, 10 rounds): penetrate target fog and reveal
+- Corp-targeted wiretaps (WIRETAP_COST, WIRETAP_ROUNDS rounds): penetrate target fog and reveal
   secret actions through visible_to().
-- Targeted sabotage (4,000 CR): strike rival cargo/transit directly, 25% trace
-  chance with treble damages (12,000 CR) paid to victim and GalNet exposure.
+- Targeted sabotage (SABOTAGE_COST): strike rival cargo/transit directly,
+  SABOTAGE_TRACE chance of a SABOTAGE_FINE paid to the victim and GalNet
+  exposure. Since #186 the saboteur keeps SABOTAGE_LOOT_SHARE of what it takes.
 - Corporate rivalry scoreboard & grievance ledger (#152): bilateral grievance
   matrix with a 30-round linear cooling decay window.
 """
@@ -15,12 +16,40 @@ import os
 import random
 from typing import Any, Dict, List, Optional, Tuple
 
-WIRETAP_COST = 2_500
+# #186 (covert economics). Before: a saboteur's covert lane ran -42k to -46k
+# a game and a spy's -39k to -55k (hybrid scenario, seeds 1-40): ~11 strikes
+# at 4,000 plus ~2 traced fines of 12,000, for no income at all, since what a
+# sabotage took was destroyed. Now the saboteur keeps what it takes
+# (SABOTAGE_LOOT_SHARE 0 -> 1.0) and the prices come down: WIRETAP_COST
+# 2,500 -> 500, SABOTAGE_COST 4,000 -> 1,000, SABOTAGE_FINE 12,000 -> 3,000
+# (still paid to the victim). SABOTAGE_COOLDOWN is new: a paying sabotage
+# must not be repeatable on the same cargo every round.
+WIRETAP_COST = 500
 WIRETAP_ROUNDS = 10
-SABOTAGE_COST = 4_000
+SABOTAGE_COST = 1_000
 SABOTAGE_TRACE = 0.25
-SABOTAGE_FINE = 12_000
+SABOTAGE_FINE = 3_000
+# Share of what a sabotage takes (cargo siphoned in flight, goods stolen from
+# a docked hold, fuel siphoned) that reaches the saboteur as loot, booked on a
+# sabotage-loot- txn; agora/standing.py books its sale to the covert lane.
+# The rest goes to SYSTEM. 0 until #186: everything taken was destroyed.
+SABOTAGE_LOOT_SHARE = 1.0
+# A corp that was just sabotaged is on alert: nobody can sabotage it again for
+# SABOTAGE_COOLDOWN rounds. Added with the loot share (#186) so a sabotage that
+# pays cannot be repeated on one cargo or hold round after round.
+SABOTAGE_COOLDOWN = 10
+TRANSIT_SIPHON = 0.3   # of the cargo in flight, and +1 round
+DOCK_STEAL = 0.25      # of the largest docked holding
+FUEL_SIPHON = 15       # units, when the hold is empty
 RIVALRY_DECAY_ROUNDS = 30
+
+
+def ref_value(commodity: str, qty: int) -> int:
+    """Goods at the reference price piracy uses (agora.piracy.REF_PRICE:
+    base price averaged over the four stations). Replaces the flat 50 CR a
+    unit (20 for FUEL) sabotage used to value losses at (#186)."""
+    from agora.piracy import cargo_value
+    return cargo_value(commodity, qty)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS covert_wiretaps (
@@ -186,6 +215,11 @@ class CovertDesk:
 
         rnd = ref.current_round
         with ref.lock, ref.conn:
+            last = ref.conn.execute("SELECT MAX(round) FROM corp_events WHERE kind = 'sabotage' AND victim = ?",
+                                    (target,)).fetchone()[0] if getattr(ref, 'events_enabled', False) else None
+            if last is not None and rnd - last < SABOTAGE_COOLDOWN:
+                return _reject('target_alert', f"{target} is on alert after a sabotage in round {last}; "
+                                               f"try again from round {last + SABOTAGE_COOLDOWN}")
             avail = ref.peer._available(actor, 'CR') if hasattr(ref, 'peer') else ref.get_balance(actor, 'CR')
             if avail < SABOTAGE_COST:
                 return _reject('insufficient_credits',
@@ -205,6 +239,7 @@ class CovertDesk:
             st = loc.get('status')
             damage_detail = ""
             loss_cr = 0
+            loot = None
 
             # Mode resolution: transit vs docked
             if (mode in ('transit', 'auto')) and st == 'in_transit':
@@ -215,12 +250,14 @@ class CovertDesk:
                 if t_row:
                     comm = t_row['commodity']
                     c_qty = t_row['cargo_qty'] or 0
-                    lost_qty = max(1, int(c_qty * 0.3)) if c_qty > 0 else 0
+                    lost_qty = max(1, int(c_qty * TRANSIT_SIPHON)) if c_qty > 0 else 0
                     ref.conn.execute(
                         "UPDATE transits SET arrival_round = arrival_round + 1, cargo_qty = cargo_qty - ? WHERE transit_id = ?",
                         (lost_qty, t_row['transit_id']))
+                    # The cargo sits in SYSTEM escrow while in flight.
+                    loot = self._loot_locked(actor, target, comm, lost_qty, rnd)
                     damage_detail = f"flight delayed +1 round ({t_row['destination']})" + (f", lost {lost_qty} {comm}" if lost_qty else "")
-                    loss_cr = lost_qty * 50
+                    loss_cr = ref_value(comm, lost_qty)
                 else:
                     damage_detail = "flight thrusters compromised (+1 round delay)"
             else:
@@ -232,7 +269,7 @@ class CovertDesk:
                     if b > best_qty:
                         best_qty, best_comm = b, c
                 if best_qty > 0 and best_comm:
-                    destroy_qty = max(1, int(best_qty * 0.25))
+                    destroy_qty = max(1, int(best_qty * DOCK_STEAL))
                     seq = ref._get_next_seq()
                     txn_loss = f"sabotage-dock-{target}-r{rnd}"
                     for acct, d in ((target, -destroy_qty), ('SYSTEM', destroy_qty)):
@@ -242,12 +279,13 @@ class CovertDesk:
                         ref.conn.execute(
                             "INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)",
                             (txn_loss, seq, acct, best_comm, d))
-                    damage_detail = f"destroyed {destroy_qty} {best_comm} in docked cargo hold"
-                    loss_cr = destroy_qty * 50
+                    loot = self._loot_locked(actor, target, best_comm, destroy_qty, rnd)
+                    damage_detail = f"{'stole' if loot else 'destroyed'} {destroy_qty} {best_comm} in docked cargo hold"
+                    loss_cr = ref_value(best_comm, destroy_qty)
                 else:
                     # Siphon fuel
                     f_bal = ref.get_balance(target, 'FUEL')
-                    siphon = min(f_bal, 15)
+                    siphon = min(f_bal, FUEL_SIPHON)
                     if siphon > 0:
                         seq = ref._get_next_seq()
                         txn_loss = f"sabotage-fuel-{target}-r{rnd}"
@@ -258,8 +296,9 @@ class CovertDesk:
                             ref.conn.execute(
                                 "INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)",
                                 (txn_loss, seq, acct, 'FUEL', d))
+                        loot = self._loot_locked(actor, target, 'FUEL', siphon, rnd)
                         damage_detail = f"siphoned {siphon} FUEL from fuel tanks"
-                        loss_cr = siphon * 20
+                        loss_cr = ref_value('FUEL', siphon)
                     else:
                         damage_detail = "docking clamps locked for 1 round"
 
@@ -276,7 +315,7 @@ class CovertDesk:
                                                  amount=loss_cr)
 
             if traced:
-                # Treble damages restitution: 12,000 CR fine paid to victim
+                # Restitution: SABOTAGE_FINE paid to the victim.
                 # If actor cannot pay in full, referee/SYSTEM guarantees victim restitution
                 # and books the shortfall as debt owed by actor to SYSTEM.
                 actor_cr = ref.get_balance(actor, 'CR')
@@ -313,10 +352,28 @@ class CovertDesk:
                     ref.events.expose_locked(ev_id, 'trace', rnd)
 
         return {'v': 1, 'kind': 'sabotage_ok', 'payload': {
-            'actor': actor, 'target': target, 'damage': damage_detail,
-            'traced': traced, 'fine': SABOTAGE_FINE if traced else 0,
+            'actor': actor, 'target': target, 'damage': damage_detail, 'loss_cr': loss_cr,
+            'loot': loot, 'traced': traced, 'fine': SABOTAGE_FINE if traced else 0,
             'fine_paid': fine_paid, 'round': rnd
         }}
+
+    def _loot_locked(self, actor: str, target: str, comm: str, qty: int, rnd: int) -> Optional[Dict[str, Any]]:
+        """Move the saboteur's SABOTAGE_LOOT_SHARE of goods taken (now held by
+        SYSTEM) to the saboteur. Caller holds ref.lock and a transaction."""
+        cut = int(qty * SABOTAGE_LOOT_SHARE)
+        if cut <= 0:
+            return None
+        ref = self.ref
+        seq = ref._get_next_seq()
+        txn = f"sabotage-loot-{actor}-{target}-r{rnd}"
+        for acct, d in (('SYSTEM', -cut), (actor, cut)):
+            ref.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, ?, 0)", (acct, comm))
+            ref.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?",
+                             (d, acct, comm))
+            ref.conn.execute(
+                "INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)",
+                (txn, seq, acct, comm, d))
+        return {'commodity': comm, 'qty': cut, 'value_cr': ref_value(comm, cut)}
 
     # ------------------------------------------------------------ Rivalry Scoreboard (#152)
 
