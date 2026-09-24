@@ -175,6 +175,15 @@ class TestAttribution(unittest.TestCase):
         self.assertEqual(lanes(self.ref, 'aerial')['covert'], -1500 + 500 + 1000)
         self.assertEqual(lanes(self.ref, 'zero')['hauling'], -1000)
 
+    def test_sabotage_loot_is_covert(self):
+        # #186: what a sabotage takes reaches the saboteur on a sabotage-loot- txn.
+        post(self.ref, 'sabotage-fee-marvin-zero-r1', [('marvin', 'CR', -1000), ('SYSTEM', 'CR', 1000)])
+        post(self.ref, 'sabotage-loot-marvin-zero-r1', [('SYSTEM', 'ORE', -30), ('marvin', 'ORE', 30)])
+        book_trade(self.ref, 'trd-11', 'earth', 'depot_earth', 'marvin', 'ORE', 30, 25)
+        self.step()
+        self.assertEqual(lanes(self.ref, 'marvin')['covert'], -1000 + 750)
+        self.assertEqual(lanes(self.ref, 'marvin')['hauling'], 0)
+
 
 class TestDesk(unittest.TestCase):
     def ref_with(self, **tiers):

@@ -6,7 +6,7 @@ actually trade and use the live-only mechanics.
 
 import unittest
 
-from tools.economy_sim import run
+from tools.economy_sim import FLEETS, HYBRID_FOCUSES, hybrid_table, run, scenario_kinds
 
 KW = dict(mode="tolerant", check_every=10)
 
@@ -192,6 +192,23 @@ class TestEconomySim(unittest.TestCase):
         r_spy = run("styles_spy", "flat", seed=1, rounds=60, check_every=20)
         self.assertIsNone(r_spy["first_invariant_failure"])
         self.assertGreater(r_spy["covert"]["wiretaps"], 0)
+
+    def test_hybrid_scenario_pairs_every_focus_with_a_plain_hauler(self):
+        # #186: one plain hauler per game, three distinct focuses layered on
+        # haulers, and over 20 seeds each focus plays 12 games, 3 at each home.
+        seen = {}
+        for seed in range(1, 21):
+            kinds = scenario_kinds("hybrid", seed)
+            styles = list(kinds.values())
+            self.assertEqual(styles.count("hauler"), 1)
+            self.assertEqual(len(set(styles)), 4)
+            for a, k in kinds.items():
+                seen[(k, a)] = seen.get((k, a), 0) + 1
+        for k in HYBRID_FOCUSES:
+            self.assertEqual([seen.get((k, a), 0) for a in FLEETS], [3, 3, 3, 3])
+        r = run("hybrid", "flat", seed=2, rounds=60, check_every=20)
+        self.assertIsNone(r["first_invariant_failure"])
+        self.assertIn("vs hauler", hybrid_table([r]))
 
 
 if __name__ == "__main__":

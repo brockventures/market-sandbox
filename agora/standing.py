@@ -62,7 +62,7 @@ first and books proceeds minus cost:
     peer-*                          offer: goods into escrow; collect: the seller's hauling
                                     sale, the buyer's lot at what it paid (no station, so any
                                     later sale is hauling); cancel/expire: goods back
-    piracy-loot-                    the sponsor's cut: a loot lot at zero cost (covert on sale)
+    piracy-loot-, sabotage-loot-    the sponsor's / saboteur's cut: a loot lot at zero cost (covert on sale)
     piracy-ransom-                  sponsor's cut: covert income; the victim's payment: hauling
     piracy-hire-, piracy-fine-,     CR: covert (fines and restitution *received* by a victim
       covert-, wiretap-, sabotage-*   are neutral)
@@ -506,7 +506,7 @@ class StandingDesk:
                 if not pend.get(eid):
                     pend.pop(eid, None)
             return
-        if txn.startswith('piracy-loot-'):
+        if txn.startswith(('piracy-loot-', 'sabotage-loot-')):
             for inst, d in goods.items():
                 if d > 0:
                     self._add(agent, inst, None, 'loot', d, 0.0)

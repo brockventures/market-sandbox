@@ -5,7 +5,9 @@ tests/test_covert_ops.py - Comprehensive test suite for Covert Ops & Rivalry (#1
 import unittest
 
 from agora.referee import AgoraReferee
+from agora import covert as covert_mod
 from agora.covert import WIRETAP_COST, WIRETAP_ROUNDS, SABOTAGE_COST, SABOTAGE_FINE, RIVALRY_DECAY_ROUNDS
+from agora.piracy import cargo_value
 
 
 class TestCovertOps(unittest.TestCase):
@@ -130,6 +132,55 @@ class TestCovertOps(unittest.TestCase):
 
         valid, errors = self.ref.verify_ledger_invariants()
         self.assertTrue(valid, errors)
+
+    def test_sabotage_transit_loot_goes_to_the_saboteur(self):
+        # #186: the siphoned cargo reaches the saboteur (SABOTAGE_LOOT_SHARE),
+        # valued at the reference price piracy uses, and the victim gets the rest.
+        actor, target = 'zero', 'amos'
+        self.covert.rng.random = lambda: 0.99  # untraced
+        self.ref.initiate_transit(target, 'luna', 'FRAG', 30)
+        frag_before = self.ref.get_balance(actor, 'FRAG')
+        res = self.covert.execute_sabotage(actor, target, mode='transit')
+        self.assertEqual(res['kind'], 'sabotage_ok')
+        taken = int(30 * covert_mod.TRANSIT_SIPHON)
+        cut = int(taken * covert_mod.SABOTAGE_LOOT_SHARE)
+        self.assertEqual(self.ref.get_balance(actor, 'FRAG'), frag_before + cut)
+        self.assertEqual(res['payload']['loss_cr'], cargo_value('FRAG', taken))
+        self.assertEqual(res['payload']['loot']['qty'], cut)
+        self.assertEqual(self.ref.get_vessel_location(target)['transit']['cargo_qty'], 30 - taken)
+        valid, errors = self.ref.verify_ledger_invariants()
+        self.assertTrue(valid, errors)
+
+    def test_sabotage_docked_loot_goes_to_the_saboteur(self):
+        actor, target = 'zero', 'amos'
+        before = {c: self.ref.get_balance(actor, c) for c in ('FRAG', 'FOOD', 'ORE', 'FUEL')}
+        res = self.covert.execute_sabotage(actor, target, mode='docked')
+        loot = res['payload']['loot']
+        self.assertIsNotNone(loot)
+        self.assertEqual(self.ref.get_balance(actor, loot['commodity']), before[loot['commodity']] + loot['qty'])
+        valid, errors = self.ref.verify_ledger_invariants()
+        self.assertTrue(valid, errors)
+
+    def test_sabotage_target_on_alert_for_cooldown(self):
+        # #186: a paying sabotage cannot be repeated on one target every round.
+        actor, target = 'zero', 'amos'
+        self.assertEqual(self.covert.execute_sabotage(actor, target)['kind'], 'sabotage_ok')
+        cr = self.ref.get_balance('marvin', 'CR')
+        again = self.covert.execute_sabotage('marvin', target)
+        self.assertEqual(again['kind'], 'reject')
+        self.assertEqual(again['payload']['reason'], 'target_alert')
+        self.assertEqual(self.ref.get_balance('marvin', 'CR'), cr)  # no fee for a refused strike
+        self.ref.current_round += covert_mod.SABOTAGE_COOLDOWN
+        self.assertEqual(self.covert.execute_sabotage('marvin', target)['kind'], 'sabotage_ok')
+
+    def test_sabotage_alert_ignores_later_rounds_after_a_round_reset(self):
+        # A restart over the same database restarts current_round.
+        self.ref.current_round = 50
+        self.assertEqual(self.covert.execute_sabotage('zero', 'amos')['kind'], 'sabotage_ok')
+        self.ref.current_round = 0
+        self.assertEqual(self.covert.execute_sabotage('zero', 'amos')['kind'], 'sabotage_ok')
+        self.ref.new_game(seed=3)
+        self.assertEqual(self.covert.execute_sabotage('zero', 'amos')['kind'], 'sabotage_ok')
 
     def test_sabotage_traced_fine_restitution(self):
         actor = 'zero'

@@ -38,7 +38,8 @@ Black market
   tolled, and it has the longest total transit time to the other three.
   With depots off there is no depot to fence into and the goods stay with
   SYSTEM.
-- Ransom CR goes to SYSTEM.
+- Ransom CR goes to SYSTEM. A sponsored raid's take goes to its sponsor
+  (PRIV_SHARE, all of it since #186), so only unsponsored raids are fenced.
 
 Privateers
 - POST /referee/privateers {target} costs PRIV_COST CR (to SYSTEM) and adds
@@ -92,7 +93,17 @@ FIGHT_DELAY = (1, 2)
 # 1,500 since #189: after #183/#185 the privateer style's median fell to
 # 99k / 97k (styles seeds 1-20 / 21-40), under the 100k band floor; 1,750
 # still left 21-40 at 99k. At 1,500 it is 108k / 103k.
-PRIV_ROUNDS, PRIV_COST, PRIV_ADD, PRIV_SHARE, PRIV_TRACE, PRIV_FINE = 20, 1_500, 0.15, 0.5, 0.25, 3
+# #186 (covert economics): the privateer's covert lane lost money in every
+# game (styles, seeds 1-40: median -28k / -25k, 0/40 in profit). Per game the
+# sponsor paid ~22.5k in fees and ~9k in fines for ~5k of ransom cuts: each
+# sponsored raid took ~1.1k (15% of ~7.6k cargo), the sponsor kept half, and
+# the expected fine per raid (0.25 x 3 x 1,500 = 1,125) ate the rest. Now the
+# sponsor keeps the raiders' whole take (PRIV_SHARE 0.5 -> 1.0; the victim
+# loses no more than before, SYSTEM's half goes to the sponsor instead), and
+# contracts are cheaper and quieter: PRIV_COST 1,500 -> 750, PRIV_TRACE
+# 0.25 -> 0.10, PRIV_FINE 3x -> 2x the fee. PRIV_ADD (the victim's extra raid
+# chance) is unchanged.
+PRIV_ROUNDS, PRIV_COST, PRIV_ADD, PRIV_SHARE, PRIV_TRACE, PRIV_FINE = 20, 750, 0.15, 1.0, 0.10, 2
 FENCE_STATION = 'ceres'
 CHOICES = ('pay', 'surrender', 'fight')
 
