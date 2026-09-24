@@ -210,6 +210,70 @@ class TestEconomySim(unittest.TestCase):
         self.assertIsNone(r["first_invariant_failure"])
         self.assertIn("vs hauler", hybrid_table([r]))
 
+    def test_styles_full_24_permutation_coverage(self):
+        # #213: styles rotation must cover all 24 permutations, eliminating
+        # the fixed adjacent-seat bias (where privateer was always directly
+        # before hauler) and balancing home station assignment and move order.
+        import itertools
+        from collections import Counter
+        from tools.economy_sim import scenario_kinds, FLEETS
+
+        kinds = scenario_kinds("styles", 0)
+        expected_styles = sorted(kinds.values())
+        all_expected_perms = set(itertools.permutations(expected_styles))
+        seen_perms = set()
+        station_counts = Counter()
+        order_pair_counts = Counter()
+
+        for seed in range(24):
+            k = scenario_kinds("styles", seed)
+            perm = tuple(k[a] for a in FLEETS)
+            seen_perms.add(perm)
+            for a in FLEETS:
+                station_counts[(k[a], a)] += 1
+            # Check relative order between pairs
+            for i in range(len(FLEETS)):
+                for j in range(i + 1, len(FLEETS)):
+                    order_pair_counts[(perm[i], perm[j])] += 1
+
+        # All 24 permutations covered
+        self.assertEqual(len(seen_perms), 24)
+        self.assertEqual(seen_perms, all_expected_perms)
+
+        # Every style is at each home station exactly 6 times out of 24
+        for style in expected_styles:
+            for a in FLEETS:
+                self.assertEqual(station_counts[(style, a)], 6)
+
+        # Every pair of styles has balanced relative order (12 times before, 12 times after)
+        for s1 in expected_styles:
+            for s2 in expected_styles:
+                if s1 != s2:
+                    self.assertEqual(order_pair_counts[(s1, s2)] + order_pair_counts[(s2, s1)], 24)
+                    self.assertEqual(order_pair_counts[(s1, s2)], 12)
+                    self.assertEqual(order_pair_counts[(s2, s1)], 12)
+
+        # Every 4-seed block is a complete Latin square covering all stations
+        for b in range(6):
+            block_seen = {s: set() for s in expected_styles}
+            for seed in range(b * 4, (b + 1) * 4):
+                k = scenario_kinds("styles", seed)
+                for a in FLEETS:
+                    block_seen[k[a]].add(a)
+            self.assertTrue(all(len(v) == 4 for v in block_seen.values()))
+
+    def test_all_rotating_scenarios_have_full_coverage(self):
+        # #213: every rotating scenario covers all 24 permutations
+        from tools.economy_sim import scenario_kinds, FLEETS, ROTATING
+
+        for sc in ROTATING:
+            seen_perms = set()
+            for seed in range(24):
+                k = scenario_kinds(sc, seed)
+                perm = tuple(k[a] for a in FLEETS)
+                seen_perms.add(perm)
+            self.assertEqual(len(seen_perms), 24, f"Scenario {sc} did not cover 24 permutations")
+
 
 if __name__ == "__main__":
     unittest.main()
