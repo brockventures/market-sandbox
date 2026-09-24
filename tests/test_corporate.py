@@ -100,6 +100,12 @@ class TestCorporate(unittest.TestCase):
             ref.step_round()
         self.assertEqual(ref.get_balance('marvin', 'FRAG'), 0)
         self.assertEqual(ref.get_vessel_location('zero').get('station_id'), z_loc.get('station_id'))
+        # The absorbed fleet's cancelled trip leaves its ship docked back at
+        # the origin, not stranded 'in_transit' (#198).
+        loc = ref.get_vessel_location('marvin')
+        self.assertEqual((loc['status'], loc['station_id']), ('docked', here))
+        v = ref.conn.execute("SELECT station_id, status FROM vessels WHERE vessel_id = 'marvin/1'").fetchone()
+        self.assertEqual((v['station_id'], v['status']), (here, 'docked'))
         clean(self, ref)
 
     def test_last_corp_standing_wins(self):

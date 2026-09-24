@@ -105,12 +105,16 @@ class CorporateDesk:
         hand the escrowed cargo (held by SYSTEM) straight to `dst`: the raider
         on a takeover, SYSTEM (i.e. nothing moves) on bankruptcy.
         Zero's review of #148."""
-        for t in self.ref.conn.execute("SELECT transit_id, commodity, cargo_qty FROM transits "
+        for t in self.ref.conn.execute("SELECT transit_id, vessel_id, origin, commodity, cargo_qty FROM transits "
                                        "WHERE agent_id = ? AND status = 'in_transit'", (src,)).fetchall():
             if t["cargo_qty"] and dst != "SYSTEM":
                 self._move(f"out-transit-{t['transit_id']}", (("SYSTEM", t["commodity"], -t["cargo_qty"]),
                                                              (dst, t["commodity"], t["cargo_qty"])))
             self.ref.conn.execute("UPDATE transits SET status = 'cancelled' WHERE transit_id = ?", (t["transit_id"],))
+            # The trip never lands, so the ship goes back to where it left
+            # from rather than staying 'in_transit' forever (#198, same choice
+            # and reasoning as a salvage claim in agora/salvage.py).
+            self.ref._dock_vessel_locked(src, t["origin"], t["vessel_id"])
 
     def _sweep(self, src: str, dst: str, txn: str) -> None:
         legs = []

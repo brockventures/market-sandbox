@@ -308,3 +308,79 @@ class TestSalvage(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSalvageDocksStrandedFleet(unittest.TestCase):
+    """#198: a salvage claim on a transit-linked beacon cancelled the transit
+    but left the fleet 'in_transit' forever: it then read as docked at a
+    station called "in_transit" and every MOVE was rejected invalid_route."""
+
+    def _vessel_row(self, ref, agent):
+        return ref.conn.execute("SELECT station_id, status FROM vessels WHERE vessel_id = ?",
+                                (f"{agent}/1",)).fetchone()
+
+    def _loc_row(self, ref, agent):
+        return ref.conn.execute("SELECT station_id FROM vessel_locations WHERE agent_id = ?",
+                                (agent,)).fetchone()
+
+    def test_claim_docks_fleet_at_origin_and_it_can_move_again(self):
+        ref = AgoraReferee(':memory:')
+        origin = ref.get_vessel_location('marvin')['station_id']
+        dest = 'mars' if origin != 'mars' else 'luna'
+        t = ref.initiate_transit('marvin', dest, commodity='FRAG', cargo_qty=0)
+        self.assertEqual(t['status'], 'in_transit', t)
+        tid = t['payload']['transit_id']
+        d = ref.broadcast_distress(agent_id='marvin', location='in_transit', cargo_bounty=None,
+                                   transit_id=tid, fuel_needed=15, max_reward_cr=0, reason='out_of_fuel')
+        self.assertTrue(d['ok'], d)
+        c = ref.claim_salvage(salvager_id='zero', beacon_id=d['beacon_id'])
+        self.assertTrue(c['ok'], c)
+
+        # Transit cancelled, fleet docked back at the origin in both tables.
+        self.assertEqual(ref.conn.execute("SELECT status FROM transits WHERE transit_id = ?",
+                                          (tid,)).fetchone()[0], 'cancelled')
+        loc = ref.get_vessel_location('marvin')
+        self.assertEqual((loc['status'], loc['station_id']), ('docked', origin))
+        self.assertEqual(self._loc_row(ref, 'marvin')[0], origin)
+        v = self._vessel_row(ref, 'marvin')
+        self.assertEqual((v['station_id'], v['status']), (origin, 'docked'))
+
+        # Past the old arrival round nothing lands and nothing changes.
+        for _ in range(8):
+            ref.step_round()
+        loc = ref.get_vessel_location('marvin')
+        self.assertEqual((loc['status'], loc['station_id']), ('docked', origin))
+
+        # And the fleet can MOVE again.
+        again = ref.initiate_transit('marvin', dest)
+        self.assertEqual(again['status'], 'in_transit', again)
+        self.assertEqual(again['payload']['origin'], origin)
+        self.assertEqual(ref.get_vessel_location('marvin')['status'], 'in_transit')
+
+        valid, errors = ref.verify_ledger_invariants()
+        self.assertTrue(valid, errors)
+
+    def test_claim_on_already_arrived_transit_leaves_it_alone(self):
+        ref = AgoraReferee(':memory:')
+        origin = ref.get_vessel_location('marvin')['station_id']
+        dest = 'mars' if origin != 'mars' else 'luna'
+        t = ref.initiate_transit('marvin', dest, commodity='FRAG', cargo_qty=0)
+        tid = t['payload']['transit_id']
+        d = ref.broadcast_distress(agent_id='marvin', transit_id=tid, fuel_needed=15)
+        self.assertTrue(d['ok'], d)
+        for _ in range(12):
+            ref.step_round()
+        self.assertEqual(ref.conn.execute("SELECT status FROM transits WHERE transit_id = ?",
+                                          (tid,)).fetchone()[0], 'arrived')
+        self.assertEqual(ref.get_vessel_location('marvin')['station_id'], dest)
+
+        self.assertTrue(ref.claim_salvage(salvager_id='zero', beacon_id=d['beacon_id'])['ok'])
+        # The arrived transit is not rewritten, and the ship stays where it docked.
+        self.assertEqual(ref.conn.execute("SELECT status FROM transits WHERE transit_id = ?",
+                                          (tid,)).fetchone()[0], 'arrived')
+        loc = ref.get_vessel_location('marvin')
+        self.assertEqual((loc['status'], loc['station_id']), ('docked', dest))
+        v = self._vessel_row(ref, 'marvin')
+        self.assertEqual((v['station_id'], v['status']), (dest, 'docked'))
+        valid, errors = ref.verify_ledger_invariants()
+        self.assertTrue(valid, errors)
