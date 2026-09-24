@@ -361,6 +361,8 @@ class TestSalvageDocksStrandedFleet(unittest.TestCase):
         self.assertTrue(valid, errors)
 
     def test_claim_on_already_arrived_transit_leaves_it_alone(self):
+        # #211: A claim targeting a beacon whose vessel already arrived is rejected with 400
+        # and does not consume the beacon.
         ref = AgoraReferee(':memory:')
         origin = ref.get_vessel_location('marvin')['station_id']
         dest = 'mars' if origin != 'mars' else 'luna'
@@ -374,7 +376,13 @@ class TestSalvageDocksStrandedFleet(unittest.TestCase):
                                           (tid,)).fetchone()[0], 'arrived')
         self.assertEqual(ref.get_vessel_location('marvin')['station_id'], dest)
 
-        self.assertTrue(ref.claim_salvage(salvager_id='zero', beacon_id=d['beacon_id'])['ok'])
+        claim_res = ref.claim_salvage(salvager_id='zero', beacon_id=d['beacon_id'])
+        self.assertFalse(claim_res['ok'])
+        self.assertEqual(claim_res['reason'], 'transit_already_arrived')
+        # Beacon must NOT be consumed or marked salvaged (#211)
+        b_status = ref.conn.execute("SELECT status FROM distress_beacons WHERE beacon_id = ?", (d['beacon_id'],)).fetchone()[0]
+        self.assertEqual(b_status, 'active')
+
         # The arrived transit is not rewritten, and the ship stays where it docked.
         self.assertEqual(ref.conn.execute("SELECT status FROM transits WHERE transit_id = ?",
                                           (tid,)).fetchone()[0], 'arrived')
@@ -384,6 +392,19 @@ class TestSalvageDocksStrandedFleet(unittest.TestCase):
         self.assertEqual((v['station_id'], v['status']), (dest, 'docked'))
         valid, errors = ref.verify_ledger_invariants()
         self.assertTrue(valid, errors)
+
+    def test_broadcast_distress_on_arrived_transit_rejected(self):
+        # #211: Cannot broadcast distress on transit that already arrived
+        ref = AgoraReferee(':memory:')
+        origin = ref.get_vessel_location('marvin')['station_id']
+        dest = 'mars' if origin != 'mars' else 'luna'
+        t = ref.initiate_transit('marvin', dest, commodity='FRAG', cargo_qty=0)
+        tid = t['payload']['transit_id']
+        for _ in range(12):
+            ref.step_round()
+        res = ref.broadcast_distress(agent_id='marvin', transit_id=tid)
+        self.assertFalse(res['ok'])
+        self.assertEqual(res['reason'], 'transit_already_arrived')
 
 
 class TestSalvageBountyCappedAndEscrowReturned(unittest.TestCase):
@@ -531,6 +552,77 @@ class TestSalvageBountyCappedAndEscrowReturned(unittest.TestCase):
         self.assertEqual(ref.get_balance('zero', 'FRAG'), zero_initial)
         self.assertEqual(ref.get_balance('marvin', 'FRAG'), marvin_initial)
         self.assertEqual(ref.get_balance('SYSTEM', 'FRAG'), sys_initial)
+
+        valid, errors = ref.verify_ledger_invariants()
+        self.assertTrue(valid, errors)
+
+    def test_perishable_escrow_refund_decays_in_flight_spoilage(self):
+        # #211: Leftover cargo escrow refunded on cancellation accounts for elapsed transit spoilage
+        ref = AgoraReferee(':memory:')
+        # marvin has 1000 FRAG at marvin/1 on ceres. Fly ceres -> earth (3 rounds, decay_rate = 0.05)
+        marvin_initial = ref.get_balance('marvin/1', 'FRAG')
+        zero_initial = ref.get_balance('zero/1', 'FRAG')
+        sys_initial = ref.get_balance('SYSTEM', 'FRAG')
+
+        t = ref.initiate_transit('marvin', 'earth', commodity='FRAG', cargo_qty=100, perishable=True)
+        self.assertEqual(t.get('status'), 'in_transit')
+        tid = t['payload']['transit_id']
+
+        # Advance 2 rounds: elapsed = 2 rounds. Expected decay: 100 * 0.05 * 2 = 10 FRAG
+        ref.step_round()
+        ref.step_round()
+
+        d = ref.broadcast_distress(agent_id='marvin', transit_id=tid, cargo_bounty={'FRAG': 30})
+        self.assertTrue(d['ok'], d)
+        bid = d['beacon_id']
+
+        c = ref.claim_salvage(salvager_id='zero', beacon_id=bid)
+        self.assertTrue(c['ok'], c)
+        # Salvager claims 30 FRAG bounty
+        self.assertEqual(c['cargo_claimed'], {'FRAG': 30})
+
+        # Surviving cargo was 100 - 10 = 90 FRAG.
+        # Leftover refund to Marvin is 90 - 30 = 60 FRAG (NOT 100 - 30 = 70 FRAG).
+        self.assertEqual(ref.get_balance('zero/1', 'FRAG'), zero_initial + 30)
+        self.assertEqual(ref.get_balance('marvin/1', 'FRAG'), marvin_initial - 100 + 60)
+
+        # Transit table recorded decayed_qty = 10
+        row = ref.conn.execute("SELECT status, cargo_qty, decayed_qty FROM transits WHERE transit_id = ?", (tid,)).fetchone()
+        self.assertEqual(row['status'], 'cancelled')
+        self.assertEqual(row['decayed_qty'], 10)
+
+        # Ledger invariants hold
+        valid, errors = ref.verify_ledger_invariants()
+        self.assertTrue(valid, errors)
+
+    def test_perishable_self_salvage_exploit_prevented(self):
+        # #211: Zero-bounty salvage on perishable transit refunds surviving cargo, not 100%
+        ref = AgoraReferee(':memory:')
+        marvin_initial = ref.get_balance('marvin/1', 'FRAG')
+        sys_initial = ref.get_balance('SYSTEM', 'FRAG')
+
+        t = ref.initiate_transit('marvin', 'earth', commodity='FRAG', cargo_qty=100, perishable=True)
+        tid = t['payload']['transit_id']
+
+        # 2 rounds elapse -> 10 FRAG decays
+        ref.step_round()
+        ref.step_round()
+
+        # Zero bounty declared
+        d = ref.broadcast_distress(agent_id='marvin', transit_id=tid, cargo_bounty={'FRAG': 0})
+        self.assertTrue(d['ok'], d)
+
+        c = ref.claim_salvage(salvager_id='zero', beacon_id=d['beacon_id'])
+        self.assertTrue(c['ok'], c)
+        self.assertEqual(c['cargo_claimed'], {})
+
+        # Marvin receives 90 refund, losing 10 to spoilage (preventing 100% refund exploit)
+        self.assertEqual(ref.get_balance('marvin/1', 'FRAG'), marvin_initial - 100 + 90)
+
+        # Decayed cargo recorded
+        row = ref.conn.execute("SELECT status, decayed_qty FROM transits WHERE transit_id = ?", (tid,)).fetchone()
+        self.assertEqual(row['status'], 'cancelled')
+        self.assertEqual(row['decayed_qty'], 10)
 
         valid, errors = ref.verify_ledger_invariants()
         self.assertTrue(valid, errors)

@@ -818,6 +818,26 @@ class TestAgoraServer(unittest.TestCase):
         self.assertTrue(data['invariants_valid'])
         self.assertEqual(len(data['errors']), 0)
 
+        # 8. #211: salvage claim on arrived transit returns 400
+        t = self.referee.initiate_transit('amos', 'earth', commodity='FRAG', cargo_qty=0)
+        t_id = t['payload']['transit_id']
+        d_arr = self.referee.broadcast_distress(agent_id='amos', transit_id=t_id, fuel_needed=10)
+        self.assertTrue(d_arr['ok'])
+        for _ in range(12):
+            self.referee.step_round()
+        self.assertEqual(
+            self.referee.conn.execute("SELECT status FROM transits WHERE transit_id = ?", (t_id,)).fetchone()[0],
+            'arrived'
+        )
+        status, data = self._post(
+            '/salvage/claim',
+            {'beacon_id': d_arr['beacon_id']},
+            token=self.auth_tokens['marvin']
+        )
+        self.assertEqual(status, 400)
+        self.assertFalse(data['ok'])
+        self.assertEqual(data['reason'], 'transit_already_arrived')
+
 
     def test_21_circuit_breaker_endpoints(self):
         # 1. Verify GET /circuit_breaker/bands returns band data
