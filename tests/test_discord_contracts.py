@@ -67,11 +67,18 @@ class TestDiscordContracts(unittest.TestCase):
         self.assertEqual(cmd["agent_id"], "zero")
         self.assertTrue(cmd["filter_my"])
 
+        # Unmapped author is rejected (unauthorized)
         cmd = parse_discord_contract_cmd("!claim ct-mars-4-1 as marvin", "123", "User")
         self.assertIsNotNone(cmd)
-        self.assertEqual(cmd["action"], "claim")
-        self.assertEqual(cmd["agent_id"], "marvin")
-        self.assertEqual(cmd["contract_id"], "ct-mars-4-1")
+        self.assertEqual(cmd["action"], "unauthorized")
+        self.assertEqual(cmd["command"], "claim")
+
+        # Author is resolved strictly from AUTHOR_MAP (text override 'as marvin' ignored)
+        cmd_mapped = parse_discord_contract_cmd("!claim ct-mars-4-1 as marvin", "1541205716948353074", "User")
+        self.assertIsNotNone(cmd_mapped)
+        self.assertEqual(cmd_mapped["action"], "claim")
+        self.assertEqual(cmd_mapped["agent_id"], "amos")
+        self.assertEqual(cmd_mapped["contract_id"], "ct-mars-4-1")
 
         cmd = parse_discord_contract_cmd("!deliver ct-mars-4-1 150 vessel amos/2", "1541205716948353074", "Amos")
         self.assertIsNotNone(cmd)

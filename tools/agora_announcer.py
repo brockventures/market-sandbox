@@ -128,8 +128,15 @@ CONTRACT_DELIVER_PATTERN = re.compile(
 )
 
 AUTHOR_MAP = {
-    "1541205716948353074": "amos",   # Amos / Ivy
-    "1542081375287640084": "zero",   # Zero
+    "1468012353206354197": "amos",   # Amos
+    "1541205716948353074": "amos",   # Ivy
+    "93420059858305024": "amos",     # Mike Carmody
+    "1492043459618537492": "marvin", # Marvin
+    "169260920550195200": "marvin",  # Alex
+    "1542035925603713086": "aerial", # Aerial
+    "453030589914939393": "aerial",  # Dr. Coley
+    "1542285964213358633": "zero",   # Zero
+    "1542081375287640084": "zero",   # Zero Chat
     "179407724335988736": "zero",    # Ryan Brock
 }
 
@@ -554,12 +561,21 @@ def submit_transit_to_referee(transit: dict, ref_token: str) -> dict:
         return {"status": "error", "error": str(e)}
 
 
-def parse_discord_contract_cmd(content: str, author_id: str, author_name: str) -> Optional[dict]:
+def resolve_contract_agent(author_id: str) -> Optional[str]:
+    """Resolve Agora fleet agent_id strictly from AUTHOR_MAP for contract escrow commands.
+    No text overrides and no default fallback. Rejects unmapped authors.
+    """
+    return AUTHOR_MAP.get(str(author_id))
+
+
+def parse_discord_contract_cmd(content: str, author_id: str, author_name: str = "") -> Optional[dict]:
     """Parse contract commands (!contracts, !claim, !deliver) from Discord chat."""
     m_cl = CONTRACT_CLAIM_PATTERN.search(content)
     if m_cl:
         cid = m_cl.group(1).strip()
-        ag_id = resolve_discord_agent(author_id, author_name, content)
+        ag_id = resolve_contract_agent(author_id)
+        if not ag_id:
+            return {"action": "unauthorized", "command": "claim", "author_id": str(author_id)}
         return {"action": "claim", "agent_id": ag_id, "contract_id": cid}
 
     m_dl = CONTRACT_DELIVER_PATTERN.search(content)
@@ -567,14 +583,18 @@ def parse_discord_contract_cmd(content: str, author_id: str, author_name: str) -
         cid = m_dl.group(1).strip()
         qty = int(m_dl.group(2)) if m_dl.group(2) else None
         vessel = m_dl.group(3).strip() if m_dl.group(3) else None
-        ag_id = resolve_discord_agent(author_id, author_name, content)
+        ag_id = resolve_contract_agent(author_id)
+        if not ag_id:
+            return {"action": "unauthorized", "command": "deliver", "author_id": str(author_id)}
         return {"action": "deliver", "agent_id": ag_id, "contract_id": cid, "qty": qty, "vessel_id": vessel}
 
     m_ct = CONTRACTS_PATTERN.search(content)
     if m_ct:
         arg = (m_ct.group(1) or "").strip().lower()
         is_my = "mycontracts" in content.lower() or arg in ("my", "mine", "owned")
-        ag_id = resolve_discord_agent(author_id, author_name, content)
+        ag_id = resolve_contract_agent(author_id)
+        if is_my and not ag_id:
+            return {"action": "unauthorized", "command": "contracts_my", "author_id": str(author_id)}
         station = arg if arg in STATION_ROTATION else None
         status = arg if arg in ("open", "fulfilled", "lapsed") else "open"
         return {
@@ -960,6 +980,16 @@ def poll_and_execute_trades(channel: str, bot_token: str, ref_token: str, active
             fl_name = FLEET_NAMES.get(ag_id, ag_id.upper())
             print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Detected contract {action} from {author.get('username')}: {contract_cmd}")
             sys.stdout.flush()
+
+            if action == "unauthorized":
+                add_discord_reaction(channel, msg_id, "❌", bot_token)
+                reject_msg = (
+                    f"⚠️ **[Agora Trade Terminal] Contract Command Rejected**\n"
+                    f"> **Author ID:** `{author.get('id')}`\n"
+                    f"> **Reason:** `unmapped_author` — contract commands require a registered fleet snowflake in `AUTHOR_MAP`."
+                )
+                post_discord(channel, reject_msg, bot_token)
+                continue
 
             if action == "list":
                 is_my = contract_cmd.get("filter_my", False)
