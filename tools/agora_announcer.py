@@ -122,6 +122,15 @@ BURST_CANCEL_PATTERN = re.compile(
     re.IGNORECASE
 )
 
+OPERATOR_ALLOWLIST = {
+    "179407724335988736",  # Ryan Brock
+    "93420059858305024",   # Mike Carmody
+}
+MIN_BURST_ROUNDS = 1
+MAX_BURST_ROUNDS = 50
+MIN_BURST_INTERVAL = 10.0
+MAX_BURST_INTERVAL = 600.0
+
 BURST_STATUS_PATTERN = re.compile(
     r"(?:!|/|@referee\s+)?\bBURST\s+STATUS\b",
     re.IGNORECASE
@@ -494,11 +503,15 @@ def submit_transit_to_referee(transit: dict, ref_token: str) -> dict:
         return {"status": "error", "error": str(e)}
 
 
-def parse_discord_burst_cmd(content: str) -> Optional[dict]:
-    """Parse operator burst control commands (!burst <rounds> [interval], !burst cancel, !burst status)."""
+def parse_discord_burst_cmd(content: str, author_id: str = "") -> Optional[dict]:
+    """Parse operator burst control commands (!burst <rounds> [interval], !burst cancel, !burst status).
+    Gated on operator allowlist (Ryan, Mike). Bounds rounds (1-50) and interval (10-600s).
+    """
     m_can = BURST_CANCEL_PATTERN.search(content)
     if m_can:
-        return {"action": "cancel"}
+        if str(author_id) not in OPERATOR_ALLOWLIST:
+            return {"action": "unauthorized", "command": "cancel", "author_id": str(author_id)}
+        return {"action": "cancel", "author_id": str(author_id)}
 
     m_st = BURST_STATUS_PATTERN.search(content)
     if m_st:
@@ -506,9 +519,13 @@ def parse_discord_burst_cmd(content: str) -> Optional[dict]:
 
     m_tr = BURST_TRIGGER_PATTERN.search(content)
     if m_tr:
-        rounds = int(m_tr.group(1))
-        interval = float(m_tr.group(2)) if m_tr.group(2) else 180.0
-        return {"action": "start", "rounds": rounds, "interval_sec": interval}
+        if str(author_id) not in OPERATOR_ALLOWLIST:
+            return {"action": "unauthorized", "command": "start", "author_id": str(author_id)}
+        raw_rounds = int(m_tr.group(1))
+        rounds = max(MIN_BURST_ROUNDS, min(raw_rounds, MAX_BURST_ROUNDS))
+        raw_interval = float(m_tr.group(2)) if m_tr.group(2) else 180.0
+        interval = max(MIN_BURST_INTERVAL, min(raw_interval, MAX_BURST_INTERVAL))
+        return {"action": "start", "rounds": rounds, "interval_sec": interval, "author_id": str(author_id)}
 
     return None
 
@@ -878,11 +895,21 @@ def poll_and_execute_trades(channel: str, bot_token: str, ref_token: str, active
             continue
 
         # Check operator burst commands
-        burst_cmd = parse_discord_burst_cmd(content)
+        burst_cmd = parse_discord_burst_cmd(content, author.get('id', ''))
         if burst_cmd:
             action = burst_cmd.get("action")
             print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Detected burst control {action} from {author.get('username')}: {burst_cmd}")
             sys.stdout.flush()
+
+            if action == "unauthorized":
+                add_discord_reaction(channel, msg_id, "❌", bot_token)
+                reject_msg = (
+                    f"⚠️ **[Agora Trade Terminal] Burst Control Rejected**\n"
+                    f"> **Author ID:** `{author.get('id')}`\n"
+                    f"> **Reason:** Unauthorized operator. `!burst` and `!burst cancel` are restricted to operators (<@179407724335988736>, <@93420059858305024>)."
+                )
+                post_discord(channel, reject_msg, bot_token)
+                continue
 
             if action == "status":
                 st = fetch_ticker_status()

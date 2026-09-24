@@ -42,25 +42,44 @@ class TestDiscordBurst(unittest.TestCase):
         self.assertIsNotNone(BURST_STATUS_PATTERN.search("@referee burst status"))
 
     def test_parse_discord_burst_cmd(self):
-        cmd = parse_discord_burst_cmd("!burst 5")
+        # Operator authorized commands (Ryan: 179407724335988736, Mike: 93420059858305024)
+        cmd = parse_discord_burst_cmd("!burst 5", "179407724335988736")
         self.assertIsNotNone(cmd)
         self.assertEqual(cmd["action"], "start")
         self.assertEqual(cmd["rounds"], 5)
         self.assertEqual(cmd["interval_sec"], 180.0)
 
-        cmd = parse_discord_burst_cmd("!burst 8 60")
+        cmd = parse_discord_burst_cmd("!burst 8 60", "93420059858305024")
         self.assertIsNotNone(cmd)
         self.assertEqual(cmd["action"], "start")
         self.assertEqual(cmd["rounds"], 8)
         self.assertEqual(cmd["interval_sec"], 60.0)
 
-        cmd = parse_discord_burst_cmd("!burst cancel")
-        self.assertIsNotNone(cmd)
-        self.assertEqual(cmd["action"], "cancel")
+        # Clamping bounds: max rounds 50, min interval 10s
+        cmd_clamped = parse_discord_burst_cmd("!burst 200 2", "179407724335988736")
+        self.assertIsNotNone(cmd_clamped)
+        self.assertEqual(cmd_clamped["rounds"], 50)
+        self.assertEqual(cmd_clamped["interval_sec"], 10.0)
 
-        cmd = parse_discord_burst_cmd("!burst status")
-        self.assertIsNotNone(cmd)
-        self.assertEqual(cmd["action"], "status")
+        # Unauthorized non-operator is rejected
+        cmd_unauth = parse_discord_burst_cmd("!burst 5", "123456789")
+        self.assertIsNotNone(cmd_unauth)
+        self.assertEqual(cmd_unauth["action"], "unauthorized")
+        self.assertEqual(cmd_unauth["command"], "start")
+
+        # Cancel command: operator vs unauthorized
+        cmd_can = parse_discord_burst_cmd("!burst cancel", "179407724335988736")
+        self.assertIsNotNone(cmd_can)
+        self.assertEqual(cmd_can["action"], "cancel")
+
+        cmd_can_unauth = parse_discord_burst_cmd("!burst cancel", "123456789")
+        self.assertIsNotNone(cmd_can_unauth)
+        self.assertEqual(cmd_can_unauth["action"], "unauthorized")
+
+        # Status command is public to everyone
+        cmd_st = parse_discord_burst_cmd("!burst status", "123456789")
+        self.assertIsNotNone(cmd_st)
+        self.assertEqual(cmd_st["action"], "status")
 
         # Non-burst content returns None
         self.assertIsNone(parse_discord_burst_cmd("BUY 50 FOOD @ 32 AT CERES"))
