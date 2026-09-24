@@ -96,7 +96,7 @@ class TestStockTrendingAndNews(unittest.TestCase):
 
     def test_stock_contract_fulfillment_shock(self):
         """Contract fulfillment event provides positive stock jump (+3%)."""
-        ref = AgoraReferee(rival_shares=100, exchange_shares=100, events=True, contracts=True)
+        ref = AgoraReferee(rival_shares=100, exchange_shares=100, events=True, extended_shocks=True, contracts=True)
         ref.new_game(seed=7, warmup_rounds=2, rival_shares=100, exchange_shares=100)
 
         sym = "EQ_AMOS"
@@ -113,7 +113,7 @@ class TestStockTrendingAndNews(unittest.TestCase):
 
     def test_stock_distress_beacon_shock(self):
         """Distress beacon broadcast provides negative stock jump (-5%)."""
-        ref = AgoraReferee(rival_shares=100, exchange_shares=100, events=True)
+        ref = AgoraReferee(rival_shares=100, exchange_shares=100, events=True, extended_shocks=True)
         ref.new_game(seed=7, warmup_rounds=2, rival_shares=100, exchange_shares=100)
 
         sym = "EQ_ZERO"
@@ -130,7 +130,7 @@ class TestStockTrendingAndNews(unittest.TestCase):
 
     def test_stock_debt_default_shock(self):
         """Corporate loan default provides negative stock jump (-6%)."""
-        ref = AgoraReferee(rival_shares=100, exchange_shares=100, events=True)
+        ref = AgoraReferee(rival_shares=100, exchange_shares=100, events=True, extended_shocks=True)
         ref.new_game(seed=7, warmup_rounds=2, rival_shares=100, exchange_shares=100)
 
         sym = "EQ_MARV"

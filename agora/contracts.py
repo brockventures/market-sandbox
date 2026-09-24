@@ -225,7 +225,7 @@ class ContractDesk:
             left = row['qty_remaining'] - n
             ref.conn.execute("UPDATE station_contracts SET qty_remaining = ?, bond = ?, status = ? WHERE contract_id = ?",
                              (left, row['bond'] - refund, 'fulfilled' if left == 0 else 'open', cid))
-            if left == 0 and hasattr(ref, 'events') and ref.events:
+            if left == 0 and getattr(ref, 'events_enabled', False) and hasattr(ref, 'events') and ref.events:
                 ref.events.record_locked('contract_fulfillment', 'public', actor=agent,
                                          detail=f"Contract '{cid}' fulfilled by {agent}")
         out = self.get(cid)

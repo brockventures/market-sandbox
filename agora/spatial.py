@@ -1,4 +1,3 @@
-import os
 """
 agora.spatial - Sol System Multi-Station Spatial Economy & Orbital Route Physics.
 
@@ -10,6 +9,7 @@ import math
 import random
 from dataclasses import dataclass, asdict
 from typing import Dict, Any, List, Optional, Tuple
+import os
 
 
 STATIONS = ["earth", "luna", "mars", "ceres"]
@@ -198,10 +198,10 @@ class StationSpotPrice:
         return asdict(self)
 
 
-DEFAULT_GOODS_MOMENTUM = float(os.environ.get("AGORA_GOODS_MOMENTUM", "0.0"))
-DEFAULT_INVENTORY_SENSITIVITY = float(os.environ.get("AGORA_GOODS_INVENTORY_SENSITIVITY", "0.0"))
-DEFAULT_FLOW_SENSITIVITY = float(os.environ.get("AGORA_GOODS_FLOW_SENSITIVITY", "0.0"))
-DEFAULT_DELIVERY_SCALE = float(os.environ.get("AGORA_GOODS_DELIVERY_SCALE", "1000.0"))
+DEFAULT_GOODS_MOMENTUM = 0.0
+DEFAULT_INVENTORY_SENSITIVITY = 0.0
+DEFAULT_FLOW_SENSITIVITY = 0.0
+DEFAULT_DELIVERY_SCALE = 1000.0
 
 
 class StationPriceEngine:
@@ -229,10 +229,10 @@ class StationPriceEngine:
         self.rng = random.Random(seed)
         self.theta = theta
         self.vol = vol
-        self.momentum_factor = momentum_factor
-        self.inventory_sensitivity = inventory_sensitivity
-        self.delivery_scale = delivery_scale
-        self.flow_sensitivity = flow_sensitivity
+        self.momentum_factor = min(max(float(momentum_factor), 0.0), 0.5)
+        self.inventory_sensitivity = min(max(float(inventory_sensitivity), 0.0), 1.0)
+        self.delivery_scale = max(1.0, float(delivery_scale))
+        self.flow_sensitivity = min(max(float(flow_sensitivity), 0.0), 0.5)
         self.current_round = 0
         self.spots: Dict[str, Dict[str, float]] = {
             st: {comm: BASE_PRICES[st][comm] for comm in COMMODITIES}
@@ -268,7 +268,8 @@ class StationPriceEngine:
 
                 # 1. Momentum driver: continuation of previous round's trajectory
                 delta_prev = old_spot - prev_spot
-                momentum_pull = self.momentum_factor * delta_prev
+                raw_pull = self.momentum_factor * delta_prev
+                momentum_pull = max(-base * 0.25, min(base * 0.25, raw_pull))
 
                 # 2. News wire driver: GalNet drift bias
                 drift_bias = 0.0
@@ -276,12 +277,12 @@ class StationPriceEngine:
                     drift_bias = galnet_engine.get_active_drift(st, comm)
                 shock_nudge = drift_bias * (base * 0.5)
 
-                # 3. Reactive depot inventory driver: scarcity increases price, surplus decreases price
+                # 3. Reactive depot inventory driver: neutral target = 1000 (REACTIVE_TARGET // 2)
                 inv_nudge = 0.0
                 if depot_inventory is not None:
                     inv = depot_inventory.get((st, comm))
                     if inv is not None:
-                        target = 2000.0
+                        target = 1000.0
                         inv_ratio = (target - inv) / target
                         inv_nudge = inv_ratio * base * self.inventory_sensitivity
 
@@ -296,6 +297,7 @@ class StationPriceEngine:
                         # Demand for goods increases local bid -> upward price pressure
                         demanded = contract_demands[(st, comm)]
                         flow_nudge += (demanded / self.delivery_scale) * base * self.flow_sensitivity
+                    flow_nudge = max(-base * 0.25, min(base * 0.25, flow_nudge))
 
                 # 5. Ornstein-Uhlenbeck mean-reverting pull toward base
                 mean_pull = self.theta * (base - old_spot)
