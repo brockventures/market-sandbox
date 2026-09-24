@@ -47,9 +47,10 @@ def _reject(reason: str, detail: str) -> Dict[str, Any]:
 def _safe_int(val: Any, name: str, min_val: Optional[int] = None, max_val: int = 2**62) -> int:
     if val is None:
         raise ValueError(f"{name} is required")
+    if isinstance(val, bool):
+        raise ValueError(f"{name} cannot be a boolean")
     if isinstance(val, float):
-        if math.isnan(val) or math.isinf(val):
-            raise ValueError(f"{name} must be a finite number")
+        raise ValueError(f"{name} must be an integer, not a float")
     try:
         res = int(val)
     except (ValueError, TypeError, OverflowError) as e:
@@ -64,6 +65,8 @@ def _safe_int(val: Any, name: str, min_val: Optional[int] = None, max_val: int =
 def _safe_float(val: Any, name: str, min_val: Optional[float] = None, max_val: Optional[float] = None) -> float:
     if val is None:
         raise ValueError(f"{name} is required")
+    if isinstance(val, bool):
+        raise ValueError(f"{name} cannot be a boolean")
     try:
         res = float(val)
     except (ValueError, TypeError, OverflowError) as e:
@@ -307,11 +310,51 @@ class CorporateDesk:
         self._set(agent, debt=r["debt"] + int(amount))
         self._event("debt", agent, f"owes {int(amount)} CR more ({why}); total {r['debt'] + int(amount)}")
 
+    def _cancel_bids(self, agent: str) -> None:
+        """Cancel resting bids on order books to free up reserved cash before defaulting (#220)."""
+        for books in self.ref.books.values():
+            for b in books.values():
+                for o in list(b.bids):
+                    if o.agent_id == agent:
+                        self.ref._cancel_order_locked(agent, o.order_id)
+
     def _pay_down(self, agent: str) -> int:
         r = self._row(agent)
         pay = min(r["debt"], max(0, self.ref.get_balance(agent, "CR")))
         if pay > 0:
-            self._move(f"debt-pay-{agent}-{self.ref.current_round}-{r['debt']}", ((agent, "CR", -pay), ("SYSTEM", "CR", pay)))
+            # Check if debtor owes on any defaulted predatory loans (#220).
+            # Lender's claim survives default: payments route to lender instead of SYSTEM.
+            defaulted_loans = self.ref.conn.execute(
+                "SELECT loan_id, lender, due_amount FROM corp_predatory_loans "
+                "WHERE borrower = ? AND status = 'defaulted' ORDER BY loan_id ASC",
+                (agent,)
+            ).fetchall()
+            rem_pay = pay
+            for d_loan in defaulted_loans:
+                if rem_pay <= 0:
+                    break
+                l_id = d_loan["loan_id"]
+                l_due = d_loan["due_amount"]
+                chunk = min(rem_pay, l_due)
+                recipient = self._resolve_creditor(d_loan["lender"])
+                if recipient != agent:
+                    self._move(f"debt-pay-loan-{l_id}-{agent}-{self.ref.current_round}-{chunk}",
+                               ((agent, "CR", -chunk), (recipient, "CR", chunk)))
+                if chunk >= l_due:
+                    self.ref.conn.execute(
+                        "UPDATE corp_predatory_loans SET status = 'repaid', due_amount = 0 WHERE loan_id = ?",
+                        (l_id,)
+                    )
+                else:
+                    self.ref.conn.execute(
+                        "UPDATE corp_predatory_loans SET due_amount = due_amount - ? WHERE loan_id = ?",
+                        (chunk, l_id)
+                    )
+                rem_pay -= chunk
+
+            if rem_pay > 0:
+                self._move(f"debt-pay-{agent}-{self.ref.current_round}-{r['debt']}",
+                           ((agent, "CR", -rem_pay), ("SYSTEM", "CR", rem_pay)))
             self._set(agent, debt=r["debt"] - pay)
         return r["debt"] - pay
 
@@ -413,6 +456,40 @@ class CorporateDesk:
                 ref.conn.execute("UPDATE station_contracts SET owner = ?, list_price = NULL "
                                  "WHERE owner = ? AND status = 'open'", (raider, target))
                 debt = self._row(target)["debt"]
+                # Reassign active and defaulted loans; raider inherits target's liabilities & claims (#220)
+                # 1. Target as borrower: raider assumes loan liabilities
+                for l in ref.conn.execute(
+                    "SELECT loan_id, lender, due_amount, status FROM corp_predatory_loans "
+                    "WHERE borrower = ? AND status IN ('active', 'defaulted')", (target,)
+                ).fetchall():
+                    lender = self._resolve_creditor(l['lender'])
+                    if lender == raider:
+                        # Raider was the lender to target; internal loan cancels out cleanly
+                        ref.conn.execute("UPDATE corp_predatory_loans SET status = 'repaid', due_amount = 0 WHERE loan_id = ?", (l['loan_id'],))
+                        if l['status'] == 'defaulted' and debt:
+                            debt = max(0, debt - l['due_amount'])
+                    else:
+                        ref.conn.execute("UPDATE corp_predatory_loans SET borrower = ? WHERE loan_id = ?", (raider, l['loan_id']))
+
+                # 2. Target as lender: raider inherits creditor claims
+                for l in ref.conn.execute(
+                    "SELECT loan_id, borrower, due_amount, status FROM corp_predatory_loans "
+                    "WHERE lender = ? AND status IN ('active', 'defaulted')", (target,)
+                ).fetchall():
+                    borrower = l['borrower']
+                    if borrower == raider:
+                        ref.conn.execute("UPDATE corp_predatory_loans SET status = 'repaid', due_amount = 0 WHERE loan_id = ?", (l['loan_id'],))
+                    else:
+                        ref.conn.execute("UPDATE corp_predatory_loans SET lender = ? WHERE loan_id = ?", (raider, l['loan_id']))
+
+                # 3. Clean up open loan offers involving target (#220)
+                for off in ref.conn.execute("SELECT offer_id, principal FROM corp_loan_offers WHERE lender = ? AND status = 'open'", (target,)).fetchall():
+                    self._move(f"loan-cancel-takeover-{off['offer_id']}", (('SYSTEM', 'CR', -off['principal']), (raider, 'CR', off['principal'])))
+                    ref.conn.execute("UPDATE corp_loan_offers SET status = 'cancelled' WHERE offer_id = ?", (off['offer_id'],))
+                for off in ref.conn.execute("SELECT offer_id, lender, principal FROM corp_loan_offers WHERE borrower = ? AND status = 'open'", (target,)).fetchall():
+                    self._move(f"loan-cancel-target-takeover-{off['offer_id']}", (('SYSTEM', 'CR', -off['principal']), (off['lender'], 'CR', off['principal'])))
+                    ref.conn.execute("UPDATE corp_loan_offers SET status = 'cancelled' WHERE offer_id = ?", (off['offer_id'],))
+
                 if debt:
                     r = self._row(raider)
                     self._set(raider, debt=r["debt"] + debt)
@@ -906,7 +983,7 @@ class CorporateDesk:
             return {'v': 1, 'kind': 'loan_repaid_ok', 'payload': {'loan_id': loan_id, 'amount': due}}
 
     def _check_loan_maturities(self, round_num: int) -> None:
-        """Process maturing loans: auto-repay if available cash allows, else route to corporate debt (#164)."""
+        """Process maturing loans: auto-repay if available cash allows, else route to corporate debt (#164, #220)."""
         ref = self.ref
         mature = ref.conn.execute(
             "SELECT * FROM corp_predatory_loans WHERE status = 'active' AND due_round <= ?", (round_num,)
@@ -916,6 +993,11 @@ class CorporateDesk:
             borrower, lender = loan["borrower"], loan["lender"]
             due = loan["due_amount"]
             avail = ref.peer._available(borrower, "CR") if hasattr(ref, 'peer') else ref.get_balance(borrower, "CR")
+            if avail < due:
+                # Cancel resting bids to free up parked cash before declaring default (#220)
+                self._cancel_bids(borrower)
+                avail = ref.peer._available(borrower, "CR") if hasattr(ref, 'peer') else ref.get_balance(borrower, "CR")
+
             if avail >= due:
                 recipient = self._resolve_creditor(lender)
                 self._move(f"loan-repay-auto-{loan_id}-r{round_num}",
@@ -929,6 +1011,9 @@ class CorporateDesk:
                 self._event("loan_default", borrower,
                             f"{borrower} defaulted on predatory loan #{loan_id} ({due} CR); balance added to corporate debt",
                             victim=borrower)
+                # If borrower has any partial liquid cash, immediately pay down toward creditor (#220)
+                if ref.get_balance(borrower, "CR") > 0:
+                    self._pay_down(borrower)
 
     # ------------------------------------------------------------ rounds
 

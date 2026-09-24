@@ -2932,22 +2932,6 @@ class AgoraReferee:
                     'ships_value': ships_value,
                     'in_transit_cargo': in_flight,
                 })
-            # Rival stocks count at their mark. A fleet's own shares do not count
-            # toward its own net worth (that would be circular), and NAV is built
-            # from the net worth above, before any stock holdings.
-            base = {b['agent_id']: b['net_worth'] for b in board}
-            marks = self.stock_marks(base)
-            holdings: Dict[str, Dict[str, int]] = {}
-            for row in cur.execute("SELECT agent_id, instrument, balance FROM accounts WHERE instrument LIKE 'EQ_%' "
-                                   "AND agent_id != 'SYSTEM' AND agent_id NOT LIKE 'depot_%'"):
-                holdings.setdefault(row['agent_id'], {})[row['instrument']] = row['balance']
-            for b in board:
-                own = FLEET_EQUITIES.get(b['agent_id'], {}).get('symbol')
-                held = {sym: q for sym, q in holdings.get(b['agent_id'], {}).items() if sym != own and q}
-                value = int(round(sum(q * marks[sym]['mark'] for sym, q in held.items() if sym in marks)))
-                b['stocks'] = held
-                b['stocks_value'] = value
-                b['net_worth'] += value
             if getattr(self, 'corporate_enabled', False):
                 for b in board:
                     b['status'] = self.corporate.status(b['agent_id'])
@@ -2982,8 +2966,34 @@ class AgoraReferee:
                             (b['agent_id'],)).fetchone()
                         if pay and pay['payable']:
                             b['net_worth'] -= int(pay['payable'])
+
+                        # 4. Referee corporate debt (#220)
+                        # Subtract referee debt so debt_buy does not move a free net-worth hit onto rivals.
+                        c_row = self.conn.execute(
+                            "SELECT debt FROM corp_status WHERE agent_id = ?",
+                            (b['agent_id'],)).fetchone()
+                        if c_row and c_row['debt']:
+                            b['net_worth'] -= int(c_row['debt'])
+                            b['debt'] = int(c_row['debt'])
                     except Exception:
                         pass
+
+            # Rival stocks count at their mark. A fleet's own shares do not count
+            # toward its own net worth (that would be circular), and NAV is built
+            # from the net worth above, before any stock holdings (#164, #220).
+            base = {b['agent_id']: b['net_worth'] for b in board}
+            marks = self.stock_marks(base)
+            holdings: Dict[str, Dict[str, int]] = {}
+            for row in cur.execute("SELECT agent_id, instrument, balance FROM accounts WHERE instrument LIKE 'EQ_%' "
+                                   "AND agent_id != 'SYSTEM' AND agent_id NOT LIKE 'depot_%'"):
+                holdings.setdefault(row['agent_id'], {})[row['instrument']] = row['balance']
+            for b in board:
+                own = FLEET_EQUITIES.get(b['agent_id'], {}).get('symbol')
+                held = {sym: q for sym, q in holdings.get(b['agent_id'], {}).items() if sym != own and q}
+                value = int(round(sum(q * marks[sym]['mark'] for sym, q in held.items() if sym in marks)))
+                b['stocks'] = held
+                b['stocks_value'] = value
+                b['net_worth'] += value
             board.sort(key=lambda x: x['net_worth'], reverse=True)
             return board
     def _fleet_mark_station_locked(self, agent_id: str) -> str:
