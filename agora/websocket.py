@@ -171,6 +171,13 @@ class TerminalDiffEngine:
             return ref.fog.depot_view(ref, None)
         return ref.get_depot_summary()
 
+    def _leaderboard(self) -> List[Dict[str, Any]]:
+        ref = self.referee
+        lb = ref.get_leaderboard()
+        if self.public_fog and getattr(ref, 'fog', None):
+            return ref.fog.leaderboard_view(ref, None, lb)
+        return lb
+
     # Frames are built under the referee lock, since every read goes through
     # its one shared sqlite connection (#197), and sent after it is released.
     def _ref_lock(self):
@@ -190,7 +197,7 @@ class TerminalDiffEngine:
         st = station_id.lower()
         inst = instrument.upper()
         book_snap = self._book(st, inst)
-        leaderboard = self.referee.get_leaderboard()
+        leaderboard = self._leaderboard()
         bands = self._bands(st, inst)
         halts = self._halts()
         ticks = self._ticks()[-25:]
@@ -276,7 +283,7 @@ class TerminalDiffEngine:
             diffs.append({"type": "depots", "seq": curr_seq, "depots": depots})
 
         # 3. Mark-to-market leaderboard diff
-        leaderboard = self.referee.get_leaderboard()
+        leaderboard = self._leaderboard()
         lb_hash = hashlib.md5(json.dumps(leaderboard, sort_keys=True).encode("utf-8")).hexdigest()
         if lb_hash != self.last_leaderboard_hash:
             self.last_leaderboard_hash = lb_hash

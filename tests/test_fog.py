@@ -49,6 +49,26 @@ class TestFogEngine(unittest.TestCase):
         view = self.ref.fog.depot_view(self.ref, None)
         self.assertIsNone(view['fog']['exact_station'])
 
+    def test_leaderboard_view_fogs_non_docked_stations(self):
+        raw_lb = self.ref.get_leaderboard()
+        amos_view = self.ref.fog.leaderboard_view(self.ref, "amos", raw_lb)
+        amos_row = next(e for e in amos_view if e["agent_id"] == "amos")
+        zero_row = next(e for e in amos_view if e["agent_id"] == "zero")
+        raw_amos = next(e for e in raw_lb if e["agent_id"] == "amos")
+        raw_zero = next(e for e in raw_lb if e["agent_id"] == "zero")
+
+        # Amos is docked at Earth: Earth marks match raw exact marks
+        self.assertEqual(amos_row["commodity_marks"], raw_amos["commodity_marks"])
+        self.assertEqual(amos_row["mark_price"], raw_amos["mark_price"])
+
+        # Zero is docked at Ceres: Ceres marks must be fogged for Amos
+        self.assertNotEqual(zero_row["commodity_marks"], raw_zero["commodity_marks"])
+
+        # Public view fogs all stations
+        pub_view = self.ref.fog.leaderboard_view(self.ref, None, raw_lb)
+        pub_amos = next(e for e in pub_view if e["agent_id"] == "amos")
+        self.assertNotEqual(pub_amos["commodity_marks"], raw_amos["commodity_marks"])
+
     def test_off_by_default(self):
         self.assertIsNone(AgoraReferee().fog)
 
@@ -107,6 +127,29 @@ class TestFogEndpoints(unittest.TestCase):
         code, r = self._get('/ws/terminal')
         self.assertEqual((code, r['fog']), (200, 'public'))
 
+    def test_leaderboard_endpoint_viewer_scoped(self):
+        _, amos_lb = self._get('/referee/leaderboard', 'ta')
+        _, public_lb = self._get('/referee/leaderboard')
+        _, admin_lb = self._get('/referee/leaderboard', 'tadm')
+
+        raw_lb = self.ref.get_leaderboard()
+        raw_amos = next(e for e in raw_lb if e['agent_id'] == 'amos')
+        raw_zero = next(e for e in raw_lb if e['agent_id'] == 'zero')
+
+        amos_entry = next(e for e in amos_lb['leaderboard'] if e['agent_id'] == 'amos')
+        zero_entry = next(e for e in amos_lb['leaderboard'] if e['agent_id'] == 'zero')
+        pub_amos_entry = next(e for e in public_lb['leaderboard'] if e['agent_id'] == 'amos')
+        adm_zero_entry = next(e for e in admin_lb['leaderboard'] if e['agent_id'] == 'zero')
+
+        # Amos at Earth sees exact Earth marks
+        self.assertEqual(amos_entry['commodity_marks'], raw_amos['commodity_marks'])
+        # But Ceres marks on Zero's row are fogged
+        self.assertNotEqual(zero_entry['commodity_marks'], raw_zero['commodity_marks'])
+        # Public view fogs Earth too
+        self.assertNotEqual(pub_amos_entry['commodity_marks'], raw_amos['commodity_marks'])
+        # Admin sees exact Ceres marks
+        self.assertEqual(adm_zero_entry['commodity_marks'], raw_zero['commodity_marks'])
+
 
 class TestFoggedTerminalStream(unittest.TestCase):
     def test_public_snapshot_hides_exact_goods_prices(self):
@@ -127,6 +170,12 @@ class TestFoggedTerminalStream(unittest.TestCase):
         self.assertNotIn('fogged', stock['book'])
         exact = TerminalDiffEngine(ref, public_fog=False).get_snapshot('ceres', 'ORE')
         self.assertNotIn('fogged', exact['book'])
+
+        # Leaderboard marks in public terminal snapshot must be fogged for non-docked stations
+        raw_lb = ref.get_leaderboard()
+        raw_first = raw_lb[0]
+        snap_first = snap['leaderboard'][0]
+        self.assertNotEqual(snap_first['commodity_marks'], raw_first['commodity_marks'])
 
 
 if __name__ == '__main__':

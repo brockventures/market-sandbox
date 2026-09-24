@@ -138,6 +138,29 @@ class FogEngine:
                      {c: self._jitter(viewer, rnd, st, c, 'spot_price', p) for c, p in old.get(st, {}).items()})
                 for st in STATIONS}
 
+    def leaderboard_view(self, ref, viewer: Optional[str], leaderboard: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """A fog-safe leaderboard view for viewer (#121). Admin sees exact
+        marks; non-admin viewers get commodity_marks and mark_price computed
+        from their fog view (exact where docked, lagged and jittered elsewhere)."""
+        if viewer == ADMIN or not self.snapshots:
+            return leaderboard
+        spots = self.spot_view(ref, viewer)
+        out = []
+        for entry in leaderboard:
+            e = dict(entry)
+            st_id = e.get('station_id')
+            if st_id and st_id in spots:
+                marks = {
+                    comm: int(round(spots[st_id].get(comm, 0)))
+                    for comm in ('FRAG', 'FOOD', 'ORE')
+                    if comm in spots[st_id]
+                }
+                e['commodity_marks'] = marks
+                if 'FRAG' in marks:
+                    e['mark_price'] = marks['FRAG']
+            out.append(e)
+        return out
+
     def filter_ticks(self, ref, viewer: Optional[str], ticks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Trade prints carry exact prices, so a fleet sees prints only from
         the station it is docked at; the public sees none."""
