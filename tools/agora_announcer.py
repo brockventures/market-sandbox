@@ -112,6 +112,21 @@ PEER_CANCEL_PATTERN = re.compile(
     re.IGNORECASE
 )
 
+CONTRACTS_PATTERN = re.compile(
+    r"(?:!|/)?\b(?:CONTRACTS|MYCONTRACTS)\b(?:\s+([A-Za-z0-9_-]+))?",
+    re.IGNORECASE
+)
+
+CONTRACT_CLAIM_PATTERN = re.compile(
+    r"(?:!|/)?\bCLAIM\s+(?:CONTRACT\s+)?([A-Za-z0-9_-]+)\b",
+    re.IGNORECASE
+)
+
+CONTRACT_DELIVER_PATTERN = re.compile(
+    r"(?:!|/)?\bDELIVER\s+(?:INTO\s+)?([A-Za-z0-9_-]+)(?:\s+(\d+))?(?:\s+(?:SHIP|VESSEL)\s+([A-Za-z0-9_/]+))?\b",
+    re.IGNORECASE
+)
+
 AUTHOR_MAP = {
     "1541205716948353074": "amos",   # Amos / Ivy
     "1542081375287640084": "zero",   # Zero
@@ -381,6 +396,90 @@ def submit_peer_to_referee(peer_cmd: dict, ref_token: str) -> dict:
         return {"status": "error", "error": str(e)}
 
 
+def fetch_contracts_from_referee(status: str = "open", station_id: Optional[str] = None) -> dict:
+    """Fetch station contracts from /referee/contracts."""
+    endpoint = f"/referee/contracts?status={status}"
+    if station_id:
+        endpoint += f"&station_id={station_id.lower()}"
+    return fetch_json(endpoint)
+
+
+def submit_contract_action_to_referee(cid: str, action: str, body: dict, ref_token: str) -> dict:
+    """Submit contract claim or delivery to referee /referee/contracts/{cid}/{action}."""
+    url = f"{REFEREE_BASE_URL.rstrip('/')}/referee/contracts/{cid}/{action}"
+    payload = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {ref_token}",
+            "Content-Type": "application/json",
+            "User-Agent": "AgoraTradeTerminal/2.0"
+        },
+        method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8")
+        try:
+            return {"status": "error", "http_code": e.code, "error": json.loads(raw)}
+        except Exception:
+            return {"status": "error", "http_code": e.code, "raw_error": raw}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def format_contracts_list(contracts_data: dict, filter_agent: Optional[str] = None, filter_station: Optional[str] = None) -> str:
+    """Format referee contracts for Discord display."""
+    if not contracts_data.get("contracts_enabled", True):
+        return (
+            "📋 **[Agora Trade Terminal] Station Procurement Contracts**\n"
+            "> ⚠️ Station contracts are currently disabled in this game session."
+        )
+    contracts = contracts_data.get("contracts", [])
+    if filter_agent:
+        contracts = [c for c in contracts if c.get("owner") == filter_agent]
+    if filter_station:
+        contracts = [c for c in contracts if c.get("station_id") == filter_station.lower()]
+
+    header = "📋 **[Agora Trade Terminal] Station Procurement Contracts**"
+    if filter_agent:
+        ag_name = FLEET_NAMES.get(filter_agent, filter_agent.upper())
+        header += f" (Owned by {ag_name})"
+    elif filter_station:
+        header += f" ({filter_station.title()} Port)"
+
+    if not contracts:
+        desc = "owned contracts" if filter_agent else "contracts matching filter"
+        return f"{header}\n> No active {desc} found."
+
+    lines = [header]
+    for c in contracts[:6]:
+        cid = c.get("contract_id", "?")
+        st = c.get("station_id", "").lower()
+        emoji = STATION_PROFILES.get(st, {}).get("emoji", "🪐")
+        st_name = st.title()
+        inst = c.get("instrument", "?")
+        qty_rem = c.get("qty_remaining", 0)
+        qty_tot = c.get("qty_total", 0)
+        px = c.get("price", 0)
+        val = qty_rem * px
+        bond = c.get("bond", 0) or int(val * 0.25)
+        dl = c.get("deadline", "?")
+        owner = c.get("owner")
+        owner_str = FLEET_NAMES.get(owner, owner.upper()) if owner else "Available for Claim"
+        status_str = f"Owner: **{owner_str}**"
+        lines.append(
+            f"> {emoji} **`{cid}`** // **{qty_rem}/{qty_tot} {inst}** @ {px} CR ({val:,} CR total)\n"
+            f">   • Station: **{st_name}** | Deadline: **Round #{dl}** | Escrow Bond: **{bond:,} CR**\n"
+            f">   • {status_str}"
+        )
+    lines.append("💬 *Claim via `!claim <contract_id>` | Deliver while docked via `!deliver <contract_id> [qty]`*")
+    return "\n".join(lines)
+
+
 def resolve_discord_agent(author_id: str, author_name: str, content: str = "") -> str:
     """Map Discord author to Agora fleet agent_id."""
     agent_override = re.search(r"\b(?:as|agent:?)\s+(amos|marvin|zero|aerial)\b", content, re.I)
@@ -453,6 +552,40 @@ def submit_transit_to_referee(transit: dict, ref_token: str) -> dict:
             return {"status": "error", "http_code": e.code, "raw_error": raw}
     except Exception as e:
         return {"status": "error", "error": str(e)}
+
+
+def parse_discord_contract_cmd(content: str, author_id: str, author_name: str) -> Optional[dict]:
+    """Parse contract commands (!contracts, !claim, !deliver) from Discord chat."""
+    m_cl = CONTRACT_CLAIM_PATTERN.search(content)
+    if m_cl:
+        cid = m_cl.group(1).strip()
+        ag_id = resolve_discord_agent(author_id, author_name, content)
+        return {"action": "claim", "agent_id": ag_id, "contract_id": cid}
+
+    m_dl = CONTRACT_DELIVER_PATTERN.search(content)
+    if m_dl:
+        cid = m_dl.group(1).strip()
+        qty = int(m_dl.group(2)) if m_dl.group(2) else None
+        vessel = m_dl.group(3).strip() if m_dl.group(3) else None
+        ag_id = resolve_discord_agent(author_id, author_name, content)
+        return {"action": "deliver", "agent_id": ag_id, "contract_id": cid, "qty": qty, "vessel_id": vessel}
+
+    m_ct = CONTRACTS_PATTERN.search(content)
+    if m_ct:
+        arg = (m_ct.group(1) or "").strip().lower()
+        is_my = "mycontracts" in content.lower() or arg in ("my", "mine", "owned")
+        ag_id = resolve_discord_agent(author_id, author_name, content)
+        station = arg if arg in STATION_ROTATION else None
+        status = arg if arg in ("open", "fulfilled", "lapsed") else "open"
+        return {
+            "action": "list",
+            "agent_id": ag_id,
+            "filter_my": is_my,
+            "station_id": station,
+            "status": status
+        }
+
+    return None
 
 
 def parse_discord_transit(content: str, author_id: str, author_name: str) -> Optional[dict]:
@@ -598,6 +731,7 @@ def build_burst_kickoff(burst_id: str, rounds: int, interval_sec: float, start_r
         f"• Trade: `BUY <qty> <good> @ <price> AT <station>` (e.g. `BUY 50 FOOD @ 32 AT CERES`)\n"
         f"• Stock: `BUY <qty> EQ_<FLEET> @ <price>` (e.g. `BUY 10 EQ_ZERO @ 30`)\n"
         f"• Transit: `MOVE TO <station> WITH <qty> <good>` (e.g. `MOVE TO MARS WITH 100 FOOD`)\n"
+        f"• Contracts: `!contracts [station]`, `!claim <id>`, `!deliver <id> [qty]`\n"
         f"• Peer Trades: `OFFER <qty> <good> @ <price> AT <station>` | `ACCEPT <id>` | `CANCEL <id>`\n"
         f"⚡ **Quick API:** `POST {base}/referee/quick_order` with token `agora-combine-2026`\n"
         f"📖 **Robot Briefing:** `{AGORA_PUBLIC_URL.rstrip('/')}/referee/briefing` (Live markdown; append `?format=json` for JSON)\n\n"
@@ -814,6 +948,99 @@ def poll_and_execute_trades(channel: str, bot_token: str, ref_token: str, active
                         f"> **Seller:** {fl_name}\n"
                         f"> **Offer ID:** `{eid}`\n"
                         f"> **Status:** Offer retracted and goods returned from escrow."
+                    )
+                    post_discord(channel, rcpt, bot_token)
+            continue
+
+        # Check contracts command
+        contract_cmd = parse_discord_contract_cmd(content, author.get("id", ""), author.get("username", ""))
+        if contract_cmd:
+            action = contract_cmd.get("action")
+            ag_id = contract_cmd.get("agent_id")
+            fl_name = FLEET_NAMES.get(ag_id, ag_id.upper())
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Detected contract {action} from {author.get('username')}: {contract_cmd}")
+            sys.stdout.flush()
+
+            if action == "list":
+                is_my = contract_cmd.get("filter_my", False)
+                st_filt = contract_cmd.get("station_id")
+                st_status = contract_cmd.get("status", "open")
+                c_data = fetch_contracts_from_referee(status=st_status, station_id=st_filt)
+                add_discord_reaction(channel, msg_id, "📋", bot_token)
+                reply = format_contracts_list(c_data, filter_agent=ag_id if is_my else None, filter_station=st_filt)
+                post_discord(channel, reply, bot_token)
+            elif action == "claim":
+                cid = contract_cmd.get("contract_id")
+                res = submit_contract_action_to_referee(cid, "claim", {"agent_id": ag_id}, ref_token)
+                if res.get("status") == "error" or res.get("kind") == "reject":
+                    err_obj = res.get("error") if isinstance(res.get("error"), dict) else {}
+                    err_detail = err_obj.get("payload", {}).get("detail") or res.get("payload", {}).get("detail") or res.get("error") or str(res)
+                    add_discord_reaction(channel, msg_id, "❌", bot_token)
+                    reject_msg = (
+                        f"⚠️ **[Agora Trade Terminal] Contract Claim Rejected**\n"
+                        f"> **Contractor:** {fl_name}\n"
+                        f"> **Contract ID:** `{cid}`\n"
+                        f"> **Reason:** `{err_detail}`"
+                    )
+                    post_discord(channel, reject_msg, bot_token)
+                else:
+                    payload = res.get("payload", {})
+                    st = payload.get("station_id", "").title()
+                    inst = payload.get("instrument", "")
+                    qty_rem = payload.get("qty_remaining", 0)
+                    px = payload.get("price", 0)
+                    tot_val = qty_rem * px
+                    bond = payload.get("bond", 0)
+                    dl = payload.get("deadline", "?")
+                    add_discord_reaction(channel, msg_id, "📜", bot_token)
+                    add_discord_reaction(channel, msg_id, "✅", bot_token)
+                    rcpt = (
+                        f"📜 **[Agora Trade Terminal] Station Contract Claimed**\n"
+                        f"> **Contractor:** {fl_name}\n"
+                        f"> **Contract ID:** `{cid}`\n"
+                        f"> **Delivery Destination:** {st}\n"
+                        f"> **Requirement:** {qty_rem} {inst} @ {px} CR (Total Value: {tot_val:,} CR)\n"
+                        f"> **Bond Escrow Locked:** {bond:,} CR (25% refundable upon delivery)\n"
+                        f"> **Delivery Deadline:** Round #{dl} (⚠️ 50% penalty on undelivered value if lapsed)"
+                    )
+                    post_discord(channel, rcpt, bot_token)
+            elif action == "deliver":
+                cid = contract_cmd.get("contract_id")
+                body = {"agent_id": ag_id}
+                if contract_cmd.get("qty") is not None:
+                    body["qty"] = contract_cmd.get("qty")
+                if contract_cmd.get("vessel_id"):
+                    body["vessel_id"] = contract_cmd.get("vessel_id")
+                res = submit_contract_action_to_referee(cid, "deliver", body, ref_token)
+                if res.get("status") == "error" or res.get("kind") == "reject":
+                    err_obj = res.get("error") if isinstance(res.get("error"), dict) else {}
+                    err_detail = err_obj.get("payload", {}).get("detail") or res.get("payload", {}).get("detail") or res.get("error") or str(res)
+                    add_discord_reaction(channel, msg_id, "❌", bot_token)
+                    reject_msg = (
+                        f"⚠️ **[Agora Trade Terminal] Contract Delivery Rejected**\n"
+                        f"> **Contractor:** {fl_name}\n"
+                        f"> **Contract ID:** `{cid}`\n"
+                        f"> **Reason:** `{err_detail}`"
+                    )
+                    post_discord(channel, reject_msg, bot_token)
+                else:
+                    payload = res.get("payload", {})
+                    inst = payload.get("instrument", "")
+                    delivered = payload.get("delivered", 0)
+                    paid = payload.get("paid", 0)
+                    refund = payload.get("bond_refund", 0)
+                    qty_rem = payload.get("qty_remaining", 0)
+                    st_status = payload.get("status", "open").upper()
+                    add_discord_reaction(channel, msg_id, "📦", bot_token)
+                    add_discord_reaction(channel, msg_id, "✅", bot_token)
+                    rcpt = (
+                        f"📦 **[Agora Trade Terminal] Contract Delivery Executed**\n"
+                        f"> **Contractor:** {fl_name}\n"
+                        f"> **Contract ID:** `{cid}` ({st_status})\n"
+                        f"> **Delivered:** {delivered} {inst}\n"
+                        f"> **Station Payout:** +{paid:,} CR\n"
+                        f"> **Bond Escrow Refunded:** +{refund:,} CR\n"
+                        f"> **Remaining to Deliver:** {qty_rem} {inst}"
                     )
                     post_discord(channel, rcpt, bot_token)
             continue
