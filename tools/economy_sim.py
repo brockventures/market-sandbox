@@ -1493,12 +1493,12 @@ def covert_report(ref: AgoraReferee) -> Optional[dict]:
 
 
 def standing_report(ref: AgoraReferee) -> Optional[dict]:
-    """Earned standing (agora/standing.py, #187 track 2) per fleet: final lane
-    shares, lane profit and tier, and the round each tier was first earned."""
+    """Earned standing (agora/standing.py, #187) per fleet: final lane profit,
+    tier and progress, and the round each tier was first earned."""
     st = getattr(ref, "standing", None)
     if st is None or not st.enabled:
         return None
-    return {a: {lane: {k: v[k] for k in ("share", "lane_profit_cr", "tier", "first_tier1_round", "first_tier2_round")}
+    return {a: {lane: {k: v[k] for k in ("lane_profit_cr", "tier", "progress_pct", "first_tier1_round", "first_tier2_round")}
                 for lane, v in c["lanes"].items()} for a, c in st.report()["corps"].items()}
 
 

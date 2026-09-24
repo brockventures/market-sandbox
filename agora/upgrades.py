@@ -61,9 +61,8 @@ ENGINE_CUTS = [(3, 1), (0, 0)]
 ENGINE_FUEL_CUT = [0.0, 0.0, 0.4]
 
 # Lane tech (#187 track 2): an entry may carry "standing": one capability per
-# tier (or None), checked with ref.standing.allows() at purchase time only. A
-# tier bought while the corp held that standing is kept if the standing later
-# lapses: factor() and the other effect paths never look at standing.
+# tier (or None), checked with ref.standing.allows() at purchase time only:
+# factor() and the other effect paths never look at standing.
 
 
 def standing_gate(kind: str, tier: int):
