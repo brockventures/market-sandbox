@@ -34,66 +34,71 @@ def lanes(ref, agent):
 
 
 class TestRules(unittest.TestCase):
-    def test_tier1_needs_both_share_and_floor(self):
+    def test_thresholds(self):
+        self.assertEqual((S.T1_FLOOR, S.T2_FLOOR), (40_000, 120_000))
+        self.assertEqual({l: S.threshold(l, 2) for l in S.LANES},
+                         {'hauling': 120_000, 'trading': 120_000, 'market_making': 80_000, 'covert': 120_000})
+        self.assertEqual({S.threshold(l, 1) for l in S.LANES}, {40_000})
+
+    def test_tier1_at_40k(self):
         st = S.new_lane_state()
-        self.assertEqual(S.advance(st, 0.49, 10 ** 6, 1)[0]['tier'], 0)
-        self.assertEqual(S.advance(st, 0.9, S.T1_FLOOR - 1, 1)[0]['tier'], 0)
-        s, moves = S.advance(st, 0.50, S.T1_FLOOR, 7)
+        self.assertEqual(S.advance(st, S.T1_FLOOR - 1, 1, 'hauling')[0]['tier'], 0)
+        s, moves = S.advance(st, S.T1_FLOOR, 7, 'hauling')
         self.assertEqual((s['tier'], s['first_t1'], moves), (1, 7, [('earn', 1)]))
 
-    def test_tier2_needs_both_share_and_floor(self):
-        t1 = S.advance(S.new_lane_state(), 0.6, S.T1_FLOOR, 1)[0]
-        self.assertEqual(S.advance(t1, 0.74, 10 ** 6, 2)[0]['tier'], 1)
-        self.assertEqual(S.advance(t1, 0.9, S.T2_FLOOR - 1, 2)[0]['tier'], 1)
-        s, moves = S.advance(t1, 0.75, S.T2_FLOOR, 9)
+    def test_tier2_at_120k_and_both_in_one_round(self):
+        t1 = S.advance(S.new_lane_state(), S.T1_FLOOR, 1, 'hauling')[0]
+        self.assertEqual(S.advance(t1, S.T2_FLOOR - 1, 2, 'hauling')[0]['tier'], 1)
+        s, moves = S.advance(t1, S.T2_FLOOR, 9, 'hauling')
         self.assertEqual((s['tier'], s['first_t2'], moves), (2, 9, [('earn', 2)]))
-        # From nothing to tier 2 in one round when both bars are cleared.
-        s, moves = S.advance(S.new_lane_state(), 0.8, S.T2_FLOOR, 3)
+        s, moves = S.advance(S.new_lane_state(), S.T2_FLOOR, 3, 'trading')
         self.assertEqual((s['tier'], moves), (2, [('earn', 1), ('earn', 2)]))
 
-    def test_tier1_lapses_only_after_25_rounds_below_35pct(self):
-        s = S.advance(S.new_lane_state(), 1.0, S.T1_FLOOR, 0)[0]
-        for r in range(1, S.LAPSE_ROUNDS):  # 24 rounds below: kept
-            s, moves = S.advance(s, 0.34, S.T1_FLOOR, r)
-            self.assertEqual((s['tier'], moves), (1, []))
-        s, moves = S.advance(s, 0.40, S.T1_FLOOR, 30)  # one round back over 35% resets the count
-        self.assertEqual(s['below1'], 0)
-        for r in range(S.LAPSE_ROUNDS - 1):
-            s, _ = S.advance(s, 0.0, S.T1_FLOOR, 31 + r)
-        self.assertEqual(s['tier'], 1)
-        s, moves = S.advance(s, 0.0, S.T1_FLOOR, 99)
-        self.assertEqual((s['tier'], moves), (0, [('lapse', 1)]))
-        self.assertEqual(s['first_t1'], 0)  # history kept
+    def test_earned_standing_is_permanent(self):
+        s = S.advance(S.new_lane_state(), S.T2_FLOOR, 0, 'hauling')[0]
+        for r in range(1, 300):  # the lane bleeds money for the rest of the game
+            s, moves = S.advance(s, -500_000, r, 'hauling')
+            self.assertEqual((s['tier'], moves), (2, []))
+        s = S.advance(S.new_lane_state(), S.T1_FLOOR, 0, 'covert')[0]
+        s, moves = S.advance(s, 0, 1, 'covert')
+        self.assertEqual((s['tier'], moves), (1, []))
 
-    def test_share_between_keep_and_earn_holds_tier_indefinitely(self):
-        s = S.advance(S.new_lane_state(), 1.0, S.T1_FLOOR, 0)[0]
-        for r in range(200):
-            s, moves = S.advance(s, 0.36, S.T1_FLOOR, r + 1)
-            self.assertEqual(moves, [])
-        self.assertEqual(s['tier'], 1)
+    def test_halfway_news_once_per_tier(self):
+        s, moves = S.advance(S.new_lane_state(), 19_999, 1, 'hauling')
+        self.assertEqual(moves, [])
+        s, moves = S.advance(s, 20_000, 2, 'hauling')
+        self.assertEqual(moves, [('halfway', 1)])
+        s, moves = S.advance(s, 10_000, 3, 'hauling')  # dips back under half
+        s, moves = S.advance(s, 25_000, 4, 'hauling')  # and over again: no second story
+        self.assertEqual(moves, [])
+        s, moves = S.advance(s, 40_000, 5, 'hauling')
+        self.assertEqual(moves, [('earn', 1)])
+        s, moves = S.advance(s, 60_000, 6, 'hauling')  # half of 120k
+        self.assertEqual(moves, [('halfway', 2)])
 
-    def test_tier2_demotes_to_tier1_below_60pct(self):
-        s = S.advance(S.new_lane_state(), 0.9, S.T2_FLOOR, 0)[0]
-        moves = []
-        for r in range(S.LAPSE_ROUNDS):
-            s, moves = S.advance(s, 0.55, S.T2_FLOOR, r + 1)
-        self.assertEqual((s['tier'], moves), (1, [('lapse', 2)]))
-        s, moves = S.advance(s, 0.80, S.T2_FLOOR, 50)  # earned back
-        self.assertEqual((s['tier'], moves), (2, [('earn', 2)]))
+    def test_halfway_skipped_when_it_lands_with_an_admission(self):
+        s, moves = S.advance(S.new_lane_state(), 50_000, 1, 'hauling')  # past 20k and 40k at once
+        self.assertEqual((moves, s['half1']), ([('earn', 1)], True))
+        s, moves = S.advance(S.new_lane_state(), 40_000, 1, 'market_making')  # 40k is also half of 80k
+        self.assertEqual((moves, s['half2']), ([('earn', 1)], True))
+        self.assertEqual(S.advance(s, 60_000, 2, 'market_making')[1], [])
 
-    def test_losing_tier1_from_tier2_drops_both(self):
-        s = S.advance(S.new_lane_state(), 0.9, S.T2_FLOOR, 0)[0]
-        for r in range(S.LAPSE_ROUNDS):
-            s, moves = S.advance(s, 0.0, S.T2_FLOOR, r + 1)
-        self.assertEqual(s['tier'], 0)
-        self.assertEqual(moves, [('lapse', 2), ('lapse', 1)])
+    def test_progress(self):
+        self.assertEqual(S.progress('hauling', 0, 31_200), {'next_tier': 1, 'next_title': 'Guild Member',
+                                                            'next_threshold_cr': 40_000, 'progress_pct': 78})
+        self.assertEqual(S.progress('hauling', 0, 39_999)['progress_pct'], 99)
+        self.assertEqual(S.progress('hauling', 0, -5_000)['progress_pct'], 0)
+        self.assertEqual(S.progress('hauling', 1, 60_000)['progress_pct'], 50)
+        self.assertEqual(S.progress('market_making', 1, 60_000)['progress_pct'], 75)
+        self.assertEqual(S.progress('hauling', 1, 30_000)['next_title'], 'Guild Master')  # tier kept after losses
+        self.assertEqual(S.progress('trading', 2, 1)['next_tier'], None)
 
-    def test_shares_ignore_losing_lanes(self):
-        sh = S.shares({'hauling': 60_000, 'trading': 20_000, 'covert': -50_000})
-        self.assertAlmostEqual(sh['hauling'], 0.75)
-        self.assertAlmostEqual(sh['trading'], 0.25)
-        self.assertEqual(sh['covert'], 0.0)
-        self.assertEqual(S.shares({'hauling': -5}), {l: 0.0 for l in S.LANES})
+    def test_news(self):
+        self.assertEqual(S.news('zero', 'hauling', 'earn', 1)[0], 'GUILD ADMITS ZERO')
+        self.assertEqual(S.news('zero', 'hauling', 'earn', 2)[0], 'ZERO NAMED GUILD MASTER')
+        head, body = S.news('zero', 'hauling', 'halfway', 1, 20_400)
+        self.assertEqual(head, 'ZERO HALFWAY TO GUILD MEMBER')
+        self.assertIn('20,400 of 40,000 CR', body)
 
 
 class TestAttribution(unittest.TestCase):
@@ -211,7 +216,7 @@ class TestDesk(unittest.TestCase):
         self.assertTrue(ref.standing.allows('zero', 'ship_5'))
         self.assertIsNone(ref.standing.step_locked(1))
 
-    def test_tech_bought_with_standing_is_kept_after_it_lapses(self):
+    def test_standing_is_checked_at_purchase_time_only(self):
         ref = self.ref_with(freight_guild=1)
         ref.new_game(seed=3, warmup_rounds=1, standing=True, upgrades=True)
         with ref.lock, ref.conn:
@@ -221,7 +226,7 @@ class TestDesk(unittest.TestCase):
         with mock.patch.dict(U.CATALOG, {'armor': gated}):
             self.assertEqual(ref.upgrades.buy('amos', 'armor')['payload']['reason'], 'standing_required')
             self.assertEqual(ref.upgrades.buy('zero', 'armor')['kind'], 'upgrade_ok')
-            with ref.lock, ref.conn:  # standing lapses
+            with ref.lock, ref.conn:  # standing never lapses now; force it off to prove factor() ignores it
                 ref.conn.execute("UPDATE standing_lanes SET tier = 0 WHERE agent_id = 'zero'")
             self.assertFalse(ref.standing.allows('zero', 'freight_guild'))
             self.assertEqual(ref.upgrades.tier('zero', 'armor'), 1)
@@ -242,18 +247,30 @@ class TestDesk(unittest.TestCase):
         self.assertEqual(heads, ['GUILD ADMITS ZERO'])
         self.assertTrue(ref.standing.allows('zero', 'freight_guild'))
 
-    def test_window_drops_old_income(self):
+    def test_losses_reduce_the_counter_but_keep_the_tier(self):
         ref = AgoraReferee(standing=True)
         ref.standing.step_locked(0)
         post(ref, 'contract-deliver-c1-1-0', [('zero', 'CR', 50_000), ('SYSTEM', 'CR', -50_000)])
         ref.step_round()
-        post(ref, 'fee-l-r1', [('zero', 'CR', 10), ('amos', 'CR', -10)])
-        for _ in range(S.WINDOW):
+        post(ref, 'toll-tx-9', [('zero', 'CR', -30_000), ('SYSTEM', 'CR', 30_000)])
+        for _ in range(60):
             ref.step_round()
-        z = ref.standing.report('zero')['corps']['zero']['lanes']
-        self.assertEqual(z['hauling']['trailing_cr'], 0)
-        self.assertEqual(z['hauling']['lane_profit_cr'], 50_000)  # the floor is cumulative
-        self.assertEqual(z['trading']['share'], 1.0)
+        z = ref.standing.report('zero')['corps']['zero']['lanes']['hauling']
+        self.assertEqual((z['lane_profit_cr'], z['tier']), (20_000, 1))
+        self.assertEqual((z['next_tier'], z['next_threshold_cr'], z['progress_pct']), (2, 120_000, 16))
+        self.assertTrue(ref.standing.allows('zero', 'freight_guild'))
+
+    def test_step_posts_galnet_halfway(self):
+        ref = AgoraReferee(standing=True)
+        ref.standing.step_locked(0)
+        post(ref, 'contract-deliver-c1-1-0', [('zero', 'CR', 21_000), ('SYSTEM', 'CR', -21_000)])
+        rep = ref.step_round()
+        self.assertEqual(rep['standing']['changes'], [{'agent_id': 'zero', 'lane': 'hauling', 'institution':
+                                                       'freight_guild', 'move': 'halfway', 'tier': 1}])
+        self.assertIsNone(ref.step_round()['standing'])  # once
+        heads = [json.loads(p)['headline'] for (p,) in ref.conn.execute(
+            "SELECT payload FROM book_events WHERE kind = 'news' AND payload LIKE '%gn-standing-%'")]
+        self.assertEqual(heads, ['ZERO HALFWAY TO GUILD MEMBER'])
 
     def test_survives_restart_without_double_counting(self):
         fd, path = tempfile.mkstemp(suffix='.db')
@@ -270,8 +287,6 @@ class TestDesk(unittest.TestCase):
             self.assertEqual(ref2.standing.book['lots']['zero']['ORE'], [['ceres', 'bought', 10, 100.0]])
             ref2.step_round()
             self.assertEqual(lanes(ref2, 'zero')['hauling'], 50_000)
-            z = ref2.standing.report('zero')['corps']['zero']['lanes']['hauling']
-            self.assertEqual(z['trailing_cr'], 50_000)  # the window survived, and was not counted twice
             self.assertEqual(ref2.standing.tick, 3)  # the desk's own counter carried over the restart
             ref2.conn.close()
         finally:
@@ -285,23 +300,67 @@ class TestDesk(unittest.TestCase):
         self.assertTrue(ref.standing.allows('zero', 'freight_guild'))
         ref.reset_to_genesis()
         self.assertFalse(ref.standing.allows('zero', 'freight_guild'))
-        self.assertEqual(ref.conn.execute("SELECT COUNT(*) FROM standing_income").fetchone()[0], 0)
+        self.assertEqual(ref.conn.execute("SELECT COUNT(*) FROM standing_lanes WHERE tier > 0").fetchone()[0], 0)
         ref.step_round()  # genesis re-read as neutral, not income
         self.assertEqual(set(lanes(ref, 'zero').values()), {0})
 
     def test_briefing_and_endpoint_shape(self):
         from agora.briefing import build_briefing
         ref = AgoraReferee(standing=True)
+        ref.standing.step_locked(0)
+        post(ref, 'contract-deliver-c1-1-0', [('zero', 'CR', 31_200), ('SYSTEM', 'CR', -31_200)])
         ref.step_round()
-        text = build_briefing(ref)
+        text = build_briefing(ref, viewer='zero')
         self.assertIn('## Institutional standing', text)
-        self.assertIn('Sol Freight Guild', text)
-        self.assertIn('lapses after 25 rounds below 35%', text)
+        self.assertIn('reach 40,000 CR for tier 1 and 120,000 CR for tier 2 (80,000 for market making)', text)
+        self.assertNotIn('lapse', text.split('## Institutional standing')[1].split('##')[0])
+        self.assertIn('- Sol Freight Guild (freight): 31,200 / 40,000 CR (78%) - next: Guild Member '
+                      '(opens 4th ship berth, Guild refit yards)', text)
+        sec = text.split('## Institutional standing')[1]
+        self.assertLess(sec.index('**zero** (you)'), sec.index('**aerial**'))  # the viewer's own corp first
+        self.assertIn('**aerial**', build_briefing(ref))
         rep = ref.standing.report()
         self.assertEqual(set(rep['corps']), {'aerial', 'amos', 'marvin', 'zero'})
-        self.assertEqual(rep['rules']['tier2'], {'share': 0.75, 'lane_profit_cr': 120_000, 'keep_share': 0.6,
-                                                 'lane_profit_cr_by_lane': {'hauling': 120_000, 'trading': 120_000,
-                                                                            'market_making': 80_000, 'covert': 120_000}})
+        self.assertEqual(rep['rules']['tier2']['lane_profit_cr_by_lane'],
+                         {'hauling': 120_000, 'trading': 120_000, 'market_making': 80_000, 'covert': 120_000})
+        self.assertTrue(rep['rules']['permanent'])
+        z = rep['corps']['zero']['lanes']['hauling']
+        self.assertEqual({k: z[k] for k in ('lane_profit_cr', 'tier', 'next_tier', 'next_threshold_cr', 'progress_pct')},
+                         {'lane_profit_cr': 31_200, 'tier': 0, 'next_tier': 1, 'next_threshold_cr': 40_000,
+                          'progress_pct': 78})
+
+    def test_old_database_migrates(self):
+        """A #207-era DB: extra columns stay unused, the window table goes, a
+        lapsed tier comes back, and no halfway burst on the next round."""
+        import sqlite3
+        fd, path = tempfile.mkstemp(suffix='.db')
+        os.close(fd)
+        try:
+            ref = AgoraReferee(db_path=path, standing=True)
+            ref.standing.step_locked(0)
+            ref.conn.close()
+            conn = sqlite3.connect(path)
+            conn.execute("DROP TABLE standing_lanes")
+            conn.execute("""CREATE TABLE standing_lanes (agent_id TEXT NOT NULL, lane TEXT NOT NULL,
+                cum_profit INTEGER NOT NULL DEFAULT 0, tier INTEGER NOT NULL DEFAULT 0,
+                below1 INTEGER NOT NULL DEFAULT 0, below2 INTEGER NOT NULL DEFAULT 0,
+                first_t1 INTEGER, first_t2 INTEGER, share REAL NOT NULL DEFAULT 0, trailing INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (agent_id, lane))""")
+            conn.execute("CREATE TABLE standing_income (agent_id TEXT, tick INTEGER, lane TEXT, cr INTEGER)")
+            conn.execute("INSERT INTO standing_lanes (agent_id, lane, cum_profit, tier, first_t1) "
+                         "VALUES ('zero', 'hauling', 45000, 0, 12)")  # lapsed under the old rule
+            conn.execute("INSERT INTO standing_lanes (agent_id, lane, cum_profit) VALUES ('amos', 'market_making', 30000)")
+            conn.commit()
+            conn.close()
+            ref2 = AgoraReferee(db_path=path, standing=True)
+            self.assertTrue(ref2.standing.allows('zero', 'freight_guild'))
+            self.assertIsNone(ref2.conn.execute(
+                "SELECT name FROM sqlite_master WHERE name = 'standing_income'").fetchone())
+            self.assertIsNone(ref2.step_round()['standing'])  # amos is past half already: no story now
+            self.assertEqual(lanes(ref2, 'amos')['market_making'], 30_000)
+            ref2.conn.close()
+        finally:
+            os.unlink(path)
 
 
 class TestStylesEarnTheirLane(unittest.TestCase):
@@ -315,7 +374,7 @@ class TestStylesEarnTheirLane(unittest.TestCase):
         rep = holder['ref'].standing.report()['corps']
         want = {'hauler': 'hauling', 'privateer': 'hauling', 'maker': 'market_making', 'stock_trader': 'trading'}
         for a, f in r['fleets'].items():
-            mix = {l: v['share'] for l, v in rep[a]['lanes'].items()}
+            mix = {l: v['lane_profit_cr'] for l, v in rep[a]['lanes'].items()}
             self.assertEqual(max(mix, key=mix.get), want[f['strategy']], (f['strategy'], mix))
 
 
@@ -323,9 +382,10 @@ class TestMarketMakingTier2Floor(unittest.TestCase):
     def test_market_making_tier2_floor_is_80k(self):
         self.assertEqual(S.t2_floor('market_making'), 80_000)
         self.assertEqual(S.t2_floor('hauling'), S.T2_FLOOR)
-        t1 = S.advance(S.new_lane_state(), 0.8, S.T1_FLOOR, 1)[0]
-        self.assertEqual(S.advance(t1, 0.8, 80_000, 2, S.t2_floor('market_making'))[0]['tier'], 2)
-        self.assertEqual(S.advance(t1, 0.8, 80_000, 2, S.t2_floor('hauling'))[0]['tier'], 1)
+        t1 = S.advance(S.new_lane_state(), S.T1_FLOOR, 1, 'market_making')[0]
+        self.assertEqual(S.advance(t1, 80_000, 2, 'market_making')[0]['tier'], 2)
+        t1 = S.advance(S.new_lane_state(), S.T1_FLOOR, 1, 'hauling')[0]
+        self.assertEqual(S.advance(t1, 80_000, 2, 'hauling')[0]['tier'], 1)
 
 
 if __name__ == '__main__':

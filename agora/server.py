@@ -1611,7 +1611,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                     'corporate': 'GET /referee/corporate (debt, corp status, takeovers, winner)',
                     'corporate_events': 'GET /referee/corporate/events?since_round=&limit= (the corp events your token may see)',
                     'upgrades': 'GET /referee/upgrades?agent_id= ; POST /referee/upgrades/buy {kind}',
-                    'standing': 'GET /referee/standing?agent_id= (earned institutional standing: lane mix, tiers, lane tech)',
+                    'standing': 'GET /referee/standing?agent_id= (earned institutional standing: lane profit, tier, progress to the next tier, lane tech)',
                     'contract_actions': 'POST /referee/contracts/{id}/claim | list {price} | buy | deliver {qty}',
                     'piracy': 'GET /referee/piracy (hot station, odds, recent raids, privateer contracts)',
                     'order_flow': 'GET /referee/order-flow (NPC buy/sell flow each station sends to fleet quotes before its depot)',
