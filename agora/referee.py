@@ -2419,15 +2419,49 @@ class AgoraReferee:
             escrow.setdefault(agent, {})
             escrow[agent]['CR'] = escrow[agent].get('CR', 0) + cr
         upgrades = getattr(self, 'upgrades', None)
+
+        # Cargo in transit (transits table, status='in_transit') is escrowed to
+        # SYSTEM while under way. It still belongs to the fleet and is counted
+        # toward net worth, net of projected perishable decay, so haulers do
+        # not show a phantom drawdown while traveling (#195).
+        transit_cargo: Dict[str, Dict[str, int]] = {}
+        tables = [t[0] for t in cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+        if 'transits' in tables:
+            for tx in cur.execute("""
+                SELECT agent_id, commodity, cargo_qty, perishable, decay_rate, departure_round
+                FROM transits
+                WHERE status = 'in_transit'
+            """).fetchall():
+                c_qty = tx['cargo_qty'] or 0
+                if c_qty <= 0:
+                    continue
+                comm = (tx['commodity'] or '').upper().strip()
+                if not comm:
+                    continue
+                dep_round = tx['departure_round'] if tx['departure_round'] is not None else self.current_round
+                elapsed = max(0, self.current_round - dep_round)
+                rate = tx['decay_rate'] or 0.0
+                decay = min(c_qty, int(round(c_qty * rate * elapsed))) if (tx['perishable'] and rate > 0) else 0
+                net_qty = max(0, c_qty - decay)
+                transit_cargo.setdefault(tx['agent_id'], {})
+                transit_cargo[tx['agent_id']][comm] = transit_cargo[tx['agent_id']].get(comm, 0) + net_qty
+
         for r in rows:
             adj = escrow.get(r['agent_id'], {})
-            food = (r['food'] or 0) + adj.get('FOOD', 0)
-            ore = (r['ore'] or 0) + adj.get('ORE', 0)
+            in_flight = transit_cargo.get(r['agent_id'], {})
+            in_flight_frags = in_flight.get('FRAG', 0) + in_flight.get('BANANA', 0)
+            in_flight_food = in_flight.get('FOOD', 0)
+            in_flight_ore = in_flight.get('ORE', 0)
+
+            total_frags = (r['frags'] or 0) + adj.get('FRAG', 0) + in_flight_frags
+            total_food = (r['food'] or 0) + adj.get('FOOD', 0) + in_flight_food
+            total_ore = (r['ore'] or 0) + adj.get('ORE', 0) + in_flight_ore
+
             # Fitted ship upgrades at half their cost (agora/upgrades.py,
             # #151); nothing for a corp that is out of the game.
             fitted = upgrades.book_value(r['agent_id']) if upgrades and not self.fleet_out(r['agent_id']) else 0
-            net_worth = (r['liquid'] + adj.get('CR', 0) + ((r['frags'] or 0) + adj.get('FRAG', 0)) * mark
-                         + food * commodity_marks['FOOD'] + ore * commodity_marks['ORE'] + fitted)
+            net_worth = (r['liquid'] + adj.get('CR', 0) + total_frags * mark
+                         + total_food * commodity_marks['FOOD'] + total_ore * commodity_marks['ORE'] + fitted)
             board.append({
                 'agent_id': r['agent_id'],
                 'net_worth': net_worth,
@@ -2440,6 +2474,7 @@ class AgoraReferee:
                 'mark_price': mark,
                 'commodity_marks': commodity_marks,
                 'upgrades_value': fitted,
+                'in_transit_cargo': in_flight,
             })
         # Rival stocks count at their mark. A fleet's own shares do not count
         # toward its own net worth (that would be circular), and NAV is built
