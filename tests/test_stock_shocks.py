@@ -85,7 +85,8 @@ class TestShocks(unittest.TestCase):
         ref = game()
         p0, z0 = px(ref), px(ref, 'EQ_ZERO')
         ref.piracy.hire('zero', 'amos')
-        ref.piracy.rng = Fixed(0.0, 0.9)  # raided, not traced
+        ref.piracy.bags.force('raid', True)
+        ref.piracy.bags.force('trace', False)  # raided, not traced
         ref.initiate_transit('amos', 'mars', 'FRAG', CARGO)
         self.assertEqual(px(ref, 'EQ_ZERO'), z0)
         self.assertEqual(px(ref), p0)
@@ -99,14 +100,16 @@ class TestShocks(unittest.TestCase):
     def test_second_trace_no_second_scandal_shock(self):
         ref = game()
         ref.piracy.hire('zero', 'amos')
-        ref.piracy.rng = Fixed(0.0, 0.0)
+        ref.piracy.bags.force('raid', True)
+        ref.piracy.bags.force('trace', True)
         ref.initiate_transit('amos', 'mars', 'FRAG', CARGO // 2)
         for _ in range(4):
             ref.step_round()
         with ref.lock, ref.conn:
             ref.piracy._move('test-topup', (('SYSTEM', 'CR', -20_000), ('zero', 'CR', 20_000)))
         zc = ref.get_balance('zero', 'CR')
-        ref.piracy.rng = Fixed(0.0, 0.0)
+        ref.piracy.bags.force('raid', True)
+        ref.piracy.bags.force('trace', True)
         self.assertTrue(ref.initiate_transit('amos', 'earth', 'FRAG', 50)['payload']['piracy']['raided'])
         self.assertEqual(ref.conn.execute("SELECT COUNT(*) FROM piracy_raids WHERE traced = 1").fetchone()[0], 2)
         self.assertEqual(ref.get_balance('zero', 'CR'), zc - P.PRIV_COST * P.PRIV_FINE)
@@ -118,7 +121,8 @@ class TestShocks(unittest.TestCase):
         self.assertEqual(ref.upgrades.buy('amos', 'armor')['kind'], 'upgrade_ok')
         self.assertAlmostEqual(px(ref), p0 * 1.02)
         p1 = px(ref)
-        ref.piracy.rng = Fixed(0.0, 0.9)
+        ref.piracy.bags.force('raid', True)
+        ref.piracy.bags.force('trace', False)
         r = ref.initiate_transit('amos', 'mars', 'FRAG', CARGO, escort=True)['payload']
         self.assertTrue(r['piracy']['raided'])
         self.assertAlmostEqual(px(ref), p1 * 1.01)  # escort
@@ -131,10 +135,11 @@ class TestShocks(unittest.TestCase):
 
     def test_raid_repelled(self):
         ref = game(piracy=(1, 1))
-        ref.piracy.rng = Fixed(0.0, 0.9)
+        ref.piracy.bags.force('raid', True)
+        ref.piracy.bags.force('trace', False)
         tid = ref.initiate_transit('amos', 'mars', 'FRAG', CARGO)['payload']['transit_id']
         p0 = px(ref)
-        ref.piracy.rng = Fixed(0.0)  # escape roll < FIGHT_ESCAPE
+        ref.piracy.bags.force('escape', True)  # escape roll < FIGHT_ESCAPE
         ref.piracy.respond('amos', tid, 'fight')
         self.assertAlmostEqual(px(ref), p0 * 1.01)
 

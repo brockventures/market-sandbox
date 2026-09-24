@@ -16,6 +16,8 @@ import os
 import random
 from typing import Any, Dict, List, Optional, Tuple
 
+from agora.bag import Bags
+
 # #186 (covert economics). Before: a saboteur's covert lane ran -42k to -46k
 # a game and a spy's -39k to -55k (hybrid scenario, seeds 1-40): ~11 strikes
 # at 4,000 plus ~2 traced fines of 12,000, for no income at all, since what a
@@ -76,10 +78,12 @@ class CovertDesk:
         self.ref = ref
         with ref.conn:
             ref.conn.execute(SCHEMA)
-        self.reset(seed)
+        self.bags = Bags(ref.conn, 'covert')
+        self.rng = random.Random(f"covert-{seed}")
 
     def reset(self, seed: int) -> None:
         self.rng = random.Random(f"covert-{seed}")
+        self.bags.reset(seed)
 
     @property
     def enabled(self) -> bool:
@@ -309,8 +313,8 @@ class CovertDesk:
                     else:
                         damage_detail = "docking clamps locked for 1 round"
 
-            # Roll trace
-            traced = (self.rng.random() < SABOTAGE_TRACE)
+            # Roll trace: a marble from the saboteur's bag (#214)
+            traced = self.bags.draw('sabotage_trace', actor, SABOTAGE_TRACE)
             fine_paid = 0
             detail_actor = f"{target} suffered covert sabotage: {damage_detail}"
 

@@ -43,6 +43,7 @@ import random
 import time
 from typing import Any, Dict, List, Optional
 
+from agora.bag import Bags
 from agora.galnet import GalNetNewsEvent
 
 VISIBILITIES = ('public', 'private', 'secret')
@@ -98,15 +99,20 @@ class EventDesk:
             for col, decl in MIGRATE:
                 if col not in have:
                     ref.conn.execute(f"ALTER TABLE corp_events ADD COLUMN {col} {decl}")
-        self.reset(seed)
+        self.bags = Bags(ref.conn, 'events')
+        self._reseed(seed)
 
     @property
     def enabled(self) -> bool:
         return bool(getattr(self.ref, 'events_enabled', False))
 
-    def reset(self, seed: int) -> None:
+    def _reseed(self, seed: int) -> None:
         self.rng = random.Random(f"events-{seed}")
         self._ticks: List[str] = []
+
+    def reset(self, seed: int) -> None:
+        self._reseed(seed)
+        self.bags.reset(seed)
 
     # ------------------------------------------------------------ writes
     # record() and expose() take ref.lock and a transaction. Code already
@@ -216,9 +222,10 @@ class EventDesk:
         if not self.enabled:
             return done
         for row in self.ref.conn.execute(
-                "SELECT id FROM corp_events WHERE visibility = 'secret' AND exposed_round IS NULL "
+                "SELECT id, actor FROM corp_events WHERE visibility = 'secret' AND exposed_round IS NULL "
                 "AND round < ? AND round >= ? ORDER BY id", (round_num, round_num - LEAK_ROUNDS)).fetchall():
-            if self.rng.random() < LEAK_CHANCE:
+            # A marble from the bag of the fleet whose secret it is (#214).
+            if self.bags.draw('leak', row['actor'] or '', LEAK_CHANCE):
                 ev = self.expose_locked(row['id'], 'leak', round_num)
                 if ev:
                     done['leaked'].append(ev['id'])
