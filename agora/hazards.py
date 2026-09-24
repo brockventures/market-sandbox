@@ -9,7 +9,7 @@ corps went under per 300-round game when fleets never reacted.
 Each trip is rolled once, when it leaves:
 - P_DELAY: a storm or engine fault adds 1-3 rounds to the trip, which can
   blow a contract deadline.
-- P_LOSS: a hull breach or spoilage loses 30-70% of the cargo. The lost
+- P_LOSS: a hull breach or spoilage loses 10-20% of the cargo (#194). The lost
   goods stay with SYSTEM (they were escrowed there at departure), so the
   ledger balances.
 
@@ -26,7 +26,7 @@ from typing import Any, Dict, Optional, Tuple
 DEFAULT_P_DELAY = 0.20
 DEFAULT_P_LOSS = 0.10
 DELAY_ROUNDS = (1, 3)
-LOSS_FRACTION = (0.3, 0.7)
+LOSS_FRACTION = (0.10, 0.20)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS transit_hazards (
