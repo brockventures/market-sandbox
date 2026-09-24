@@ -1098,6 +1098,35 @@ class AgoraReferee:
                     genesis_fuel = excluded.genesis_fuel
             """, (agent_id, display_name, home_station, genesis_cr, genesis_frag, genesis_fuel))
 
+    def _dock_vessel_locked(self, agent_id: str, station_id: str, vessel_id: Optional[str] = None) -> None:
+        """Dock a fleet's vessel at `station_id` in both vessel_locations and
+        vessels, as of the current round. For a path that ends a transit
+        without it arriving (a salvage claim, a corp going out): without this
+        the fleet stays 'in_transit' with no in_transit transit, reads as
+        docked at a station called "in_transit", and every later MOVE is
+        rejected invalid_route (#198).
+
+        Caller holds self.lock and is inside its own transaction; this only
+        executes, it never commits (a nested commit is the #197 bug class)."""
+        vessel_id = vessel_id or f"{agent_id}/1"
+        rnd = self.current_round
+        self.conn.execute("""
+            INSERT INTO vessel_locations (agent_id, station_id, docked_since, updated_at)
+            VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+            ON CONFLICT(agent_id) DO UPDATE SET
+                station_id = ?,
+                docked_since = ?,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        """, (agent_id, station_id, rnd, station_id, rnd))
+        self.conn.execute("""
+            INSERT INTO vessels (vessel_id, agent_id, name, station_id, docked_since, status)
+            VALUES (?, ?, ?, ?, ?, 'docked')
+            ON CONFLICT(vessel_id) DO UPDATE SET
+                station_id = ?,
+                docked_since = ?,
+                status = 'docked'
+        """, (vessel_id, agent_id, f"{agent_id} Ship 1", station_id, rnd, station_id, rnd))
+
     def initiate_transit(self, agent_id: str, destination: str, commodity: str = 'FRAG', cargo_qty: int = 0, perishable: Optional[bool] = None,
                          escort: bool = False) -> Dict[str, Any]:
         self.mark_active(agent_id)

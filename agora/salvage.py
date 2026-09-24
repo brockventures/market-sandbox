@@ -506,9 +506,27 @@ class DerelictSalvageEngine:
                 self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)", (txn_id, next_seq, source_agent, comm, -qty))
                 self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)", (txn_id, next_seq, salvager_id, comm, qty))
 
-            # Mark transit cancelled if linked
+            # Cancel the linked transit if it is still under way, and dock the
+            # fleet back at the transit's ORIGIN (#198). Where the ship is:
+            # the game has no in-flight position (vessel_locations holds a
+            # station or 'in_transit', agora/spatial.py only has station-to-
+            # station routes), so "nearest station" has nothing to compute
+            # from. The destination would complete the trip for free on a
+            # cancelled transit; the origin is where it last was, and its fuel
+            # for the trip is already burned. Towed home, cargo gone.
+            # Only an in_transit transit is touched: a beacon whose transit
+            # has already arrived must not rewrite it to cancelled or move a
+            # ship that has since docked (or left again on a new transit).
             if transit_id:
-                self.conn.execute("UPDATE transits SET status = 'cancelled' WHERE transit_id = ?", (transit_id,))
+                cancelled = self.conn.execute(
+                    "UPDATE transits SET status = 'cancelled' WHERE transit_id = ? AND status = 'in_transit'",
+                    (transit_id,)).rowcount
+                if cancelled == 1:
+                    t_row = self.conn.execute(
+                        "SELECT agent_id, vessel_id, origin FROM transits WHERE transit_id = ?",
+                        (transit_id,)).fetchone()
+                    if self.referee:
+                        self.referee._dock_vessel_locked(t_row['agent_id'], t_row['origin'], t_row['vessel_id'])
 
             # Mark beacon salvaged
             self.conn.execute("""
