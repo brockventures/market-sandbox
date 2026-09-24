@@ -210,6 +210,8 @@ class CircuitBreakerEngine:
         return dict(row)
 
     def is_halted(self, station_id: str, instrument: str) -> bool:
+        if hasattr(self.referee, 'lobbying') and self.referee.lobbying and self.referee.lobbying.is_circuit_breaker_suspended(station_id):
+            return False
         return self.get_active_halt(station_id, instrument) is not None
 
     def trigger_halt(
@@ -225,6 +227,8 @@ class CircuitBreakerEngine:
         """
         st = station_id.lower()
         inst = instrument.upper()
+        if hasattr(self.referee, 'lobbying') and self.referee.lobbying and self.referee.lobbying.is_circuit_breaker_suspended(st):
+            return {'halted': False, 'reason': 'circuit_breaker_suspended_by_council'}
         bands = self.get_bands(st, inst)
 
         halt_id = f"halt-{st}-{inst}-{int(time.time() * 1000)}"
