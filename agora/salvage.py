@@ -163,6 +163,13 @@ class DerelictSalvageEngine:
                 location = f"{origin}_{destination}"
             if cargo_bounty is None and t_row['cargo_qty'] > 0:
                 cargo_bounty = {t_row['commodity']: t_row['cargo_qty']}
+            elif cargo_bounty is not None:
+                # Cap declared bounty to what transit actually carries (#205)
+                transit_comm = t_row['commodity']
+                transit_qty = t_row['cargo_qty'] or 0
+                declared_qty = int(cargo_bounty.get(transit_comm, 0)) if isinstance(cargo_bounty, dict) else 0
+                capped_qty = min(max(0, declared_qty), transit_qty)
+                cargo_bounty = {transit_comm: capped_qty} if capped_qty > 0 else {}
 
         # 2. Resolve location if not yet resolved
         if not location:
@@ -490,43 +497,61 @@ class DerelictSalvageEngine:
         transit_id = beacon['transit_id']
 
         with self.conn:
-            # Transfer cargo bounties
-            for comm, qty in cargo_bounty.items():
-                if qty <= 0:
-                    continue
-                # If cargo was escrowed in transit, source is SYSTEM. Otherwise source is stranded agent.
-                source_agent = 'SYSTEM' if transit_id else beacon['agent_id']
-
-                # Deduct from source
-                self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = ? AND instrument = ?", (qty, source_agent, comm))
-                # Credit to salvager
-                self.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, ?, 0)", (salvager_id, comm))
-                self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?", (qty, salvager_id, comm))
-                # Ledger entries
-                self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)", (txn_id, next_seq, source_agent, comm, -qty))
-                self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)", (txn_id, next_seq, salvager_id, comm, qty))
-
-            # Cancel the linked transit if it is still under way, and dock the
-            # fleet back at the transit's ORIGIN (#198). Where the ship is:
-            # the game has no in-flight position (vessel_locations holds a
-            # station or 'in_transit', agora/spatial.py only has station-to-
-            # station routes), so "nearest station" has nothing to compute
-            # from. The destination would complete the trip for free on a
-            # cancelled transit; the origin is where it last was, and its fuel
-            # for the trip is already burned. Towed home, cargo gone.
-            # Only an in_transit transit is touched: a beacon whose transit
-            # has already arrived must not rewrite it to cancelled or move a
-            # ship that has since docked (or left again on a new transit).
+            claimed_cargo = {}
             if transit_id:
+                # Fetch transit record
+                t_row = self.conn.execute(
+                    "SELECT agent_id, vessel_id, origin, destination, commodity, cargo_qty, status FROM transits WHERE transit_id = ?",
+                    (transit_id,)).fetchone()
+
+                # Cancel the linked transit if still under way, and dock the
+                # fleet back at the transit's ORIGIN (#198).
                 cancelled = self.conn.execute(
                     "UPDATE transits SET status = 'cancelled' WHERE transit_id = ? AND status = 'in_transit'",
                     (transit_id,)).rowcount
-                if cancelled == 1:
-                    t_row = self.conn.execute(
-                        "SELECT agent_id, vessel_id, origin FROM transits WHERE transit_id = ?",
-                        (transit_id,)).fetchone()
+                if cancelled == 1 and t_row:
                     if self.referee:
                         self.referee._dock_vessel_locked(t_row['agent_id'], t_row['origin'], t_row['vessel_id'])
+
+                    comm = t_row['commodity']
+                    transit_cargo = t_row['cargo_qty'] or 0
+
+                    # Cap bounty at transit's actual escrowed cargo (#205)
+                    declared_bounty = cargo_bounty.get(comm, 0) if comm else 0
+                    bounty_to_pay = min(max(0, declared_bounty), transit_cargo)
+                    leftover_escrow = transit_cargo - bounty_to_pay
+
+                    # 1. Transfer capped cargo bounty to salvager from SYSTEM escrow
+                    if bounty_to_pay > 0:
+                        self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = 'SYSTEM' AND instrument = ?", (bounty_to_pay, comm))
+                        self.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, ?, 0)", (salvager_id, comm))
+                        self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?", (bounty_to_pay, salvager_id, comm))
+                        self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, 'SYSTEM', ?, ?)", (txn_id, next_seq, comm, -bounty_to_pay))
+                        self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)", (txn_id, next_seq, salvager_id, comm, bounty_to_pay))
+                        claimed_cargo[comm] = bounty_to_pay
+
+                    # 2. Return leftover escrow to the stranded fleet (#205)
+                    # Note: on main, goods return to the corp account; #175 PR 2 moves goods to ship accounts.
+                    if leftover_escrow > 0:
+                        stranded_agent = t_row['agent_id']
+                        refund_seq = self.referee._get_next_seq() if self.referee else next_seq
+                        refund_txn = f"refund-{claim_id}"
+                        self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = 'SYSTEM' AND instrument = ?", (leftover_escrow, comm))
+                        self.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, ?, 0)", (stranded_agent, comm))
+                        self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?", (leftover_escrow, stranded_agent, comm))
+                        self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, 'SYSTEM', ?, ?)", (refund_txn, refund_seq, comm, -leftover_escrow))
+                        self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)", (refund_txn, refund_seq, stranded_agent, comm, leftover_escrow))
+            else:
+                for comm, qty in cargo_bounty.items():
+                    if qty <= 0:
+                        continue
+                    source_agent = beacon['agent_id']
+                    self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = ? AND instrument = ?", (qty, source_agent, comm))
+                    self.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES (?, ?, 0)", (salvager_id, comm))
+                    self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = ? AND instrument = ?", (qty, salvager_id, comm))
+                    self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)", (txn_id, next_seq, source_agent, comm, -qty))
+                    self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)", (txn_id, next_seq, salvager_id, comm, qty))
+                    claimed_cargo[comm] = qty
 
             # Mark beacon salvaged
             self.conn.execute("""
@@ -543,7 +568,7 @@ class DerelictSalvageEngine:
             self.conn.execute("""
                 INSERT INTO salvage_claims (claim_id, beacon_id, salvager_id, cargo_claimed, claim_round)
                 VALUES (?, ?, ?, ?, ?)
-            """, (claim_id, beacon_id, salvager_id, json.dumps(cargo_bounty), current_round))
+            """, (claim_id, beacon_id, salvager_id, json.dumps(claimed_cargo), current_round))
 
             # Emit book event tick
             if self.referee:
@@ -556,7 +581,7 @@ class DerelictSalvageEngine:
                     'salvager_id': salvager_id,
                     'original_agent': beacon['agent_id'],
                     'location': beacon['location'],
-                    'cargo_claimed': cargo_bounty,
+                    'cargo_claimed': claimed_cargo,
                     'round': current_round,
                 })))
 
@@ -566,7 +591,7 @@ class DerelictSalvageEngine:
             'beacon_id': beacon_id,
             'salvager_id': salvager_id,
             'original_agent': beacon['agent_id'],
-            'cargo_claimed': cargo_bounty,
+            'cargo_claimed': claimed_cargo,
             'status': 'salvaged'
         }
 

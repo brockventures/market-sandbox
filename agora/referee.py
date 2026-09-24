@@ -1303,6 +1303,7 @@ class AgoraReferee:
 
                 # 3. Cargo escrow (if cargo_qty > 0)
                 if cargo_qty > 0:
+                    self.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES ('SYSTEM', ?, 0)", (comm,))
                     self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = ? AND instrument = ?", (cargo_qty, agent_id, comm))
                     self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = 'SYSTEM' AND instrument = ?", (cargo_qty, comm))
                     self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)", (f"escrow-{transit_id}", next_seq, agent_id, comm, -cargo_qty))
