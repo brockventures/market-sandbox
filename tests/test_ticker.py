@@ -86,7 +86,7 @@ class TestTickerEngine(unittest.TestCase):
     def test_inactivity_watchdog_auto_pauses(self):
         referee = AgoraReferee()
         # 2 consecutive quiet rounds (no seq-advancing activity) should trip the watchdog
-        ticker = TickerEngine(referee, interval_sec=0.05, inactivity_rounds=2)
+        ticker = TickerEngine(referee, interval_sec=0.05, inactivity_rounds=2, min_interval_sec=0.01)
         ticker.start()
         try:
             deadline = time.time() + 5.0
@@ -101,13 +101,20 @@ class TestTickerEngine(unittest.TestCase):
 
     def test_activity_resets_quiet_counter(self):
         referee = AgoraReferee()
-        ticker = TickerEngine(referee, interval_sec=0.05, inactivity_rounds=3)
+        ticker = TickerEngine(
+            referee,
+            interval_sec=0.05,
+            inactivity_rounds=5,
+            min_interval_sec=0.01,
+        )
         ticker.start()
         try:
-            # Let at least 1 quiet round accumulate
+            # Let at least 1 quiet round accumulate (round 2)
             deadline = time.time() + 5.0
-            while referee.current_round < 1 and time.time() < deadline:
+            while ticker.status()["quiet_round_count"] < 1 and time.time() < deadline:
                 time.sleep(0.01)
+            self.assertGreaterEqual(ticker.status()["quiet_round_count"], 1)
+
             # Simulate order activity advancing the seq counter between ticks
             referee.submit_envelope({
                 "v": 1,
@@ -126,11 +133,11 @@ class TestTickerEngine(unittest.TestCase):
             deadline = time.time() + 5.0
             while referee.current_round <= rnd_before and time.time() < deadline:
                 time.sleep(0.01)
+            ticker.pause()
             status = ticker.status()
             self.assertEqual(status["quiet_round_count"], 0, "an order between ticks must reset the quiet-round counter")
         finally:
             ticker.stop()
-
     def test_bad_round_does_not_kill_ticker_thread(self):
         referee = AgoraReferee()
         original_step_round = referee.step_round
