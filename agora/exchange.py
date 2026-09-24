@@ -66,6 +66,7 @@ reach without distress sales.
 """
 
 import math
+import os
 import random
 from typing import Any, Dict, List, Optional
 
@@ -97,17 +98,36 @@ REPLENISH_FLOOR = 25_000
 # decays only through reversion toward NAV.
 IMPACT = 0.05
 
+def _env_exchange_momentum() -> float:
+    try:
+        v = os.environ.get("AGORA_EXCHANGE_MOMENTUM", "")
+        return float(v) if v else 0.0
+    except ValueError:
+        return 0.0
+
+DEFAULT_MOMENTUM = 0.0
+
 # Event kind -> (whose stock moves: 'actor' or 'victim', fractional jump).
-# Starting values from #151 (Amos's comment, settled with Zero 10:33).
+# Starting values from #151 (Amos's comment, settled with Zero 10:33) and #124.
 SHOCKS: Dict[str, tuple] = {
-    'upgrade':            ('actor', 0.02),
-    'escort':             ('actor', 0.01),
-    'raid_repelled':      ('victim', 0.01),
-    'contract_lapse':     ('actor', -0.03),
-    'privateer_contract': ('actor', -0.08),   # fires only on exposure
-    'sabotage':           ('actor', -0.08),   # fires only on exposure
-    'stake_20':           ('victim', 0.03),   # takeover premium
+    'upgrade':              ('actor', 0.02),
+    'escort':               ('actor', 0.01),
+    'raid_repelled':        ('victim', 0.01),
+    'contract_lapse':       ('actor', -0.03),
+    'privateer_contract':   ('actor', -0.08),   # fires only on exposure
+    'sabotage':             ('actor', -0.08),   # fires only on exposure
+    'stake_20':             ('victim', 0.03),   # takeover premium
     'deregulation_enacted': ('actor', 0.03), # planetary council lobbying shock (#134)
+}
+
+EXTENDED_SHOCKS: Dict[str, tuple] = {
+    'contract_win':         ('actor', 0.03),
+    'contract_fulfillment': ('actor', 0.03),
+    'contract_failure':     ('actor', -0.03),
+    'distress_beacon':      ('actor', -0.05),
+    'distress':             ('actor', -0.05),
+    'loan_default':         ('actor', -0.06),
+    'debt_default':         ('actor', -0.06),
 }
 # Cargo lost to a hazard or pirates: LOSS_PER of the price per LOSS_UNIT CR
 # lost (valued at agora.piracy.REF_PRICE), capped at LOSS_CAP.
@@ -115,16 +135,19 @@ LOSS_KINDS = ('hazard_loss', 'pirate_loss')
 LOSS_PER, LOSS_UNIT, LOSS_CAP = -0.01, 10_000, -0.05
 
 
-def shock_for(ev: Dict[str, Any]) -> Optional[tuple]:
+def shock_for(ev: Dict[str, Any], include_extended: bool = False) -> Optional[tuple]:
     """(agent whose stock moves, fractional jump) for a known event, or None."""
     kind = ev.get('kind')
     if kind in LOSS_KINDS:
         lost = max(0, int(ev.get('amount') or 0))
         pct = max(LOSS_CAP, LOSS_PER * lost / LOSS_UNIT)
         return (ev.get('victim'), pct) if pct else None
-    if kind not in SHOCKS:
+    table = dict(SHOCKS)
+    if include_extended:
+        table.update(EXTENDED_SHOCKS)
+    if kind not in table:
         return None
-    who, pct = SHOCKS[kind]
+    who, pct = table[kind]
     agent = ev.get(who)
     return (agent, pct) if agent else None
 
@@ -138,17 +161,20 @@ def clamp_shares(n: Any) -> int:
 
 class EquityExchange:
     def __init__(self, ref, vol: float = DEFAULT_VOL, spread: float = DEFAULT_SPREAD,
-                 depth: int = DEFAULT_DEPTH, seed: int = 0):
+                 depth: int = DEFAULT_DEPTH, seed: int = 0, momentum: float = DEFAULT_MOMENTUM, extended_shocks: bool = False):
         self.ref = ref
         self.vol = max(0.0, float(vol))
         self.spread = min(0.5, max(0.005, float(spread)))
         self.depth = max(1, int(depth))
+        self.momentum = max(0.0, min(float(momentum), 0.5))
+        self.extended_shocks = bool(extended_shocks)
         self.reset(seed)
 
     def reset(self, seed: int) -> None:
         self.rng = random.Random(f"exchange-{seed}")
         self.navs: Dict[str, List[float]] = {}
         self.price: Dict[str, float] = {}
+        self.prev_price: Dict[str, float] = {}
         self.held: Dict[str, int] = {}
         # Shares of each stock traded on the exchange book: this round so
         # far, and the last VOLUME_ROUNDS closed rounds (#187).
@@ -236,13 +262,16 @@ class EquityExchange:
                 anchor += slope * (len(hist) - 1) / 2
             anchor = max(1.0, anchor)
             p = self.price.get(sym, anchor)
+            prev_p = self.prev_price.get(sym, p)
+            momentum_nudge = max(-p * 0.25, min(p * 0.25, self.momentum * (p - prev_p)))
             now_held = ref.get_balance(EXCHANGE_ID, sym)
             net_sold = self.held.get(sym, now_held) - now_held
             self.held[sym] = now_held
             quoted = self.depths.get(sym, self.depth)
-            p = (p + REVERSION * (anchor - p) + self.vol * p * self.rng.gauss(0.0, 1.0)
+            p = (p + REVERSION * (anchor - p) + momentum_nudge + self.vol * p * self.rng.gauss(0.0, 1.0)
                  + IMPACT * p * net_sold / quoted)
             p = max(1.0, p)
+            self.prev_price[sym] = self.price.get(sym, p)
             self.price[sym] = p
 
             self._clear_locked(sym)
@@ -287,7 +316,7 @@ class EquityExchange:
         """Apply the one-off jump for an event that just became known.
         No-op when the exchange is not quoting that stock."""
         from agora.equity import FLEET_EQUITIES
-        s = shock_for(ev)
+        s = shock_for(ev, include_extended=self.extended_shocks)
         if not s:
             return None
         agent, pct = s

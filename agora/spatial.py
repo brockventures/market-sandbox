@@ -9,6 +9,7 @@ import math
 import random
 from dataclasses import dataclass, asdict
 from typing import Dict, Any, List, Optional, Tuple
+import os
 
 
 STATIONS = ["earth", "luna", "mars", "ceres"]
@@ -189,9 +190,18 @@ class StationSpotPrice:
     base_price: float
     drift_bias: float
     spot_price: float
+    momentum: float = 0.0
+    inventory_impact: float = 0.0
+    flow_impact: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
+
+DEFAULT_GOODS_MOMENTUM = 0.0
+DEFAULT_INVENTORY_SENSITIVITY = 0.0
+DEFAULT_FLOW_SENSITIVITY = 0.0
+DEFAULT_DELIVERY_SCALE = 1000.0
 
 
 class StationPriceEngine:
@@ -199,24 +209,53 @@ class StationPriceEngine:
     Mean-reverting random walk engine generating price surfaces for Sol stations.
     Theta tuned to 0.15 (half-life ~5 rounds) to preserve arbitrage viability over 2-3 round transits.
     Additive drift_bias injected deterministically from GalNet breaking news wire.
+    Dynamic price trending incorporates:
+      - Short-term momentum from prior price trajectories
+      - Reactive depot inventory pressure (scarcity vs surplus)
+      - Delivery flows and open contract demand
     """
 
-    def __init__(self, seed: int = 42, theta: float = 0.15, vol: float = 0.8):
+    def __init__(
+        self,
+        seed: int = 42,
+        theta: float = 0.15,
+        vol: float = 0.8,
+        momentum_factor: float = DEFAULT_GOODS_MOMENTUM,
+        inventory_sensitivity: float = DEFAULT_INVENTORY_SENSITIVITY,
+        delivery_scale: float = DEFAULT_DELIVERY_SCALE,
+        flow_sensitivity: float = DEFAULT_FLOW_SENSITIVITY,
+    ):
         self.seed = seed
         self.rng = random.Random(seed)
         self.theta = theta
         self.vol = vol
+        self.momentum_factor = min(max(float(momentum_factor), 0.0), 0.5)
+        self.inventory_sensitivity = min(max(float(inventory_sensitivity), 0.0), 1.0)
+        self.delivery_scale = max(1.0, float(delivery_scale))
+        self.flow_sensitivity = min(max(float(flow_sensitivity), 0.0), 0.5)
         self.current_round = 0
         self.spots: Dict[str, Dict[str, float]] = {
             st: {comm: BASE_PRICES[st][comm] for comm in COMMODITIES}
             for st in STATIONS
         }
+        self.spots_prev: Dict[str, Dict[str, float]] = {
+            st: {comm: BASE_PRICES[st][comm] for comm in COMMODITIES}
+            for st in STATIONS
+        }
         self.history: List[StationSpotPrice] = []
 
-    def step_round(self, round_num: int, galnet_engine: Optional[Any] = None) -> List[StationSpotPrice]:
+    def step_round(
+        self,
+        round_num: int,
+        galnet_engine: Optional[Any] = None,
+        depot_inventory: Optional[Dict[Tuple[str, str], float]] = None,
+        deliveries: Optional[Dict[Tuple[str, str], int]] = None,
+        contract_demands: Optional[Dict[Tuple[str, str], int]] = None,
+    ) -> List[StationSpotPrice]:
         """
         Advances the price surface to round_num.
-        Computes new spot prices incorporating mean reversion, GalNet drift bias, and Gaussian noise.
+        Computes new spot prices incorporating mean reversion, GalNet drift bias,
+        momentum, depot inventory pressure, delivery flows, and Gaussian noise.
         """
         self.current_round = round_num
         new_prices = []
@@ -225,16 +264,62 @@ class StationPriceEngine:
             for comm in COMMODITIES:
                 base = BASE_PRICES[st][comm]
                 old_spot = self.spots[st][comm]
+                prev_spot = self.spots_prev[st][comm]
+
+                # 1. Momentum driver: continuation of previous round's trajectory
+                delta_prev = old_spot - prev_spot
+                raw_pull = self.momentum_factor * delta_prev
+                momentum_pull = max(-base * 0.25, min(base * 0.25, raw_pull))
+
+                # 2. News wire driver: GalNet drift bias
                 drift_bias = 0.0
                 if galnet_engine:
                     drift_bias = galnet_engine.get_active_drift(st, comm)
-
-                # Ornstein-Uhlenbeck discrete step + news shock drift
-                mean_pull = self.theta * (base - old_spot)
                 shock_nudge = drift_bias * (base * 0.5)
+
+                # 3. Reactive depot inventory driver: neutral target = 1000 (REACTIVE_TARGET // 2)
+                inv_nudge = 0.0
+                if depot_inventory is not None:
+                    inv = depot_inventory.get((st, comm))
+                    if inv is not None:
+                        target = 1000.0
+                        inv_ratio = (target - inv) / target
+                        inv_nudge = inv_ratio * base * self.inventory_sensitivity
+
+                # 4. Delivery & contract demand flow drivers
+                flow_nudge = 0.0
+                if self.flow_sensitivity > 0.0:
+                    if deliveries and (st, comm) in deliveries:
+                        # Inflow of goods increases supply -> downward price pressure
+                        delivered = deliveries[(st, comm)]
+                        flow_nudge -= (delivered / self.delivery_scale) * base * self.flow_sensitivity
+                    if contract_demands and (st, comm) in contract_demands:
+                        # Demand for goods increases local bid -> upward price pressure
+                        demanded = contract_demands[(st, comm)]
+                        flow_nudge += (demanded / self.delivery_scale) * base * self.flow_sensitivity
+                    flow_nudge = max(-base * 0.25, min(base * 0.25, flow_nudge))
+
+                # 5. Ornstein-Uhlenbeck mean-reverting pull toward base
+                mean_pull = self.theta * (base - old_spot)
+
+                # 6. Gaussian noise
                 noise = self.rng.gauss(0, self.vol)
 
-                new_spot = max(1.0, round(old_spot + mean_pull + shock_nudge + noise, 2))
+                # Total new spot price
+                new_spot = max(
+                    1.0,
+                    round(
+                        old_spot
+                        + mean_pull
+                        + shock_nudge
+                        + momentum_pull
+                        + inv_nudge
+                        + flow_nudge
+                        + noise,
+                        2,
+                    ),
+                )
+                self.spots_prev[st][comm] = old_spot
                 self.spots[st][comm] = new_spot
 
                 entry = StationSpotPrice(
@@ -243,7 +328,10 @@ class StationPriceEngine:
                     round=round_num,
                     base_price=base,
                     drift_bias=drift_bias,
-                    spot_price=new_spot
+                    spot_price=new_spot,
+                    momentum=round(momentum_pull, 4),
+                    inventory_impact=round(inv_nudge, 4),
+                    flow_impact=round(flow_nudge, 4),
                 )
                 self.history.append(entry)
                 new_prices.append(entry)

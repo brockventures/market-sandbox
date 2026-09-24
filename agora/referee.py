@@ -44,7 +44,7 @@ from agora.hazards import HazardEngine, env_hazards, parse_hazards
 from agora.standing import StandingDesk, env_standing, TABLES as STANDING_TABLES
 from agora.piracy import PiracyDesk, env_piracy, parse_piracy, ESCORT_PCT as PIRACY_ESCORT_PCT
 from agora.piracy import cargo_value as piracy_cargo_value
-from agora.exchange import EquityExchange, EXCHANGE_ID, clamp_shares, DEFAULT_VOL
+from agora.exchange import EquityExchange, EXCHANGE_ID, clamp_shares, DEFAULT_VOL, DEFAULT_MOMENTUM
 
 
 ASYMMETRIC_SPAWN_LOCATIONS: Dict[str, str] = {
@@ -115,6 +115,8 @@ class AgoraReferee:
         rival_shares: Optional[int] = None,
         exchange_shares: Optional[int] = None,
         exchange_vol: Optional[float] = None,
+        exchange_momentum: Optional[float] = None,
+        extended_shocks: Optional[bool] = None,
         contracts: Optional[bool] = None,
         hazards: Any = None,
         corporate: Optional[bool] = None,
@@ -125,6 +127,10 @@ class AgoraReferee:
         standing: Optional[bool] = None,
         ship_hold: Optional[int] = None,
         galnet_auto_step: Optional[bool] = None,
+        goods_momentum: Optional[float] = None,
+        inventory_sensitivity: Optional[float] = None,
+        flow_sensitivity: Optional[float] = None,
+        delivery_scale: Optional[float] = None,
     ):
         self.db_path = db_path
         # Cargo units each ship's hold carries (agora/fleet.py SHIP_HOLD; the
@@ -144,7 +150,12 @@ class AgoraReferee:
         # The stock exchange's market maker (agora/exchange.py): shares of
         # each fleet it takes from treasury at genesis. 0 = no exchange quotes.
         self.exchange_shares = clamp_shares(exchange_shares) if exchange_shares is not None else 0
-        self.exchange = EquityExchange(self, vol=DEFAULT_VOL if exchange_vol is None else exchange_vol)
+        self.exchange = EquityExchange(
+            self,
+            vol=DEFAULT_VOL if exchange_vol is None else exchange_vol,
+            momentum=DEFAULT_MOMENTUM if exchange_momentum is None else exchange_momentum,
+            extended_shocks=bool(extended_shocks) if extended_shocks is not None else False,
+        )
         # Shares of each rival's stock every fleet starts with (0 = issuers
         # hold all their own stock, the old behaviour).
         self.rival_shares = max(0, int(rival_shares)) if rival_shares is not None else 0
@@ -174,7 +185,16 @@ class AgoraReferee:
         self.default_instrument = instrument or 'FRAG'
         self.galnet = galnet or GalNetEngine()
         self.galnet_auto_step = env_galnet_auto_step() if galnet_auto_step is None else bool(galnet_auto_step)
-        self.spatial = spatial or StationPriceEngine()
+        spatial_kwargs = {}
+        if goods_momentum is not None:
+            spatial_kwargs['momentum_factor'] = goods_momentum
+        if inventory_sensitivity is not None:
+            spatial_kwargs['inventory_sensitivity'] = inventory_sensitivity
+        if flow_sensitivity is not None:
+            spatial_kwargs['flow_sensitivity'] = flow_sensitivity
+        if delivery_scale is not None:
+            spatial_kwargs['delivery_scale'] = delivery_scale
+        self.spatial = spatial or StationPriceEngine(**spatial_kwargs)
         self.depots_enabled = depots
         self.asymmetric_enabled = asymmetric
         self.current_round: int = 0
@@ -714,6 +734,8 @@ class AgoraReferee:
         rival_shares: Optional[int] = None,
         exchange_shares: Optional[int] = None,
         exchange_vol: Optional[float] = None,
+        exchange_momentum: Optional[float] = None,
+        extended_shocks: Optional[bool] = None,
         contracts: Optional[bool] = None,
         hazards: Any = None,
         corporate: Optional[bool] = None,
@@ -723,6 +745,10 @@ class AgoraReferee:
         order_flow: Optional[bool] = None,
         standing: Optional[bool] = None,
         galnet_auto_step: Optional[bool] = None,
+        goods_momentum: Optional[float] = None,
+        inventory_sensitivity: Optional[float] = None,
+        flow_sensitivity: Optional[float] = None,
+        delivery_scale: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Full clean-slate reset, callable live via POST /referee/admin/reset:
@@ -748,6 +774,10 @@ class AgoraReferee:
             self.exchange_shares = clamp_shares(exchange_shares)
         if exchange_vol is not None:
             self.exchange.vol = max(0.0, float(exchange_vol))
+        if exchange_momentum is not None:
+            self.exchange.momentum = max(0.0, min(float(exchange_momentum), 0.5))
+        if extended_shocks is not None:
+            self.exchange.extended_shocks = bool(extended_shocks)
         if contracts is not None:
             self.contracts_enabled = bool(contracts)
         if hazards is not None:
@@ -778,7 +808,16 @@ class AgoraReferee:
                     )
         self._wipe_trading_state("reset via POST /referee/admin/reset")
         self.galnet = GalNetEngine()
-        self.spatial = StationPriceEngine()
+        sp_kw = {}
+        if goods_momentum is not None:
+            sp_kw['momentum_factor'] = goods_momentum
+        if inventory_sensitivity is not None:
+            sp_kw['inventory_sensitivity'] = inventory_sensitivity
+        if flow_sensitivity is not None:
+            sp_kw['flow_sensitivity'] = flow_sensitivity
+        if delivery_scale is not None:
+            sp_kw['delivery_scale'] = delivery_scale
+        self.spatial = StationPriceEngine(**sp_kw)
         if self.depots_enabled:
             self.seed_depots()
         self._configure_fog(fog, seed=0)
@@ -811,6 +850,8 @@ class AgoraReferee:
         rival_shares: Optional[int] = None,
         exchange_shares: Optional[int] = None,
         exchange_vol: Optional[float] = None,
+        exchange_momentum: Optional[float] = None,
+        extended_shocks: Optional[bool] = None,
         contracts: Optional[bool] = None,
         hazards: Any = None,
         corporate: Optional[bool] = None,
@@ -820,6 +861,10 @@ class AgoraReferee:
         order_flow: Optional[bool] = None,
         standing: Optional[bool] = None,
         galnet_auto_step: Optional[bool] = None,
+        goods_momentum: Optional[float] = None,
+        inventory_sensitivity: Optional[float] = None,
+        flow_sensitivity: Optional[float] = None,
+        delivery_scale: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Wipes the board exactly like reset_to_genesis(), but rolls a genuinely
@@ -846,6 +891,10 @@ class AgoraReferee:
             self.exchange_shares = clamp_shares(exchange_shares)
         if exchange_vol is not None:
             self.exchange.vol = max(0.0, float(exchange_vol))
+        if exchange_momentum is not None:
+            self.exchange.momentum = max(0.0, min(float(exchange_momentum), 0.5))
+        if extended_shocks is not None:
+            self.exchange.extended_shocks = bool(extended_shocks)
         if contracts is not None:
             self.contracts_enabled = bool(contracts)
         if hazards is not None:
@@ -1712,9 +1761,39 @@ class AgoraReferee:
                 ev = self.galnet.step_round(new_round)
                 if ev:
                     self.record_news(ev.to_dict(new_round))
+            # Advance prices with market drivers (inventory, deliveries, contract demand)
+            depot_inv = dict(self._reactive['shelf']) if getattr(self, '_reactive', None) and 'shelf' in self._reactive else None
+            deliveries_map = {}
+            demands_map = {}
+            with self.conn:
+                arr_rows = self.conn.execute("""
+                    SELECT destination, commodity, SUM(cargo_qty) as total_cargo
+                    FROM transits
+                    WHERE status = 'in_transit' AND arrival_round <= ?
+                    GROUP BY destination, commodity
+                """, (new_round,)).fetchall()
+                for r in arr_rows:
+                    if r['destination'] and r['commodity']:
+                        deliveries_map[(r['destination'].lower(), r['commodity'].upper())] = int(r['total_cargo'] or 0)
 
-            # Advance prices
-            spot_prices = self.spatial.step_round(new_round, galnet_engine=self.galnet)
+                if getattr(self, 'contracts_enabled', False):
+                    contract_rows = self.conn.execute("""
+                        SELECT station_id, instrument, SUM(qty_remaining) as total_demand
+                        FROM station_contracts
+                        WHERE status = 'open'
+                        GROUP BY station_id, instrument
+                    """).fetchall()
+                    for r in contract_rows:
+                        if r['station_id'] and r['instrument']:
+                            demands_map[(r['station_id'].lower(), r['instrument'].upper())] = int(r['total_demand'] or 0)
+
+            spot_prices = self.spatial.step_round(
+                new_round,
+                galnet_engine=self.galnet,
+                depot_inventory=depot_inv,
+                deliveries=deliveries_map,
+                contract_demands=demands_map,
+            )
             with self.conn:
                 for p in spot_prices:
                     self.conn.execute("""
