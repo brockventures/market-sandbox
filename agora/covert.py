@@ -18,22 +18,17 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from agora.bag import Bags
 
-# #186 (covert economics). Before: a saboteur's covert lane ran -42k to -46k
-# a game and a spy's -39k to -55k (hybrid scenario, seeds 1-40): ~11 strikes
-# at 4,000 plus ~2 traced fines of 12,000, for no income at all, since what a
-# sabotage took was destroyed. Now the saboteur keeps what it takes
-# (SABOTAGE_LOOT_SHARE 0 -> 1.0) and the prices come down: WIRETAP_COST
-# 2,500 -> 500, SABOTAGE_COST 4,000 -> 1,500, SABOTAGE_FINE 12,000 -> 3,000
-# (still paid to the victim). SABOTAGE_COOLDOWN is new: a paying sabotage
-# must not be repeatable on the same cargo every round. At 1,000 a saboteur
-# striking every SABOTAGE_COOLDOWN rounds out-earned one striking every 25
-# (styles_saboteur, seeds 1-40); at 1,500 the max rate earns less, so
-# spamming a rival does not pay.
-WIRETAP_COST = 500
-WIRETAP_ROUNDS = 10
-SABOTAGE_COST = 1_500
+# #186 (covert economics). Now the saboteur keeps what it takes
+# (SABOTAGE_LOOT_SHARE 1.0) and costs/yields are calibrated to make covert ops
+# viable without breaking the 100k-180k corridor: WIRETAP_COST 250 (15 rounds),
+# SABOTAGE_COST 800, SABOTAGE_FINE 1,600 (still paid to the victim),
+# TRANSIT_SIPHON 0.4, DOCK_STEAL 0.35, FUEL_SIPHON 25.
+# SABOTAGE_COOLDOWN (10 rounds) prevents spamming a single target.
+WIRETAP_COST = 250
+WIRETAP_ROUNDS = 15
+SABOTAGE_COST = 800
 SABOTAGE_TRACE = 0.25
-SABOTAGE_FINE = 3_000
+SABOTAGE_FINE = 1_600
 # Share of what a sabotage takes (cargo siphoned in flight, goods stolen from
 # a docked hold, fuel siphoned) that reaches the saboteur as loot, booked on a
 # sabotage-loot- txn; agora/standing.py books its sale to the covert lane.
@@ -43,9 +38,9 @@ SABOTAGE_LOOT_SHARE = 1.0
 # SABOTAGE_COOLDOWN rounds. Added with the loot share (#186) so a sabotage that
 # pays cannot be repeated on one cargo or hold round after round.
 SABOTAGE_COOLDOWN = 10
-TRANSIT_SIPHON = 0.3   # of the cargo in flight, and +1 round
-DOCK_STEAL = 0.25      # of the largest docked holding
-FUEL_SIPHON = 15       # units, when the hold is empty
+TRANSIT_SIPHON = 0.4   # of the cargo in flight, and +1 round
+DOCK_STEAL = 0.35      # of the largest docked holding
+FUEL_SIPHON = 25       # units, when the hold is empty
 RIVALRY_DECAY_ROUNDS = 30
 RUMOR_COST = 1_000
 RUMOR_DISCOUNT_COST = 500
