@@ -1217,6 +1217,77 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             self._send_json(400 if result.get('kind') == 'reject' else 200, result)
             return
 
+        # Corporate governance & hostile M&A (#164): POST /referee/corporate/...
+        if path.startswith('/referee/corporate/'):
+            action = path[len('/referee/corporate/'):].strip('/')
+            allowed_actions = (
+                'tender_offer', 'tender_accept', 'tender_cancel',
+                'tender/offer', 'tender/accept', 'tender/cancel',
+                'poison_pill', 'rights_exercise',
+                'loan', 'loan_offer', 'loan_accept', 'loan_cancel',
+                'loan/offer', 'loan/accept', 'loan/cancel',
+                'debt_buy', 'loan_repay'
+            )
+            if action in allowed_actions:
+                auth_agent, auth_err = self._authenticate_request()
+                if auth_err:
+                    self._send_json(401, auth_err)
+                    return
+                try:
+                    length = int(self.headers.get('Content-Length', 0))
+                    data = json.loads(self.rfile.read(length).decode('utf-8')) if length else {}
+                except Exception as e:
+                    self._send_json(400, {'v': 1, 'kind': 'reject',
+                                          'payload': {'reason': 'invalid_format', 'detail': f'Malformed JSON: {e}'}})
+                    return
+                if not isinstance(data, dict):
+                    self._send_json(400, {'v': 1, 'kind': 'reject',
+                                          'payload': {'reason': 'invalid_format', 'detail': 'JSON body must be an object'}})
+                    return
+                ref = self.referee or AgoraReferee()
+                if not getattr(ref, 'corporate_enabled', False):
+                    self._send_json(409, {'v': 1, 'kind': 'reject', 'payload': {
+                        'reason': 'corporate_disabled', 'detail': 'Corporate governance & takeovers are off in this game.'}})
+                    return
+                agent = data.get('agent_id') if auth_agent in ('admin', 'combine') else auth_agent
+                if not agent:
+                    self._send_json(400, {'v': 1, 'kind': 'reject',
+                                          'payload': {'reason': 'agent_required', 'detail': 'agent_id is required with this token'}})
+                    return
+                try:
+                    if action in ('tender_offer', 'tender/offer'):
+                        result = ref.corporate.create_tender_offer(agent, str(data.get('target', '')), data.get('price', 0), data.get('shares', 0))
+                    elif action in ('tender_accept', 'tender/accept'):
+                        result = ref.corporate.accept_tender_offer(agent, data.get('offer_id', 0), data.get('shares', 0))
+                    elif action in ('tender_cancel', 'tender/cancel'):
+                        result = ref.corporate.cancel_tender_offer(agent, data.get('offer_id', 0))
+                    elif action == 'poison_pill':
+                        result = ref.corporate.activate_poison_pill(str(data.get('target') or agent), caller=agent)
+                    elif action == 'rights_exercise':
+                        result = ref.corporate.exercise_rights(agent, str(data.get('target', '')), data.get('qty', 0))
+                    elif action in ('loan_offer', 'loan', 'loan/offer'):
+                        result = ref.corporate.create_loan_offer(agent, str(data.get('borrower', '')), data.get('principal', 0),
+                                                                 interest_rate=data.get('interest_rate', 0.20),
+                                                                 due_rounds=data.get('due_rounds', 5))
+                    elif action in ('loan_accept', 'loan/accept'):
+                        result = ref.corporate.accept_loan_offer(agent, data.get('offer_id', 0))
+                    elif action in ('loan_cancel', 'loan/cancel'):
+                        result = ref.corporate.cancel_loan_offer(agent, data.get('offer_id', 0))
+                    elif action == 'debt_buy':
+                        result = ref.corporate.buy_distressed_debt(agent, str(data.get('debtor', '')), data.get('amount', 0))
+                    elif action == 'loan_repay':
+                        result = ref.corporate.repay_loan(agent, data.get('loan_id', 0))
+                    else:
+                        result = {'v': 1, 'kind': 'reject', 'payload': {'reason': 'unknown_action', 'detail': f"Unknown governance action '{action}'"}}
+                except (ValueError, TypeError, OverflowError) as e:
+                    self._send_json(400, {'v': 1, 'kind': 'reject', 'payload': {'reason': 'invalid_parameters', 'detail': str(e)}})
+                    return
+                except Exception as e:
+                    self._send_json(400, {'v': 1, 'kind': 'reject', 'payload': {'reason': 'invalid_parameters', 'detail': str(e)}})
+                    return
+                self._send_json(400 if result.get('kind') == 'reject' else 200, result)
+                return
+
         # Station contracts (#115): POST /referee/contracts/{id}/{claim|list|buy|deliver}
         parts = path.strip('/').split('/')
         if len(parts) == 4 and parts[:2] == ['referee', 'contracts'] and parts[3] in ('claim', 'list', 'buy', 'deliver'):
@@ -1230,6 +1301,10 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._send_json(400, {'v': 1, 'kind': 'reject',
                                       'payload': {'reason': 'invalid_format', 'detail': f'Malformed JSON: {e}'}})
+                return
+            if not isinstance(data, dict):
+                self._send_json(400, {'v': 1, 'kind': 'reject',
+                                      'payload': {'reason': 'invalid_format', 'detail': 'JSON body must be an object'}})
                 return
             ref = self.referee or AgoraReferee()
             if not ref.contracts_enabled:
@@ -1541,9 +1616,10 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-        elif path == '/referee/corporate':
+        elif path in ('/referee/corporate', '/referee/corporate/governance'):
             self._send_json(200, {'status': 'ok', 'corporate_enabled': ref.corporate_enabled,
                                   'round': ref.current_round, **ref.corporate.summary()})
+            return
         elif path == '/referee/covert/wiretaps':
             viewer = self._reader()
             if not viewer:

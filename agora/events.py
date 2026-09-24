@@ -241,7 +241,9 @@ class EventDesk:
         conn, out = self.ref.conn, []
         fleets = {r[0] for r in conn.execute("SELECT agent_id FROM fleet_roster")}
         for issuer, conf in sorted(FLEET_EQUITIES.items()):
-            sym, need = conf['symbol'], int(conf['total_shares'] * STAKE_PCT)
+            sym = conf['symbol']
+            total_shares = self.ref.get_live_shares(sym) if hasattr(self.ref, 'get_live_shares') else conf.get('total_shares', 1000)
+            need = int(total_shares * STAKE_PCT)
             for r in conn.execute("SELECT agent_id, balance FROM accounts WHERE instrument = ? AND balance >= ? "
                                   "ORDER BY agent_id", (sym, need)).fetchall():
                 holder = r['agent_id']
@@ -250,7 +252,7 @@ class EventDesk:
                 if conn.execute("SELECT 1 FROM corp_events WHERE kind = 'stake_20' AND actor = ? AND victim = ?",
                                 (holder, issuer)).fetchone():
                     continue
-                pct = r['balance'] * 100 // conf['total_shares']
+                pct = r['balance'] * 100 // total_shares
                 eid = self.record_locked('stake_20', 'public', actor=holder, victim=issuer, round_num=round_num,
                                          agent_id=issuer,
                                          detail=f"{holder} now holds {r['balance']} {sym} ({pct}% of {issuer})")

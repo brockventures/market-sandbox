@@ -89,7 +89,7 @@ class SyndicateEquityEngine:
         base_nw = None
         for agent_id, conf in FLEET_EQUITIES.items():
             sym = conf["symbol"]
-            total_shares = conf["total_shares"]
+            total_shares = self.referee.get_live_shares(sym) if self.referee and hasattr(self.referee, 'get_live_shares') else conf.get("total_shares", 1000)
 
             # Query agent balances
             cur.execute("""

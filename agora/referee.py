@@ -2749,9 +2749,41 @@ class AgoraReferee:
             if getattr(self, 'corporate_enabled', False):
                 for b in board:
                     b['status'] = self.corporate.status(b['agent_id'])
+                    try:
+                        # 1. Tender offer escrow (remaining unspent escrow)
+                        t_row = self.conn.execute(
+                            "SELECT COALESCE(SUM((shares_wanted - shares_filled) * price), 0) AS escrow "
+                            "FROM corp_tender_offers WHERE raider = ? AND status = 'open'",
+                            (b['agent_id'],)).fetchone()
+                        if t_row and t_row['escrow']:
+                            b['net_worth'] += int(t_row['escrow'])
+
+                        # 2. Loan offers escrowed in SYSTEM
+                        l_escrow = self.conn.execute(
+                            "SELECT COALESCE(SUM(principal), 0) AS escrow "
+                            "FROM corp_loan_offers WHERE lender = ? AND status = 'open'",
+                            (b['agent_id'],)).fetchone()
+                        if l_escrow and l_escrow['escrow']:
+                            b['net_worth'] += int(l_escrow['escrow'])
+
+                        # 3. Active predatory loans: lender receivable (+) and borrower payable (-)
+                        rec = self.conn.execute(
+                            "SELECT COALESCE(SUM(due_amount), 0) AS receivable "
+                            "FROM corp_predatory_loans WHERE lender = ? AND status = 'active'",
+                            (b['agent_id'],)).fetchone()
+                        if rec and rec['receivable']:
+                            b['net_worth'] += int(rec['receivable'])
+
+                        pay = self.conn.execute(
+                            "SELECT COALESCE(SUM(due_amount), 0) AS payable "
+                            "FROM corp_predatory_loans WHERE borrower = ? AND status = 'active'",
+                            (b['agent_id'],)).fetchone()
+                        if pay and pay['payable']:
+                            b['net_worth'] -= int(pay['payable'])
+                    except Exception:
+                        pass
             board.sort(key=lambda x: x['net_worth'], reverse=True)
             return board
-
     def _fleet_mark_station_locked(self, agent_id: str) -> str:
         """Ship 1's station (its trip's origin while it flies), for a fleet's
         headline marks and for goods on an account that is not a ship."""
@@ -2762,6 +2794,22 @@ class AgoraReferee:
             st_id = (vessel.get('station_id') or 'ceres').lower().strip()
         return st_id if st_id in STATIONS else 'ceres'
 
+    def get_live_shares(self, sym: str) -> int:
+        """Returns the current circulating float of an equity symbol (#164).
+        Genesis float is 1,000 shares plus any defensive rights exercised."""
+        try:
+            from agora.equity import FLEET_EQUITIES
+            target = next((fleet for fleet, conf in FLEET_EQUITIES.items() if conf.get("symbol") == sym), None)
+            if target:
+                row = self.conn.execute(
+                    "SELECT COALESCE(SUM(rights_exercised), 0) AS extra FROM corp_poison_pills WHERE target = ?",
+                    (target,)).fetchone()
+                extra = int(row['extra']) if row and row['extra'] else 0
+                return 1000 + extra
+        except Exception:
+            pass
+        return 1000
+
     def stock_marks(self, base_net_worth: Dict[str, float]) -> Dict[str, Dict[str, Any]]:
         """Per fleet stock: NAV per share from the issuer's net worth before
         stock holdings, and the mark used on the leaderboard: the exchange
@@ -2769,7 +2817,8 @@ class AgoraReferee:
         out = {}
         for issuer, conf in FLEET_EQUITIES.items():
             sym = conf["symbol"]
-            nav = max(1.0, round(base_net_worth.get(issuer, 0) / conf["total_shares"], 2))
+            total_shares = self.get_live_shares(sym)
+            nav = max(1.0, round(base_net_worth.get(issuer, 0) / total_shares, 2))
             book = self.books.get(STOCK_EXCHANGE_STATION, {}).get(sym)
             bid = book.best_bid() if book else None
             ask = book.best_ask() if book else None
@@ -2780,7 +2829,7 @@ class AgoraReferee:
             else:
                 mark, basis = nav, 'nav'
             out[sym] = {'symbol': sym, 'issuer': issuer, 'nav': nav, 'mark': mark, 'basis': basis,
-                        'best_bid': bid, 'best_ask': ask}
+                        'best_bid': bid, 'best_ask': ask, 'total_shares': total_shares}
         return out
 
     def seed_depots(self, initial_cr: int = 1000000, initial_qty: int = 100000) -> None:
