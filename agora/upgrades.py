@@ -50,6 +50,15 @@ CATALOG: Dict[str, Dict[str, Any]] = {
     "engines":   {"prices": [12_000, 24_000], "factors": [1.0, 1.0], "unlocks": [40, 250],
                   "what": "tier 1: trips of 3+ rounds take one round less; tier 2: every trip "
                           "burns 40% less fuel"},
+    "boarding_pods": {"prices": [5_000], "factors": [0.80], "unlocks": [10],
+                      
+                      "what": "syndicate boarding pods increase cargo yield stolen during raids from 50% to 80%"},
+    "ecm_jammers":   {"prices": [6_500], "factors": [0.50], "unlocks": [60],
+                      
+                      "what": "lowers the chance of a privateer contract being traced by 50%, evading referee fines and exposure"},
+    "stealth_drives": {"prices": [7_000], "factors": [0.50], "unlocks": [90],
+                       
+                       "what": "cuts raid risk by 50% across belt and inner shipping lanes through low-emissions cloaking"},
 }
 
 # hold: the size of a cargo loss, by tier held (tier 0 first).
@@ -153,6 +162,15 @@ class UpgradeDesk:
         for kind, tier in self.holdings(agent).items():
             total += sum(CATALOG[kind]["prices"][:tier]) if kind in CATALOG else 0
         return int(total * CAPITAL_PCT)
+
+    def has_boarding_pods(self, agent: str) -> bool:
+        return self.tier(agent, 'boarding_pods') > 0
+
+    def has_ecm_jammers(self, agent: str) -> bool:
+        return self.tier(agent, 'ecm_jammers') > 0
+
+    def has_stealth_drives(self, agent: str) -> bool:
+        return self.tier(agent, 'stealth_drives') > 0
 
     def holdings(self, agent: str) -> Dict[str, int]:
         return {r["kind"]: r["tier"] for r in self.ref.conn.execute(

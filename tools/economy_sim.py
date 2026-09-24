@@ -207,7 +207,7 @@ CONTRACTORS = {"hauler", "novice", "privateer", "raider", "saboteur", "spy", "st
 SHIP_BUYERS = {"hauler", "privateer", "saboteur", "spy", "stock_hauler", "maker_hauler"}
 
 # Bot thresholds for the live-only mechanics. Behaviour, not rules.
-UPGRADE_ORDER = ("armor", "hold", "shielding", "engines")
+UPGRADE_ORDER = ("armor", "hold", "shielding", "engines", "boarding_pods", "ecm_jammers", "stealth_drives")
 UPGRADE_CASH_MULT = 5      # a hauler buys an upgrade tier once it has 5x its price in cash
 NOVICE_UPGRADE_CASH_MULT = 2
 DEADLINE_SLACK = 1         # rounds a hauler leaves for a flight delay when it values a contract
@@ -374,6 +374,25 @@ def want_escort(ref: AgoraReferee, agent: str, st: str, dest: str, comm: str, qt
     fee = ref.piracy.escort_fee(comm, qty)
     saving = (bare["odds"] - guarded["odds"]) * bare["value"] * RAID_LOSS
     return saving > fee and available(ref, agent, "CR") >= fee + toll
+
+
+def answer_tributes(ref: AgoraReferee, agent: str, stats) -> None:
+    """Respond to any pending extortion tributes for this agent."""
+    if not ref.piracy.enabled:
+        return
+    rows = ref.conn.execute(
+        "SELECT * FROM piracy_tributes WHERE target = ? AND status = 'pending'", (agent,)
+    ).fetchall()
+    for row in rows:
+        d = dict(row)
+        cash = available(ref, agent, "CR")
+        # Pay if affordable (under 20% of cash and modest amount)
+        if d["amount_cr"] <= cash * RANSOM_CASH_SHARE and d["amount_cr"] <= 1_000:
+            ref.piracy.respond_tribute(agent, d["tribute_id"], "accept")
+            stats["tributes_paid"] = stats.get("tributes_paid", 0) + 1
+        else:
+            ref.piracy.respond_tribute(agent, d["tribute_id"], "refuse")
+            stats["tributes_refused"] = stats.get("tributes_refused", 0) + 1
 
 
 def answer_demand(ref: AgoraReferee, agent: str, res: dict, stats, novice_rng: Optional[random.Random] = None) -> None:
@@ -688,6 +707,7 @@ class Hauler:
         return max((quotes[d][comm]["best_bid"] or 0) for d in STATIONS if d != st)
 
     def act(self, ref: AgoraReferee, quotes, stats) -> None:
+        answer_tributes(ref, self.agent, stats)
         if not self.shared_claims:
             self.claims = set()
         v = self.vessel
@@ -896,7 +916,42 @@ class Privateer(Hauler):
 
     def act(self, ref: AgoraReferee, quotes, stats) -> None:
         self._hire(ref, stats)
+        self._extort(ref, stats)
+        self._fence(ref, stats)
         super().act(ref, quotes, stats)
+
+    def _fence(self, ref: AgoraReferee, stats) -> None:
+        if not ref.piracy.enabled:
+            return
+        for comm in ("FRAG", "ORE", "FOOD", "FUEL"):
+            looted = ref.piracy.get_looted_cargo(self.agent, comm)
+            if looted > 0:
+                avail = available(ref, self.agent, comm)
+                fence_qty = min(looted, avail)
+                if fence_qty > 0:
+                    res = ref.piracy.fence_cargo(self.agent, comm, fence_qty)
+                    if res.get("kind") == "fence_ok":
+                        stats["cargo_fenced"] = stats.get("cargo_fenced", 0) + fence_qty
+
+    def _extort(self, ref: AgoraReferee, stats) -> None:
+        if not ref.piracy.enabled:
+            return
+        if debt(ref, self.agent) > 0 or available(ref, self.agent, "CR") < piracy_mod.PRIV_COST:
+            return
+        nw = {e["agent_id"]: e["net_worth"] for e in ref.get_leaderboard()}
+        rivals = sorted((b for b in FLEETS if b != self.agent and not ref.fleet_out(b)), key=lambda b: -nw.get(b, 0))
+        for target in rivals:
+            has_tribute = ref.conn.execute(
+                "SELECT 1 FROM piracy_tributes WHERE demander = ? AND target = ? AND status IN ('active', 'pending') AND end_round > ?",
+                (self.agent, target, ref.current_round)
+            ).fetchone()
+            if not has_tribute:
+                avail_t = available(ref, target, "CR")
+                amount = min(500, max(100, int(avail_t * 0.10))) if avail_t > 0 else 0
+                if amount > 0:
+                    ref.piracy.extort(self.agent, target, amount, rounds=20)
+                    stats["tributes_demanded"] = stats.get("tributes_demanded", 0) + 1
+                break
 
     def _hire(self, ref: AgoraReferee, stats) -> None:
         if not ref.piracy.enabled:

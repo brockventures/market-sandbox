@@ -1340,9 +1340,9 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             self._send_json(400 if result.get('kind') == 'reject' else 200, result)
             return
 
-        # Piracy (#145): POST /referee/piracy/{transit_id}/respond and POST /referee/privateers
+        # Piracy (#145, #166): POST /referee/piracy/{transit_id}/respond, /referee/privateers, /referee/piracy/fence, /referee/piracy/extort, /referee/piracy/tribute/respond
         if (len(parts) == 4 and parts[:2] == ['referee', 'piracy'] and parts[3] == 'respond') \
-                or path == '/referee/privateers':
+                or path in ('/referee/privateers', '/referee/piracy/fence', '/referee/piracy/extort', '/referee/piracy/tribute/respond'):
             auth_agent, auth_err = self._authenticate_request()
             if auth_err:
                 self._send_json(401, auth_err)
@@ -1355,7 +1355,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                                       'payload': {'reason': 'invalid_format', 'detail': f'Malformed JSON: {e}'}})
                 return
             ref = self.referee or AgoraReferee()
-            if not ref.piracy.enabled and path == '/referee/privateers':
+            if not ref.piracy.enabled and path in ('/referee/privateers', '/referee/piracy/fence', '/referee/piracy/extort', '/referee/piracy/tribute/respond'):
                 self._send_json(409, {'v': 1, 'kind': 'reject', 'payload': {
                     'reason': 'piracy_disabled',
                     'detail': 'Piracy is off in this game. Start one with new_game {"piracy": "0.15,0.04"}.'}})
@@ -1367,6 +1367,27 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 return
             if path == '/referee/privateers':
                 result = ref.piracy.hire(agent, str(data.get('target', '')))
+            elif path == '/referee/piracy/fence':
+                try:
+                    qty = int(data.get('qty', 0))
+                except (ValueError, TypeError):
+                    self._send_json(400, {'v': 1, 'kind': 'reject',
+                                          'payload': {'reason': 'invalid_format', 'detail': 'qty must be an integer'}})
+                    return
+                result = ref.piracy.fence_cargo(agent, str(data.get('commodity', '')), qty, data.get('station_id'))
+            elif path == '/referee/piracy/extort':
+                try:
+                    amount_cr = int(data.get('amount_cr', 0))
+                    rounds = int(data.get('rounds', 20))
+                except (ValueError, TypeError):
+                    self._send_json(400, {'v': 1, 'kind': 'reject',
+                                          'payload': {'reason': 'invalid_format', 'detail': 'amount_cr and rounds must be integers'}})
+                    return
+                result = ref.piracy.extort(agent, str(data.get('target', '')), amount_cr, rounds)
+            elif path == '/referee/piracy/tribute/respond':
+                tid = str(data.get('tribute_id', ''))
+                action = str(data.get('action', ''))
+                result = ref.piracy.respond_tribute(agent, tid, action)
             else:
                 result = ref.piracy.respond(agent, parts[2], str(data.get('choice', '')))
             self._send_json(400 if result.get('kind') == 'reject' else 200, result)
@@ -1782,6 +1803,19 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                                   'contracts': ref.contract_desk.list(status=status, station_id=st, lot_type=lot_type)})
         elif path == '/referee/piracy':
             self._send_json(200, {'status': 'ok', **ref.piracy.status(self._reader())})
+        elif path == '/referee/piracy/tributes':
+            self._send_json(200, {'status': 'ok', 'tributes': ref.piracy.tributes(self._reader())})
+        elif path == '/referee/piracy/syndicate':
+            viewer = self._reader()
+            requested = query_params.get('agent_id', [None])[0]
+            if not viewer:
+                self._send_json(401, {'error': 'unauthorized', 'detail': 'Authentication required'})
+                return
+            if requested and requested != viewer and viewer not in ('admin', 'combine'):
+                self._send_json(403, {'error': 'forbidden', 'detail': 'Cannot inspect rival syndicate status'})
+                return
+            ag = requested or viewer
+            self._send_json(200, ref.piracy.syndicate_status(ag))
         elif path == '/referee/order-flow':
             self._send_json(200, {'status': 'ok', 'round': ref.current_round, **ref.order_flow.status()})
         elif path == '/referee/peer/offers':
