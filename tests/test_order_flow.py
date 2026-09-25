@@ -73,11 +73,11 @@ class TestOnOff(unittest.TestCase):
 class TestSizing(unittest.TestCase):
     def test_sized_from_the_depot_drips(self):
         ref = game()
-        # Earth is FRAG's cheapest station: producers sell there, few buy.
-        self.assertEqual(ref.order_flow.expected('earth', 'FRAG'),
-                         {'buy': REACTIVE_SIDE_DRIP, 'sell': REACTIVE_MAIN_DRIP})
-        # Ceres is FRAG's dearest: consumers buy there.
+        # Ceres is FRAG's cheapest station: producers sell there, few buy (#243).
         self.assertEqual(ref.order_flow.expected('ceres', 'FRAG'),
+                         {'buy': REACTIVE_SIDE_DRIP, 'sell': REACTIVE_MAIN_DRIP})
+        # Earth is FRAG's dearest: consumers buy there.
+        self.assertEqual(ref.order_flow.expected('earth', 'FRAG'),
                          {'buy': REACTIVE_MAIN_DRIP, 'sell': REACTIVE_SIDE_DRIP})
         # Mars is neither: two-sided flow.
         self.assertEqual(ref.order_flow.expected('mars', 'FRAG'),
@@ -93,14 +93,14 @@ class TestSizing(unittest.TestCase):
 class TestFills(unittest.TestCase):
     def test_npc_buyers_take_a_fleet_ask_at_the_depot_ask_before_the_depot(self):
         ref = game()
-        _, ask = depot(ref, 'earth', 'FRAG')
-        cr0, frag0 = ref.get_balance('zero', 'CR'), ref.get_balance('zero', 'FRAG')
-        order(ref, 'zero', 'ask', 50, ask)
+        _, ask = depot(ref, 'ceres', 'FRAG')
+        cr0, frag0 = ref.get_balance('amos', 'CR'), ref.get_balance('amos', 'FRAG')
+        order(ref, 'amos', 'ask', 50, ask)
         rep = ref.step_round()
-        sold = REACTIVE_SIDE_DRIP  # Earth FRAG buyers a round
-        self.assertEqual(ref.get_balance('zero', 'FRAG'), frag0 - sold)
-        self.assertEqual(ref.get_balance('zero', 'CR'), cr0 + sold * ask)
-        self.assertEqual(rep['order_flow']['earth']['FRAG']['npc_bought'], sold)
+        sold = REACTIVE_SIDE_DRIP  # Ceres FRAG buyers a round (#243)
+        self.assertEqual(ref.get_balance('amos', 'FRAG'), frag0 - sold)
+        self.assertEqual(ref.get_balance('amos', 'CR'), cr0 + sold * ask)
+        self.assertEqual(rep['order_flow']['ceres']['FRAG']['npc_bought'], sold)
         # The NPCs traded with the fleet, not the depot.
         self.assertFalse(ref.conn.execute(
             "SELECT 1 FROM ledger_entries WHERE txn_id LIKE 'flow-%' AND agent_id LIKE 'depot_%'").fetchone())
@@ -129,9 +129,9 @@ class TestFills(unittest.TestCase):
 
     def test_price_then_time_priority_among_fleets(self):
         ref = game()
-        # Two fleets docked at Ceres (FRAG's dearest station: 100 buyers a round).
-        ref.conn.execute("UPDATE vessel_locations SET station_id = 'ceres' WHERE agent_id = 'zero'")
-        _, ask = depot(ref, 'ceres', 'FRAG')
+        # Two fleets docked at Earth (FRAG's dearest station: 100 buyers a round, #243).
+        ref.conn.execute("UPDATE vessel_locations SET station_id = 'earth' WHERE agent_id = 'amos'")
+        _, ask = depot(ref, 'earth', 'FRAG')
         order(ref, 'amos', 'ask', 60, ask, tag='late-worse')       # joins the depot
         order(ref, 'zero', 'ask', 60, ask - 1, tag='better')        # better price
         order(ref, 'marvin', 'ask', 1, ask, st='mars', tag='x')     # another station entirely
@@ -142,8 +142,8 @@ class TestFills(unittest.TestCase):
 
     def test_same_price_first_come_first_filled(self):
         ref = game()
-        ref.conn.execute("UPDATE vessel_locations SET station_id = 'ceres' WHERE agent_id = 'zero'")
-        _, ask = depot(ref, 'ceres', 'FRAG')
+        ref.conn.execute("UPDATE vessel_locations SET station_id = 'earth' WHERE agent_id = 'amos'")
+        _, ask = depot(ref, 'earth', 'FRAG')
         order(ref, 'zero', 'ask', 80, ask, tag='first')
         order(ref, 'amos', 'ask', 80, ask, tag='second')
         z0, a0 = ref.get_balance('zero', 'FRAG'), ref.get_balance('amos', 'FRAG')
@@ -285,8 +285,10 @@ class TestMainSideOff(unittest.TestCase):
     def test_main_side_sized_zero_side_unchanged(self):
         self.assertEqual(OF.FLOW_MAIN_SCALE, 0.0)
         ref = game()
-        self.assertEqual(ref.order_flow.expected('ceres', 'FRAG'), {'buy': 0, 'sell': REACTIVE_SIDE_DRIP})
-        self.assertEqual(ref.order_flow.expected('earth', 'FRAG'), {'buy': REACTIVE_SIDE_DRIP, 'sell': 0})
+        # Ceres is FRAG's cheapest (#243): sellers off (0), buyers side drip
+        self.assertEqual(ref.order_flow.expected('ceres', 'FRAG'), {'buy': REACTIVE_SIDE_DRIP, 'sell': 0})
+        # Earth is FRAG's dearest: buyers off (0), sellers side drip
+        self.assertEqual(ref.order_flow.expected('earth', 'FRAG'), {'buy': 0, 'sell': REACTIVE_SIDE_DRIP})
         self.assertEqual(ref.order_flow.expected('mars', 'FRAG'),
                          {'buy': REACTIVE_SIDE_DRIP, 'sell': REACTIVE_SIDE_DRIP})
         self.assertEqual(ref.order_flow.status()['flow_main_scale'], 0.0)
@@ -294,13 +296,13 @@ class TestMainSideOff(unittest.TestCase):
     @mock.patch.multiple(OF, FLOW_SCALE=1.0, FLOW_JITTER=(1.0, 1.0))
     def test_an_ask_at_the_dear_station_is_not_filled(self):
         ref = game()
-        # amos starts at Ceres, FRAG's dearest station.
-        self.assertEqual(ref.get_vessel_location('amos')['station_id'], 'ceres')
-        _, ask = depot(ref, 'ceres', 'FRAG')
-        frag0 = ref.get_balance('amos', 'FRAG')
-        order(ref, 'amos', 'ask', 50, ask)
+        # zero starts at Earth, FRAG's dearest station (#243).
+        self.assertEqual(ref.get_vessel_location('zero')['station_id'], 'earth')
+        _, ask = depot(ref, 'earth', 'FRAG')
+        frag0 = ref.get_balance('zero', 'FRAG')
+        order(ref, 'zero', 'ask', 50, ask)
         ref.step_round()
-        self.assertEqual(ref.get_balance('amos', 'FRAG'), frag0)
+        self.assertEqual(ref.get_balance('zero', 'FRAG'), frag0)
         self.assertEqual(flow_txns(ref), set())
 
     def test_briefing_says_so(self):
