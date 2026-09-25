@@ -15,18 +15,18 @@ class TestGoodsTrending(unittest.TestCase):
         # Clean engine without noise (vol=0) to isolate deterministic mechanics
         engine = StationPriceEngine(seed=42, theta=0.15, vol=0.0, momentum_factor=0.30)
         st, comm = "ceres", "FRAG"
-        base = BASE_PRICES[st][comm]  # 20.2
+        base = BASE_PRICES[st][comm]
 
         # Round 1: inject manual spot increase
-        engine.spots[st][comm] = base + 4.0  # 24.2
-        # Advance to round 2 without shock: delta_prev is (24.2 - 20.2) = +4.0
+        engine.spots[st][comm] = base + 4.0
+        # Advance to round 2 without shock: delta_prev is +4.0
         # Momentum pull = 0.30 * 4.0 = +1.20
-        # Mean pull = 0.15 * (20.2 - 24.2) = -0.60
-        # Net change = +0.60 -> spot should be 24.2 + 0.60 = 24.8
+        # Mean pull = 0.15 * -4.0 = -0.60
+        # Net change = +0.60 -> spot should be base + 4.60
         prices_r2 = engine.step_round(2)
         spot_r2 = engine.spots[st][comm]
-        self.assertAlmostEqual(spot_r2, 24.8, places=2)
-        self.assertGreater(spot_r2, 24.2)  # Momentum overcame mean pull on round 2
+        self.assertAlmostEqual(spot_r2, base + 4.6, places=2)
+        self.assertGreater(spot_r2, base + 4.0)  # Momentum overcame mean pull on round 2
 
         # Round 3: delta_prev is (24.8 - 24.2) = +0.60
         # Momentum pull = 0.30 * 0.60 = +0.18

@@ -156,9 +156,9 @@ class TestAgoraEngine(unittest.TestCase):
         referee = AgoraReferee()
         board = referee.get_leaderboard()
         self.assertEqual(len(board), 4)
-        # Flat start at Ceres: 10000 cash + 1000 bananas * 20 (Ceres spot) = 30000
+        # Flat start at Ceres: 10000 cash + 1000 bananas * 11 (Ceres spot under #243) = 21000
         for entry in board:
-            self.assertEqual(entry['net_worth'], 30000)
+            self.assertEqual(entry['net_worth'], 21000)
 
     def test_resting_order_escrow_committed_exposure(self):
         referee = AgoraReferee()
