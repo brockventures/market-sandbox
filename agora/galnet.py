@@ -23,6 +23,7 @@ class GalNetNewsEvent:
     body: str
     drift_bias: float
     duration_rounds: int
+    event_type: str = ""
 
     @property
     def expires_round(self) -> int:
@@ -225,6 +226,24 @@ NEWS_TEMPLATES = [
         "drift_bias": -0.20,
         "duration_rounds": 3,
     },
+    {
+        "station_id": "ceres",
+        "commodity": "FRAG",
+        "headline": "BELT SALVAGE SURGE: CATASTROPHIC DERELICT COLLISION SCATTERS VALUABLE DEBRIS",
+        "body": "Catastrophic bulk freighter collision in the Asteroid Belt floods Ceres orbital depots with raw scrap metal. Salvage hauler rush triggers severe pirate ambush hazards across Belt transit corridors.",
+        "drift_bias": -0.40,
+        "duration_rounds": 4,
+        "event_type": "belt_salvage_surge",
+    },
+    {
+        "station_id": "mars",
+        "commodity": "FUEL",
+        "headline": "CORONAL MASS EJECTION: SEVERE SOLAR RADIATION DISRUPTS RELAYS",
+        "body": "High-energy coronal mass ejection event strikes inner-to-mid solar orbital corridor. Telemetry depth and remote order relays between Earth, Luna, and Mars experience severe radiation interference.",
+        "drift_bias": 0.20,
+        "duration_rounds": 3,
+        "event_type": "coronal_mass_ejection",
+    },
 ]
 
 
@@ -241,6 +260,14 @@ class GalNetEngine:
         self.current_round = 0
         self.events: List[GalNetNewsEvent] = []
         self.active_shocks: List[GalNetNewsEvent] = []
+
+    def is_salvage_surge_active(self) -> bool:
+        """Returns True if a Belt Salvage Surge event is actively ongoing."""
+        return any(ev.event_type == "belt_salvage_surge" for ev in self.active_shocks)
+
+    def is_cme_active(self) -> bool:
+        """Returns True if a Coronal Mass Ejection solar weather event is actively ongoing."""
+        return any(ev.event_type == "coronal_mass_ejection" for ev in self.active_shocks)
 
     def step_round(self, round_num: int) -> Optional[GalNetNewsEvent]:
         """
@@ -282,6 +309,7 @@ class GalNetEngine:
             body=tpl["body"],
             drift_bias=tpl["drift_bias"],
             duration_rounds=tpl["duration_rounds"],
+            event_type=tpl.get("event_type", ""),
         )
 
         self.events.append(event)

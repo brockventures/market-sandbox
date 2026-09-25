@@ -789,6 +789,174 @@ class CorporateDesk:
                 'cost': cost, 'new_circulating_float': new_float, 'status': new_status
             }}
 
+    # ------------------------------------------------------------ Asset Spin-Offs & Emergency Fire-Sales (#245)
+
+    def spin_off_asset(self, agent: str, asset_type: str, asset_id: Optional[str] = None, shares: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Emergency corporate defense mechanism for target firms facing hostile tender
+        offers or predatory debt distress (#245 / #164).
+        Enables target corporations to spin off secondary hulls, liquidate depot storage leases,
+        or repurchase shares from rivals to defend against 51% takeovers.
+        """
+        ref = self.ref
+        agent = (agent or '').strip().lower()
+        asset_type = (asset_type or '').strip().lower()
+
+        out = self.out_reason(agent)
+        if out:
+            return _reject('fleet_out', out)
+
+        if hasattr(ref, 'fleet') and hasattr(ref.fleet, 'is_corp') and not ref.fleet.is_corp(agent):
+            return _reject('invalid_actor', f"Unknown or non-corporate fleet '{agent}'")
+
+        if asset_type in ('hull', 'ship', 'vessel'):
+            with ref.lock, ref.conn:
+                vessels = ref.conn.execute("SELECT * FROM vessels WHERE agent_id = ? ORDER BY vessel_id", (agent,)).fetchall()
+                if len(vessels) <= 1:
+                    return _reject('cannot_spin_off_sole_ship', "Corporation has only 1 vessel; primary hull cannot be spun off")
+
+                target_vid = None
+                if asset_id:
+                    target_vid, err = ref.fleet.resolve(agent, asset_id)
+                    if err:
+                        return err
+                else:
+                    # Default to highest numbered docked secondary vessel
+                    for v in reversed(vessels):
+                        if v['vessel_id'] != f"{agent}/1" and v['status'] == 'docked':
+                            target_vid = v['vessel_id']
+                            break
+
+                if not target_vid:
+                    return _reject('no_eligible_vessel', "No docked secondary vessel available to spin off")
+
+                if target_vid == f"{agent}/1":
+                    return _reject('cannot_spin_off_sole_ship', "Ship 1 is the fleet's primary flagship and cannot be spun off")
+
+                row = ref.conn.execute("SELECT * FROM vessels WHERE vessel_id = ?", (target_vid,)).fetchone()
+                if not row or row['status'] != 'docked':
+                    return _reject('vessel_not_docked', f"Vessel '{target_vid}' must be docked to be spun off")
+
+                scrap_cr = ref.fleet.scrap_locked(target_vid, "emergency defense spin-off")
+                debt_before = self._row(agent)['debt']
+                self._pay_down(agent)
+                debt_after = self._row(agent)['debt']
+                debt_paid = debt_before - debt_after
+
+                self._event("spin_off_hull", agent,
+                            f"{agent} spun off secondary hull {target_vid} raising {scrap_cr} CR in emergency defense fire-sale (debt paid down: {debt_paid})")
+
+                return {'v': 1, 'kind': 'spin_off_ok', 'payload': {
+                    'agent_id': agent,
+                    'asset_type': 'hull',
+                    'vessel_id': target_vid,
+                    'cash_raised': scrap_cr,
+                    'debt_paid': debt_paid,
+                    'remaining_debt': debt_after,
+                    'cash': ref.get_balance(agent, 'CR')
+                }}
+
+        elif asset_type in ('depot_lease', 'storage', 'lease'):
+            with ref.lock, ref.conn:
+                # Liquidates regional depot storage leases / peripheral warehousing to SYSTEM
+                cash_raised = 5_000
+                legs = [('SYSTEM', 'CR', -cash_raised), (agent, 'CR', cash_raised)]
+                self._move(f"spin-off-lease-{agent}-r{ref.current_round}", legs)
+                debt_before = self._row(agent)['debt']
+                self._pay_down(agent)
+                debt_after = self._row(agent)['debt']
+                debt_paid = debt_before - debt_after
+
+                self._event("spin_off_lease", agent,
+                            f"{agent} liquidated depot storage leases to SYSTEM for {cash_raised} CR emergency cash (debt paid down: {debt_paid})")
+
+                return {'v': 1, 'kind': 'spin_off_ok', 'payload': {
+                    'agent_id': agent,
+                    'asset_type': 'depot_lease',
+                    'cash_raised': cash_raised,
+                    'debt_paid': debt_paid,
+                    'remaining_debt': debt_after,
+                    'cash': ref.get_balance(agent, 'CR')
+                }}
+
+        elif asset_type in ('equity_buyback', 'buyback'):
+            with ref.lock, ref.conn:
+                sym = self._sym(agent)
+                if not sym:
+                    return _reject('no_equity_symbol', f"No equity symbol registered for {agent}")
+
+                available_cash = max(0, ref.peer._available(agent, "CR"))
+                if available_cash <= 0:
+                    return _reject('insufficient_funds', f"{agent} has 0 CR available for equity buyback")
+
+                base = {e["agent_id"]: e["net_worth"] - e.get("stocks_value", 0) for e in ref.get_leaderboard()}
+                marks = ref.stock_marks(base).get(sym, {})
+                px = max(1, int(max(marks.get("nav", 10.0), marks.get("mark", 10.0), PRICE_FLOOR)))
+
+                # Find outside holdings of sym held by rivals
+                rival_holdings = []
+                for rival in self.active():
+                    if rival == agent:
+                        continue
+                    bal = ref.get_balance(rival, sym)
+                    if bal > 0:
+                        rival_holdings.append((rival, bal))
+
+                if not rival_holdings:
+                    return _reject('no_rival_shares', f"No outstanding {sym} shares are held by outside rivals")
+
+                # If shares specified, cap at that, else buy as many as affordable
+                shares_target = _safe_int(shares, 'Buyback shares', min_val=1) if shares is not None else (available_cash // px)
+                if shares_target <= 0:
+                    return _reject('insufficient_funds', f"{agent} cash ({available_cash} CR) insufficient to buy 1 share at {px} CR")
+
+                bought_total = 0
+                cost_total = 0
+                details = []
+
+                # Buy back from largest holders first (neutralizing hostile raiders fastest)
+                rival_holdings.sort(key=lambda x: -x[1])
+                for rival, bal in rival_holdings:
+                    if shares_target <= 0 or available_cash < px:
+                        break
+                    can_buy = min(bal, shares_target, available_cash // px)
+                    if can_buy <= 0:
+                        continue
+                    cost = can_buy * px
+                    legs = [
+                        (agent, "CR", -cost),
+                        (rival, "CR", cost),
+                        (rival, sym, -can_buy),
+                        (agent, sym, can_buy)
+                    ]
+                    self._move(f"defense-buyback-{sym}-{rival}-r{ref.current_round}", legs)
+                    available_cash -= cost
+                    shares_target -= can_buy
+                    bought_total += can_buy
+                    cost_total += cost
+                    details.append(f"{can_buy} from {rival}")
+
+                if bought_total <= 0:
+                    return _reject('buyback_failed', "Could not execute buyback from rivals")
+
+                self._event("defense_buyback", agent,
+                            f"{agent} repurchased {bought_total} {sym} shares from rivals for {cost_total} CR ({', '.join(details)}) to defend corporate sovereignty")
+
+                return {'v': 1, 'kind': 'spin_off_ok', 'payload': {
+                    'agent_id': agent,
+                    'asset_type': 'equity_buyback',
+                    'symbol': sym,
+                    'shares_bought': bought_total,
+                    'cost_cr': cost_total,
+                    'price_per_share': px,
+                    'details': details,
+                    'remaining_cash': ref.get_balance(agent, 'CR'),
+                    'treasury_shares': ref.get_balance(agent, sym)
+                }}
+
+        else:
+            return _reject('invalid_asset_type', f"Unknown asset type '{asset_type}'. Valid types: 'hull', 'depot_lease', 'equity_buyback'")
+
     # ------------------------------------------------------------ Predatory Lending & Debt Buying (#164)
 
     def create_loan_offer(self, lender: str, borrower: str, principal: int, interest_rate: float = 0.20, due_rounds: int = 5) -> Dict[str, Any]:

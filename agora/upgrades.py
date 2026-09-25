@@ -66,6 +66,8 @@ CATALOG: Dict[str, Dict[str, Any]] = {
                       "what": "bulk warehouse storage increases ship hold capacity by +500 cargo units per tier"},
     "refinery_loop":  {"prices": [12_000], "factors": [0.80], "unlocks": [80],
                       "what": "catalytic refinery loop cuts transit propellant burn by an additional 20% on top of engine upgrades"},
+    "hardened_comm":  {"prices": [6_000], "factors": [0.0], "unlocks": [30],
+                      "what": "hardened military-grade laser transceiver array shields against Coronal Mass Ejection relay interference and remote telemetry blackouts"},
 }
 
 # hold: the size of a cargo loss, by tier held (tier 0 first).
@@ -100,6 +102,7 @@ NEWS_NOUN = {
     "priority_slips": "PRIORITY DOCKING SLIPS",
     "bulk_storage": "BULK WAREHOUSE STORAGE",
     "refinery_loop": "CATALYTIC REFINERY LOOPS",
+    "hardened_comm": "HARDENED COMM SUITE",
 }
 
 
@@ -236,6 +239,12 @@ class UpgradeDesk:
         if not getattr(self.ref, 'upgrades_enabled', False):
             return False
         return self.tier(agent, 'refinery_loop') > 0
+
+    def has_hardened_comm(self, agent: str) -> bool:
+        """Returns True if agent has fitted hardened comm suite (shields against Coronal Mass Ejection)."""
+        if not getattr(self.ref, 'upgrades_enabled', False):
+            return False
+        return self.tier(agent, 'hardened_comm') > 0
 
     def holdings(self, agent: str) -> Dict[str, int]:
         return {r["kind"]: r["tier"] for r in self.ref.conn.execute(

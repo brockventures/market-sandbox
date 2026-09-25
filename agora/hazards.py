@@ -111,3 +111,63 @@ class HazardEngine:
     def recent(self, since_round: int) -> list:
         return [dict(r) for r in self.conn.execute(
             "SELECT * FROM transit_hazards WHERE round >= ? ORDER BY round DESC, transit_id", (since_round,))]
+
+
+CME_RELAY_CORRIDORS = {
+    ("earth", "mars"), ("mars", "earth"),
+    ("luna", "mars"), ("mars", "luna"),
+}
+CME_STATIONS = {"earth", "luna", "mars"}
+
+
+def is_cme_active(ref) -> bool:
+    """Checks if a Coronal Mass Ejection event is active on the wire (#245)."""
+    if hasattr(ref, 'galnet') and ref.galnet and hasattr(ref.galnet, 'is_cme_active'):
+        return bool(ref.galnet.is_cme_active())
+    return False
+
+
+def check_cme_relay_interference(ref, agent_id: Optional[str], target_station: str, origin_station: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Checks if a remote quote or order depth request is subject to CME relay interference (#245).
+    Interference triggers when:
+      - CME is active
+      - target_station is remote (agent is not docked at target_station)
+      - route/corridor involves inner-to-mid solar stations (Earth, Luna, Mars)
+      - agent does not have hardened_comm upgrade
+    """
+    if not is_cme_active(ref):
+        return {"active": False, "interfered": False, "reason": "no_cme"}
+
+    # Admin bypasses
+    if agent_id in ("admin", None):
+        return {"active": True, "interfered": False, "reason": "admin_or_system"}
+
+    # Docked locally at target_station -> direct station LAN / hardwire bypasses relay blackout
+    if hasattr(ref, 'docked_stations'):
+        docked = ref.docked_stations(agent_id)
+        if target_station in docked:
+            return {"active": True, "interfered": False, "reason": "local_docked"}
+    elif hasattr(ref, 'get_vessel_location'):
+        loc = ref.get_vessel_location(agent_id)
+        if loc and loc.get('status') == 'docked' and loc.get('station_id') == target_station:
+            return {"active": True, "interfered": False, "reason": "local_docked"}
+
+    # Hardened communication suite upgrade bypasses CME interference
+    if hasattr(ref, 'upgrades') and ref.upgrades:
+        if getattr(ref.upgrades, 'has_hardened_comm', lambda a: False)(agent_id):
+            return {"active": True, "interfered": False, "reason": "hardened_comm"}
+
+    # CME impacts Earth-Mars corridor stations
+    if target_station in CME_STATIONS or (origin_station and origin_station in CME_STATIONS):
+        return {
+            "active": True,
+            "interfered": True,
+            "corridor": "earth_mars",
+            "reason": "cme_relay_blackout",
+            "detail": f"Coronal Mass Ejection has disrupted comms relay to '{target_station}'. Depth/quotes blinded by fog.",
+            "latency_rounds": 1,
+            "mitigation": "Install hardened_comm upgrade or dock at local station",
+        }
+
+    return {"active": True, "interfered": False, "reason": "outside_corridor"}
