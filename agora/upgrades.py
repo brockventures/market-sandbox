@@ -42,32 +42,32 @@ CAPITAL_PCT = 0.5
 # Per tier: prices, odds factors, and the round the tier goes on sale.
 CATALOG: Dict[str, Dict[str, Any]] = {
     "shielding": {"prices": [3_000, 7_000, 14_000], "factors": [0.85, 0.6, 0.35], "unlocks": [0, 75, 175],
-                  "what": "cuts the chance of a flight delay"},
+                  "what": "mitigates orbital friction and timeline variance (flight delays)"},
     "hold":      {"prices": [4_000, 9_000, 16_000], "factors": [0.75, 0.45, 0.25], "unlocks": [50, 125, 225],
-                  "what": "cuts the chance of losing cargo in flight; from tier 2 a loss also takes 30% less"},
+                  "what": "reduces supply-chain shrinkage in transit; from tier 2 caps inventory write-downs by 30%"},
     "armor":     {"prices": [7_500, 11_000, 18_000], "factors": [0.7, 0.45, 0.25], "unlocks": [0, 100, 200],
-                  "what": "cuts the chance of a pirate raid"},
+                  "what": "de-risks hostile kinetic acquisitions (piracy raids)"},
     "engines":   {"prices": [12_000, 24_000], "factors": [1.0, 1.0], "unlocks": [40, 250],
-                  "what": "tier 1: trips of 3+ rounds take one round less; tier 2: every trip "
-                          "burns 40% less fuel"},
+                  "what": "tier 1: expedites turnaround cycles (trips of 3+ rounds take 1 round less); tier 2: slashes "
+                          "operational propellant burn by 40%"},
     "boarding_pods": {"prices": [5_000], "factors": [0.80], "unlocks": [10],
-                      "what": "syndicate boarding pods increase cargo yield stolen during raids from 50% to 80%"},
+                      "what": "hostile asset acquisition pods boosting salvage yield during boardings from 50% to 80%"},
     "ecm_jammers":   {"prices": [6_500], "factors": [0.50], "unlocks": [60],
-                      "what": "lowers the chance of a privateer contract being traced by 50%, evading referee fines and exposure"},
+                      "what": "regulatory obfuscation jammers reducing contract audit risk and referee fines by 50%"},
     "stealth_drives": {"prices": [7_000], "factors": [0.50], "unlocks": [90],
-                       "what": "cuts raid risk by 50% across belt and inner shipping lanes through low-emissions cloaking"},
+                       "what": "low-visibility operational stealth reducing unannounced intercept risk across Belt lanes by 50%"},
     "algo_desk": {"prices": [6_000], "factors": [0.2], "unlocks": [20],
-                  "what": "cuts exchange transaction fee from 0.5% to 0.1% and grants priority order matching ahead of NPC flow"},
+                  "what": "high-frequency algorithmic execution desk slashing maker/taker fees from 0.5% to 0.1% with front-running queue priority"},
     "telemetry": {"prices": [5_000], "factors": [1.0], "unlocks": [15],
-                  "what": "gives real-time Level 2 depth telemetry and visibility into resting order books across all stations without visiting them"},
+                  "what": "Level 2 institutional book depth giving real-time market transparency across all remote stations"},
     "priority_slips": {"prices": [8_000], "factors": [1.0], "unlocks": [25],
-                      "what": "priority docking slips waive all docked idle fees across Sol stations"},
+                      "what": "preferred corporate docking privileges waiving all idle berth overhead across Sol stations"},
     "bulk_storage":   {"prices": [10_000], "factors": [1.0], "unlocks": [35],
-                      "what": "bulk warehouse storage increases ship hold capacity by +500 cargo units per tier"},
+                      "what": "scalable warehouse modularity expanding freight capacity by +500 cargo units per tier"},
     "refinery_loop":  {"prices": [12_000], "factors": [0.80], "unlocks": [80],
-                      "what": "catalytic refinery loop cuts transit propellant burn by an additional 20% on top of engine upgrades"},
+                      "what": "closed-loop catalytic efficiency cutting transit burn an additional 20% on top of propulsion upgrades"},
     "hardened_comm":  {"prices": [6_000], "factors": [0.0], "unlocks": [30],
-                      "what": "hardened military-grade laser transceiver array shields against Coronal Mass Ejection relay interference and remote telemetry blackouts"},
+                      "what": "enterprise-grade optical laser arrays insulating against CME market blackouts and telemetry fog"},
 }
 
 # hold: the size of a cargo loss, by tier held (tier 0 first).
@@ -106,6 +106,23 @@ NEWS_NOUN = {
 }
 
 
+TIER_NAMES: Dict[str, List[str]] = {
+    "shielding": ["Disruption Dampeners", "Variance Absorbers", "Enterprise Resilience Shielding"],
+    "hold": ["Just-in-Time Hold Pods", "Supply Chain Optimization Bays", "Vertical Integration Storage"],
+    "armor": ["Synergy Plating", "Hostile Takeover Countermeasures", "Fiduciary Hull Reinforcement"],
+    "engines": ["Turnaround Thrusters", "Hyper-Growth Propellant Loops"],
+    "boarding_pods": ["Hostile Asset Acquisition Pods"],
+    "ecm_jammers": ["Regulatory Obfuscation Jammers"],
+    "stealth_drives": ["Low-Visibility Operational Stealth"],
+    "algo_desk": ["High-Frequency Algo Execution Desk"],
+    "telemetry": ["Level 2 Institutional Depth Telemetry"],
+    "priority_slips": ["Preferred Corporate Docking Privileges"],
+    "bulk_storage": ["Scalable Warehouse Modularity"],
+    "refinery_loop": ["Closed-Loop Catalytic Efficiency"],
+    "hardened_comm": ["Enterprise Optical Laser Array"],
+}
+
+
 def unlock_round(kind: str, tier: int) -> int:
     """The round tier `tier` (1-based) of `kind` goes on sale."""
     return CATALOG[kind]["unlocks"][tier - 1]
@@ -114,10 +131,11 @@ def unlock_round(kind: str, tier: int) -> int:
 def unlock_news(kind: str, tier: int) -> tuple:
     """(headline, body) of the GalNet story for this tier's unlock."""
     c = CATALOG[kind]
-    return (f"SHIPYARDS NOW FITTING {NEWS_NOUN.get(kind, kind.upper())} TIER {tier}",
-            f"Sol's shipyards have finished retooling and can now fit {kind} tier {tier} at every station, "
-            f"for {c['prices'][tier - 1]:,} CR. {kind.capitalize()} {c['what']}. "
-            f"Tiers are fitted in order.")
+    tier_name = TIER_NAMES.get(kind, [kind.upper()])[tier - 1] if kind in TIER_NAMES and tier - 1 < len(TIER_NAMES[kind]) else f"{kind.upper()} TIER {tier}"
+    return (f"SHIPYARDS NOW FITTING {tier_name.upper()} ({NEWS_NOUN.get(kind, kind.upper())} TIER {tier})",
+            f"Sol's shipyards have completed capital expenditure retooling and can now fit {tier_name} ({kind} tier {tier}) "
+            f"at every station for {c['prices'][tier - 1]:,} CR. {kind.capitalize()} {c['what']}. "
+            f"Fitted assets capitalize directly into corporate NAV.")
 
 
 def env_upgrades() -> bool:
@@ -256,7 +274,8 @@ class UpgradeDesk:
         r = getattr(self.ref, 'current_round', 0)
         out = []
         for k, v in CATALOG.items():
-            tiers = [{"tier": i + 1, "price": p, "factor": v["factors"][i], "unlock_round": v["unlocks"][i],
+            tiers = [{"tier": i + 1, "name": TIER_NAMES.get(k, [k.upper()])[i] if k in TIER_NAMES and i < len(TIER_NAMES[k]) else f"{k.upper()} TIER {i+1}",
+                      "price": p, "factor": v["factors"][i], "unlock_round": v["unlocks"][i],
                       "locked": v["unlocks"][i] > r, "standing": standing_gate(k, i + 1)}
                      for i, p in enumerate(v["prices"])]
             out.append({"kind": k, "tiers": len(v["prices"]), "prices": v["prices"], "factors": v["factors"],
