@@ -284,7 +284,7 @@ class TestDepotServerEndpoints(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(data['status'], 'ok')
         self.assertTrue(data['depots']['depots_enabled'])
-        self.assertEqual(data['depots']['stations']['earth']['FRAG']['best_ask'], 12)  # #71's 11, on the #162 surface
+        self.assertEqual(data['depots']['stations']['earth']['FRAG']['best_ask'], 21)  # #243 inverted surface (was 12 on #162)
 
     def test_post_admin_depots_refresh(self):
         """POST /referee/admin/depots/refresh refreshes quotes."""

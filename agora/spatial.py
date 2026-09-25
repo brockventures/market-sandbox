@@ -34,13 +34,16 @@ def normalize_commodity(name: str) -> str:
 # narrowed to 75% of the original surface below (rounded to 0.1 CR), so
 # hauling pays about 150k over 300 rounds instead of about 270k and the other
 # play styles can compete. The means are unchanged. Original surface:
-#   earth FRAG 10 FUEL 8  FOOD 10 ORE 30 | luna  FRAG 12 FUEL 16 FOOD 14 ORE 22
-#   mars  FRAG 16 FUEL 14 FOOD 20 ORE 16 | ceres FRAG 22 FUEL 26 FOOD 30 ORE 10
+# #243: Invert FRAG price surface so Ceres is the scrap source (Belt debris) and
+# Earth is the scrap consumer (planetary recycling foundries).
+# Original surface:
+#   earth FRAG 22 FUEL 8  FOOD 10 ORE 30 | luna  FRAG 16 FUEL 16 FOOD 14 ORE 22
+#   mars  FRAG 12 FUEL 14 FOOD 20 ORE 16 | ceres FRAG 10 FUEL 26 FOOD 30 ORE 10
 BASE_PRICES = {
-    "earth": {"FRAG": 11.2, "FUEL": 10.0, "FOOD": 12.1, "ORE": 27.4},   # Scrap consumer, fuel surplus, hydroponics hub, ore importer
-    "luna":  {"FRAG": 12.8, "FUEL": 16.0, "FOOD": 15.1, "ORE": 21.4},   # Secondary yard, He-3 collection
-    "mars":  {"FRAG": 15.8, "FUEL": 14.5, "FOOD": 19.6, "ORE": 16.9},   # Heavy foundries, balanced fuel, dome agriculture
-    "ceres": {"FRAG": 20.2, "FUEL": 23.5, "FOOD": 27.1, "ORE": 12.4},   # Belt mining & scrap source, remote fuel depot, food importer
+    "earth": {"FRAG": 20.2, "FUEL": 10.0, "FOOD": 12.1, "ORE": 27.4},   # Scrap consumer, fuel surplus, hydroponics hub, ore importer
+    "luna":  {"FRAG": 15.8, "FUEL": 16.0, "FOOD": 15.1, "ORE": 21.4},   # Secondary yard, He-3 collection
+    "mars":  {"FRAG": 12.8, "FUEL": 14.5, "FOOD": 19.6, "ORE": 16.9},   # Heavy foundries, balanced fuel, dome agriculture
+    "ceres": {"FRAG": 11.2, "FUEL": 23.5, "FOOD": 27.1, "ORE": 12.4},   # Belt mining & scrap source, remote fuel depot, food importer
 }
 
 # Orbital transit distances, discrete rounds, and fuel burn requirements

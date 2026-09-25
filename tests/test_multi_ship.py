@@ -133,9 +133,10 @@ class TestShipsCarryGoods(unittest.TestCase):
 
     def test_a_ship_sells_only_its_own_hold(self):
         ref = self.ref
-        r = order(ref, 'amos', 'ask', 10, 1, 'FRAG', self.st, vessel='amos/2')
+        bid = ref.get_depot_summary()['stations'][self.st]['FRAG']['best_bid']
+        r = order(ref, 'amos', 'ask', 10, bid, 'FRAG', self.st, vessel='amos/2')
         self.assertEqual(r['payload']['reason'], 'insufficient_balance')
-        r = order(ref, 'amos', 'ask', 10, 1, 'FRAG', self.st)  # ship 1 by default
+        r = order(ref, 'amos', 'ask', 10, bid, 'FRAG', self.st)  # ship 1 by default
         self.assertNotEqual(r['kind'], 'reject', r)
         self.assertEqual(ref.get_balance('amos/1', 'FRAG'), 990)
         clean(self, ref)
@@ -316,7 +317,7 @@ class TestLeaderboardAndStanding(unittest.TestCase):
         ref.step_round()  # book the genesis and purchase
         before = {r['lane']: r['cum_profit'] for r in ref.conn.execute(
             "SELECT lane, cum_profit FROM standing_lanes WHERE agent_id = 'amos'")}
-        px = 20
+        px = 11  # Ceres FRAG spot price (#243)
         order(ref, 'amos', 'ask', 200, px, 'FRAG', st, vessel='amos/1', oid='x-ask')
         r = order(ref, 'amos', 'bid', 200, px, 'FRAG', st, vessel='amos/2', oid='x-bid')
         self.assertEqual(r['payload'].get('filled_qty'), 200, r)

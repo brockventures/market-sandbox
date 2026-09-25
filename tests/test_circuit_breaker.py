@@ -50,6 +50,7 @@ class TestCircuitBreaker(unittest.TestCase):
         assert bands['upper_limit'] == 24.2
 
 
+    @pre_162_surface()
     def test_in_band_execution_updates_vwap(self):
         ref = AgoraReferee()
 

@@ -59,8 +59,8 @@ from agora.spatial import STATIONS, COMMODITIES, BASE_PRICES
 
 # NPC units per side per round, as a multiple of the depot's drip for that
 # side (main 100, side 20 units a round). #162 sweep: a maker earns about
-# 33k over 300 rounds per 1.0 of scale; 3.0 puts it in the other styles' band.
-FLOW_SCALE = 3.0
+# 33k over 300 rounds per 1.0 of scale; 3.2 keeps it solidly in the 100k-180k band under #243.
+FLOW_SCALE = 3.2
 # Each side's size is scaled by a uniform draw from this range every round.
 FLOW_JITTER = (0.5, 1.5)
 # Main-side NPC flow (a good's dearest station's buyers, its cheapest

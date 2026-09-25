@@ -31,15 +31,22 @@ class TestCommoditiesEconomy(unittest.TestCase):
         self.assertEqual(BASE_PRICES['earth']['FOOD'], 12.1)
         self.assertEqual(BASE_PRICES['earth']['ORE'], 27.4)
 
-        # Ceres is rich in ORE and scrap, needs FOOD and FUEL
+        # Ceres is rich in ORE and scrap, needs FOOD and FUEL (#243)
         self.assertEqual(BASE_PRICES['ceres']['ORE'], 12.4)
         self.assertEqual(BASE_PRICES['ceres']['FOOD'], 27.1)
-        # Each good's cheapest and dearest station, and its mean, are unchanged.
+        self.assertEqual(BASE_PRICES['ceres']['FRAG'], 11.2)
+        self.assertEqual(BASE_PRICES['earth']['FRAG'], 20.2)
+        # Each good's cheapest and dearest station, and its mean, are verified.
         from tests.legacy_surface import PRE_162
-        for c in COMMODITIES:
+        for c in ('FUEL', 'FOOD', 'ORE'):
             self.assertEqual(min(STATIONS, key=lambda s: BASE_PRICES[s][c]), min(STATIONS, key=lambda s: PRE_162[s][c]))
             self.assertEqual(max(STATIONS, key=lambda s: BASE_PRICES[s][c]), max(STATIONS, key=lambda s: PRE_162[s][c]))
             self.assertAlmostEqual(sum(BASE_PRICES[s][c] for s in STATIONS), sum(PRE_162[s][c] for s in STATIONS), delta=0.2)
+
+        # #243: FRAG is inverted relative to PRE_162 so Ceres is scrap source and Earth is scrap consumer
+        self.assertEqual(min(STATIONS, key=lambda s: BASE_PRICES[s]['FRAG']), 'ceres')
+        self.assertEqual(max(STATIONS, key=lambda s: BASE_PRICES[s]['FRAG']), 'earth')
+        self.assertAlmostEqual(sum(BASE_PRICES[s]['FRAG'] for s in STATIONS), sum(PRE_162[s]['FRAG'] for s in STATIONS), delta=0.2)
 
     def test_perishable_flag_and_decay_rates(self):
         """FOOD is perishable and decays in belt transit; ORE is durable."""

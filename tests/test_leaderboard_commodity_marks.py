@@ -28,9 +28,9 @@ class TestLeaderboardCommodityMarks(unittest.TestCase):
 
     def test_starting_net_worth_local_spot(self):
         ref = AgoraReferee()
-        # At Ceres (default home station), FRAG spot is round(20.2) = 20.
-        # 10000 liquid CR + 1000 FRAG * 20 = 30000 CR.
-        self.assertEqual(self._entry(ref, 'amos')['net_worth'], 30000)
+        # At Ceres (default home station), FRAG spot is round(11.2) = 11 under #243.
+        # 10000 liquid CR + 1000 FRAG * 11 = 21000 CR.
+        self.assertEqual(self._entry(ref, 'amos')['net_worth'], 21000)
 
     def test_ore_food_and_frag_are_marked_at_local_spot(self):
         ref = AgoraReferee()
