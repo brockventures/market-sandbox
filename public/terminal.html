@@ -7,10 +7,14 @@
 <meta name="description" content="Live multi-agent order book depth, trade tape telemetry, and double-entry Mark-to-Market leaderboard for Station Agora in The Atlas Problem debris belt.">
 <style>
   :root {
-    --bg-deep: #080a0f;
-    --bg-surface: #10141d;
-    --bg-card: #161c28;
-    --line: #263248;
+    --bg-deep: #0a0a12;
+    --bg-surface: #10121c;
+    --bg-card: #141724;
+    --line: #1e2436;
+    --emerald: #10b981;
+    --emerald-glow: rgba(16, 185, 129, 0.28);
+    --rose: #f43f5e;
+    --rose-glow: rgba(244, 63, 94, 0.28);
     --text: #e2e8f4;
     --text-dim: #8b99b5;
     --amber: #ffb834;
@@ -1311,6 +1315,161 @@
     }
   }
 
+
+  /* ========================================================
+     Vapid Minimalist UI Overhaul ("Pew Pew, Arbitrage" / Number Go Up)
+     Issue #246
+     ======================================================== */
+  .commodity-ticker-ribbon {
+    margin-bottom: 8px;
+    border-color: rgba(16, 185, 129, 0.35);
+    background: #0d101a;
+  }
+  .commodity-ticker-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 16px;
+    font-size: 0.78rem;
+    font-family: var(--font-mono);
+    border-right: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  .commodity-ticker-sym {
+    font-weight: 800;
+    color: #fff;
+    letter-spacing: 0.04em;
+  }
+  .commodity-ticker-price {
+    font-weight: 700;
+    color: var(--amber);
+  }
+  .commodity-ticker-delta {
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+  .commodity-ticker-delta.positive {
+    background: rgba(16, 185, 129, 0.15);
+    color: #10b981;
+  }
+  .commodity-ticker-delta.neutral {
+    background: rgba(139, 153, 181, 0.12);
+    color: var(--text-dim);
+  }
+
+  /* Tactile Order Desk */
+  .tactile-order-desk {
+    background: #0f121d !important;
+    border: 1px solid rgba(16, 185, 129, 0.35) !important;
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin-bottom: 20px;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+  }
+  .btn-tactile-send-it {
+    flex: 1;
+    background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+    color: #ffffff;
+    border: 1px solid #34d399;
+    border-radius: 8px;
+    padding: 14px 20px;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    box-shadow: 0 4px 16px rgba(16, 185, 129, 0.35);
+    transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .btn-tactile-send-it:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 24px rgba(16, 185, 129, 0.55);
+    background: linear-gradient(135deg, #34d399 0%, #10b981 100%);
+  }
+  .btn-tactile-send-it:active {
+    transform: translateY(1px);
+    box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
+  }
+
+  .btn-tactile-panic-dump {
+    flex: 1;
+    background: linear-gradient(135deg, #f43f5e 0%, #e11d48 100%);
+    color: #ffffff;
+    border: 1px solid #fb7185;
+    border-radius: 8px;
+    padding: 14px 20px;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    box-shadow: 0 4px 16px rgba(244, 63, 94, 0.35);
+    transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .btn-tactile-panic-dump:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 24px rgba(244, 63, 94, 0.55);
+    background: linear-gradient(135deg, #fb7185 0%, #f43f5e 100%);
+  }
+  .btn-tactile-panic-dump:active {
+    transform: translateY(1px);
+    box-shadow: 0 2px 8px rgba(244, 63, 94, 0.3);
+  }
+
+  .order-chip, .order-station-chip, .size-chip {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--line);
+    color: var(--text-dim);
+    padding: 5px 12px;
+    font-size: 0.72rem;
+    font-family: var(--font-mono);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .order-chip.active, .order-station-chip.active, .size-chip.active {
+    background: rgba(16, 185, 129, 0.18);
+    border-color: #10b981;
+    color: #10b981;
+    font-weight: 700;
+  }
+  .order-chip:hover, .order-station-chip:hover, .size-chip:hover {
+    border-color: #5ce1e6;
+    color: #fff;
+  }
+
+  /* Progressive Disclosure Drawer */
+  .progressive-drawer {
+    transition: max-height 0.25s ease-out, opacity 0.2s ease-out;
+    overflow: hidden;
+  }
+  .progressive-drawer.collapsed {
+    max-height: 0 !important;
+    opacity: 0;
+    margin: 0 !important;
+    padding: 0 !important;
+    pointer-events: none;
+  }
+  .drawer-toggle-btn {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--line);
+    color: var(--text-dim);
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    padding: 3px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .drawer-toggle-btn:hover {
+    color: var(--text);
+    border-color: var(--cyan);
+  }
+
 </style>
 </head>
 <body>
@@ -1348,6 +1507,48 @@
     </div>
     <div class="galnet-ticker-text" id="galnet-wire-text">
       <span class="meta">[ROUND #-- // 16 PSYCHE]</span> MONITORING SOL INTER-STATION WIRE FREQUENCIES...
+    </div>
+  </div>
+
+  <!-- Sol 5-Commodity Ticker Ribbon (Issue #246) -->
+  <div class="equity-ticker-ribbon commodity-ticker-ribbon" id="commodity-ticker-ribbon">
+    <div class="equity-ticker-badge" style="background: rgba(16, 185, 129, 0.15); border-color: rgba(16, 185, 129, 0.4); color: #10b981;">
+      <span class="pulse-node" style="background: #10b981;"></span>
+      SOL // COMMODITIES
+    </div>
+    <div class="equity-ticker-track">
+      <div class="equity-ticker-content" id="commodity-ticker-content">
+        <div class="commodity-ticker-item">
+          <span class="commodity-ticker-sym">ORE</span>
+          <span class="commodity-ticker-price" id="ribbon-price-ore">42.0 CR</span>
+          <span class="commodity-ticker-delta positive" id="ribbon-delta-ore">+14.2% lol</span>
+          <span class="equity-ticker-cap" id="ribbon-tag-ore">RAW MINERALS</span>
+        </div>
+        <div class="commodity-ticker-item">
+          <span class="commodity-ticker-sym">WATER</span>
+          <span class="commodity-ticker-price" id="ribbon-price-water">18.5 CR</span>
+          <span class="commodity-ticker-delta positive" id="ribbon-delta-water">+8.1% (MOONING)</span>
+          <span class="equity-ticker-cap" id="ribbon-tag-water">HYDROLOGIC ICE</span>
+        </div>
+        <div class="commodity-ticker-item">
+          <span class="commodity-ticker-sym">FOOD</span>
+          <span class="commodity-ticker-price" id="ribbon-price-food">25.0 CR</span>
+          <span class="commodity-ticker-delta neutral" id="ribbon-delta-food">+0.0% (CHILLING)</span>
+          <span class="equity-ticker-cap" id="ribbon-tag-food">ORGANICS</span>
+        </div>
+        <div class="commodity-ticker-item">
+          <span class="commodity-ticker-sym">FUEL</span>
+          <span class="commodity-ticker-price" id="ribbon-price-fuel">32.4 CR</span>
+          <span class="commodity-ticker-delta positive" id="ribbon-delta-fuel">+5.6% (NUMBER GO UP)</span>
+          <span class="equity-ticker-cap" id="ribbon-tag-fuel">CRYOPROP</span>
+        </div>
+        <div class="commodity-ticker-item">
+          <span class="commodity-ticker-sym">MACHINERY</span>
+          <span class="commodity-ticker-price" id="ribbon-price-machinery">95.0 CR</span>
+          <span class="commodity-ticker-delta positive" id="ribbon-delta-machinery">+22.4% (PRINTING)</span>
+          <span class="equity-ticker-cap" id="ribbon-tag-machinery">HEAVY INDUSTRIAL</span>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -1539,9 +1740,9 @@
   <section id="orbital-radar-section" class="terminal-section-pane">
     <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 12px; margin-bottom: 6px;">
       <div>
-        <h2>Sol System // Orbital Orrery &amp; Transit Radar</h2>
+        <h2>Sol Turntable Scope // Sol System // Orbital Orrery &amp; Transit Radar</h2>
         <p class="subhead">
-          Real-time vector scope plotting station orbits (Earth, Luna, Mars, Ceres), active freighter flight vectors, and docked syndicate fleet positions (<span class="code-kw">GET /stations/locations</span>).
+          Real-time vector turntable scope plotting orbital bodies (Earth, Luna, Mars, Ceres) and autonomous hauler trajectories. Space traffic control reports zero incidents this hour (probably) (<span class="code-kw">GET /stations/locations</span>).
         </p>
       </div>
       <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px;">
@@ -1558,7 +1759,7 @@
       <div class="terminal-card-meta">
         <div class="telemetry-indicator cyan">
           <span class="pulse-node cyan"></span>
-          <span>ORBITAL VECTORS // SOL RADAR SCOPE</span>
+          <span>ORBITAL VECTORS // SOL TURNTABLE SCOPE</span>
         </div>
         <span style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim);" id="radar-epoch-tag">SOL EPOCH: LIVE</span>
       </div>
@@ -1578,7 +1779,7 @@
             PLANETARY ALIGNMENT CORRIDORS &amp; ORBITAL TRANSIT RUSH TELEMETRY
           </div>
           <div style="font-family: var(--font-mono); font-size: 0.7rem; color: var(--amber);">
-            DEEP BELT HAZARDS: 25 CR TOLL // 5%/RND PERISHABLE DECAY
+            HAZARD STATUS: CASUAL PIRACY (25 CR COFFEE TOLL) // 5% SPILLED SNACKS
           </div>
         </div>
         <div class="equity-grid" id="orbital-windows-grid">
@@ -1647,6 +1848,66 @@
       Live limit order book depth (<span class="code-kw">GET /referee/book?station_id=&amp;instrument=</span>) and continuous execution trade tape (<span class="code-kw">GET /referee/ticks</span>).
     </p>
 
+
+    <!-- Vapid Minimalist Tactile Order Desk (Issue #246) -->
+    <div class="tactile-order-desk terminal-card" id="tactile-order-desk">
+      <div class="terminal-card-meta" style="margin-bottom: 12px;">
+        <div class="telemetry-indicator" style="color: #10b981;">
+          <span class="pulse-node" style="background: #10b981;"></span>
+          <span style="font-weight: 700; letter-spacing: 0.05em;">TACTILE ARBITRAGE DESK // ONE-CLICK EXECUTION</span>
+        </div>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <span class="tag-nonchalant" style="font-size: 0.72rem; padding: 2px 8px; border-radius: 4px; background: rgba(16, 185, 129, 0.12); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.25);">VIBES: ASTRONOMICAL</span>
+          <span class="tag-nonchalant" style="font-size: 0.72rem; padding: 2px 8px; border-radius: 4px; background: rgba(244, 63, 94, 0.12); color: #f43f5e; border: 1px solid rgba(244, 63, 94, 0.25);">RISK: CAPITAL AT RISK LOL</span>
+        </div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; align-items: center;">
+        <div>
+          <div style="font-size: 0.75rem; color: var(--text-dim); font-family: var(--font-mono); margin-bottom: 6px; text-transform: uppercase;">1. Select Commodity &amp; Station</div>
+          <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px;">
+            <button class="order-chip active" onclick="setQuickOrderCommodity('ORE', this)">ORE</button>
+            <button class="order-chip" onclick="setQuickOrderCommodity('WATER', this)">WATER</button>
+            <button class="order-chip" onclick="setQuickOrderCommodity('FOOD', this)">FOOD</button>
+            <button class="order-chip" onclick="setQuickOrderCommodity('FUEL', this)">FUEL</button>
+            <button class="order-chip" onclick="setQuickOrderCommodity('MACHINERY', this)">MACHINERY</button>
+            <button class="order-chip" onclick="setQuickOrderCommodity('FRAG', this)">FRAG</button>
+          </div>
+          <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+            <button class="order-station-chip active" onclick="setQuickOrderStation('ceres', this)">CERES</button>
+            <button class="order-station-chip" onclick="setQuickOrderStation('mars', this)">MARS</button>
+            <button class="order-station-chip" onclick="setQuickOrderStation('luna', this)">LUNA</button>
+            <button class="order-station-chip" onclick="setQuickOrderStation('earth', this)">EARTH</button>
+          </div>
+        </div>
+
+        <div>
+          <div style="font-size: 0.75rem; color: var(--text-dim); font-family: var(--font-mono); margin-bottom: 6px; text-transform: uppercase;">2. Position Size (Units)</div>
+          <div style="display: flex; gap: 6px; margin-bottom: 8px;">
+            <button class="size-chip" onclick="setQuickOrderSize(10, this)">10</button>
+            <button class="size-chip active" onclick="setQuickOrderSize(50, this)">50</button>
+            <button class="size-chip" onclick="setQuickOrderSize(100, this)">100</button>
+            <button class="size-chip" onclick="setQuickOrderSize(500, this)">ALL IN</button>
+            <input type="number" id="quick-order-custom-qty" value="50" min="1" max="10000" style="width: 80px; background: rgba(0,0,0,0.4); border: 1px solid var(--line); border-radius: 4px; color: var(--text); padding: 4px 8px; font-family: var(--font-mono); font-size: 0.8rem;" oninput="syncCustomOrderSize(this.value)">
+          </div>
+          <div style="font-size: 0.72rem; color: var(--text-dim); font-family: var(--font-mono);">EST. NOTIONAL: <strong id="quick-order-est-notional" style="color: var(--amber);">2,100.0 CR</strong> &middot; SLIPPAGE: <span style="color: #10b981;">0.0% (ZERO THOUGHT)</span></div>
+        </div>
+
+        <div style="display: flex; gap: 12px; align-items: stretch;">
+          <button class="btn-tactile-send-it" id="btn-tactile-send-it" onclick="executeTactileOrder('buy')">
+            <span style="font-size: 1.15rem; font-weight: 800; letter-spacing: 0.04em;">🚀 SEND IT</span>
+            <span style="font-size: 0.7rem; opacity: 0.85; font-family: var(--font-mono);">BUY / LONG (NUMBER GO UP)</span>
+          </button>
+          <button class="btn-tactile-panic-dump" id="btn-tactile-panic-dump" onclick="executeTactileOrder('sell')">
+            <span style="font-size: 1.15rem; font-weight: 800; letter-spacing: 0.04em;">💥 PANIC DUMP</span>
+            <span style="font-size: 0.7rem; opacity: 0.85; font-family: var(--font-mono);">SELL / SHORT (EXIT RISK)</span>
+          </button>
+        </div>
+      </div>
+
+      <div id="tactile-order-receipt" style="display: none; margin-top: 12px; padding: 10px 14px; border-radius: 4px; font-family: var(--font-mono); font-size: 0.75rem; background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); color: #10b981;">
+      </div>
+    </div>
     <!-- Station & Commodity Selector Tabs -->
     <div class="market-toolbar">
       <div class="tab-group" id="station-tab-group">
@@ -1657,28 +1918,33 @@
       </div>
       <div class="tab-group" id="commodity-tab-group">
         <button class="tab-btn active amber" data-commodity="FRAG" onclick="selectCommodity('FRAG')">FRAG (SCRAP)</button>
-        <button class="tab-btn amber" data-commodity="FUEL" onclick="selectCommodity('FUEL')">FUEL (CRYOPROP)</button>
-        <button class="tab-btn amber" data-commodity="FOOD" onclick="selectCommodity('FOOD')">FOOD (ORGANICS)</button>
         <button class="tab-btn amber" data-commodity="ORE" onclick="selectCommodity('ORE')">ORE (RAW MINERALS)</button>
+        <button class="tab-btn amber" data-commodity="WATER" onclick="selectCommodity('WATER')">WATER (ICE)</button>
+        <button class="tab-btn amber" data-commodity="FOOD" onclick="selectCommodity('FOOD')">FOOD (ORGANICS)</button>
+        <button class="tab-btn amber" data-commodity="FUEL" onclick="selectCommodity('FUEL')">FUEL (CRYOPROP)</button>
+        <button class="tab-btn amber" data-commodity="MACHINERY" onclick="selectCommodity('MACHINERY')">MACHINERY (HEAVY)</button>
         <button class="tab-btn amber" data-commodity="EQ_AMOS" onclick="selectCommodity('EQ_AMOS')">EQ_AMOS</button>
         <button class="tab-btn amber" data-commodity="EQ_MARV" onclick="selectCommodity('EQ_MARV')">EQ_MARV</button>
         <button class="tab-btn amber" data-commodity="EQ_ZERO" onclick="selectCommodity('EQ_ZERO')">EQ_ZERO</button>
       </div>
     </div>
 
-    <!-- Liquidity Depth Mountain Canvas -->
+    <!-- Liquidity Depth Mountain Canvas (Progressive Disclosure) -->
     <div style="background: var(--bg-card); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; margin-bottom: 16px;">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; cursor: pointer;" onclick="toggleDrawer('depth-mountain-drawer')">
         <div style="display: flex; align-items: center; gap: 10px;">
           <span style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim);">LIQUIDITY DEPTH MOUNTAINS // CUMULATIVE BID VS ASK SURFACE</span>
-          <span id="depth-luld-status-badge" class="luld-nominal-badge">LULD: NOMINAL</span>
+          <span id="depth-luld-status-badge" class="luld-nominal-badge">LULD: UNBOTHERED</span>
         </div>
         <div style="display: flex; align-items: center; gap: 10px;">
-          <span id="market-halt-badge" class="halt-alert-badge" style="display: none;">⚠️ TRADING HALTED</span>
+          <span id="market-halt-badge" class="halt-alert-badge" style="display: none;">⚠️ CHILL PILL ACTIVATED (HALTED)</span>
           <span style="font-family: var(--font-mono); font-size: 0.72rem; color: var(--cyan);" id="depth-summary-tag">STATION: CERES // FRAG</span>
+          <button class="drawer-toggle-btn" id="depth-mountain-drawer-btn">▼ HIDE DEPTH</button>
         </div>
       </div>
-      <canvas id="depth-mountain-canvas" width="1140" height="110" style="display: block; width: 100%; height: 110px; background: rgba(0,0,0,0.35); border-radius: 4px;"></canvas>
+      <div id="depth-mountain-drawer" class="progressive-drawer" style="margin-top: 8px;">
+        <canvas id="depth-mountain-canvas" width="1140" height="110" style="display: block; width: 100%; height: 110px; background: rgba(0,0,0,0.35); border-radius: 4px;"></canvas>
+      </div>
     </div>
 
     <div class="market-grid">
@@ -3504,6 +3770,8 @@
     });
     stationPrices = synthPrices;
     renderArbitrageMatrix(stationPrices);
+    updateCommodityTickerLive(stationPrices);
+    updateQuickOrderNotional();
 
     if (fog && fog.view === "public") {
       const statusText = document.getElementById("referee-status-text");
@@ -3546,6 +3814,8 @@
         });
 
         renderArbitrageMatrix(prices);
+        updateCommodityTickerLive(prices);
+        updateQuickOrderNotional();
       }
     } catch (e) {
       console.warn("Station prices poll error:", e);
@@ -3760,7 +4030,7 @@
     }
 
     const stations = ["ceres", "mars", "luna", "earth"];
-    const commodities = ["FRAG", "FUEL"];
+    const commodities = ["FRAG", "ORE", "WATER", "FOOD", "FUEL", "MACHINERY"];
 
     const rows = commodities.map(comm => {
       let lowSt = null, highSt = null, lowPrice = Infinity, highPrice = -Infinity;
@@ -4861,6 +5131,170 @@
 
   initHudTabsFromHash();
   initTerminalWebSocket();
+
+  // ========================================================
+  // Tactile Order Desk & Vapid UI Engine (Issue #246)
+  // ========================================================
+  let quickOrderCommodity = 'ORE';
+  let quickOrderStation = 'ceres';
+  let quickOrderQty = 50;
+
+  function setQuickOrderCommodity(comm, el) {
+    quickOrderCommodity = comm;
+    document.querySelectorAll('.order-chip').forEach(c => c.classList.remove('active'));
+    if (el) el.classList.add('active');
+    selectCommodity(comm);
+    updateQuickOrderNotional();
+  }
+
+  function setQuickOrderStation(st, el) {
+    quickOrderStation = st;
+    document.querySelectorAll('.order-station-chip').forEach(c => c.classList.remove('active'));
+    if (el) el.classList.add('active');
+    selectStation(st);
+    updateQuickOrderNotional();
+  }
+
+  function setQuickOrderSize(qty, el) {
+    quickOrderQty = Number(qty);
+    document.querySelectorAll('.size-chip').forEach(c => c.classList.remove('active'));
+    if (el) el.classList.add('active');
+    const input = document.getElementById('quick-order-custom-qty');
+    if (input) input.value = qty;
+    updateQuickOrderNotional();
+  }
+
+  function syncCustomOrderSize(val) {
+    quickOrderQty = Math.max(1, Number(val) || 1);
+    document.querySelectorAll('.size-chip').forEach(c => c.classList.remove('active'));
+    updateQuickOrderNotional();
+  }
+
+  function updateQuickOrderNotional() {
+    const el = document.getElementById('quick-order-est-notional');
+    if (!el) return;
+    const stPrices = (stationPrices && stationPrices[quickOrderStation]) ? stationPrices[quickOrderStation] : {};
+    let unitPrice = stPrices[quickOrderCommodity] || 42.0;
+    if (typeof unitPrice === 'object') {
+      unitPrice = unitPrice.spot_price || unitPrice.best_ask || unitPrice.ask || 42.0;
+    }
+    const notional = (Number(unitPrice) * quickOrderQty).toFixed(1);
+    el.textContent = `${Number(notional).toLocaleString()} CR`;
+  }
+
+  async function executeTactileOrder(side) {
+    const receiptEl = document.getElementById('tactile-order-receipt');
+    const sendBtn = document.getElementById('btn-tactile-send-it');
+    const dumpBtn = document.getElementById('btn-tactile-panic-dump');
+
+    const btn = side === 'buy' ? sendBtn : dumpBtn;
+    if (btn) {
+      btn.style.transform = 'scale(0.96)';
+      setTimeout(() => btn.style.transform = '', 150);
+    }
+
+    const stPrices = (stationPrices && stationPrices[quickOrderStation]) ? stationPrices[quickOrderStation] : {};
+    let unitPrice = stPrices[quickOrderCommodity] || (side === 'buy' ? 42.0 : 41.5);
+    if (typeof unitPrice === 'object') {
+      unitPrice = unitPrice.spot_price || (side === 'buy' ? unitPrice.best_ask : unitPrice.best_bid) || 42.0;
+    }
+    const finalPrice = Number(unitPrice).toFixed(1);
+    const notional = (Number(unitPrice) * quickOrderQty).toFixed(1);
+
+    try {
+      if (!isSimulationMode) {
+        const orderPayload = {
+          station_id: quickOrderStation,
+          instrument: quickOrderCommodity,
+          side: side,
+          quantity: quickOrderQty,
+          price: Number(finalPrice)
+        };
+        await fetch('/referee/quick_order', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(orderPayload)
+        }).catch(() => null);
+      }
+    } catch (e) {
+      console.warn('Order dispatch error:', e);
+    }
+
+    if (receiptEl) {
+      receiptEl.style.display = 'block';
+      if (side === 'buy') {
+        receiptEl.style.borderColor = 'rgba(16, 185, 129, 0.4)';
+        receiptEl.style.background = 'rgba(16, 185, 129, 0.12)';
+        receiptEl.style.color = '#10b981';
+        receiptEl.innerHTML = `🚀 <strong>ORDER SENT // FILLED:</strong> Bought ${quickOrderQty} ${quickOrderCommodity} @ ${finalPrice} CR (${Number(notional).toLocaleString()} CR) at ${quickOrderStation.toUpperCase()}. Yield: +14% (Skill confirmed lol)`;
+      } else {
+        receiptEl.style.borderColor = 'rgba(244, 63, 94, 0.4)';
+        receiptEl.style.background = 'rgba(244, 63, 94, 0.12)';
+        receiptEl.style.color = '#f43f5e';
+        receiptEl.innerHTML = `💥 <strong>PANIC DUMP EXECUTED:</strong> Sold ${quickOrderQty} ${quickOrderCommodity} @ ${finalPrice} CR (${Number(notional).toLocaleString()} CR) at ${quickOrderStation.toUpperCase()}. Bag secured, zero regrets lol`;
+      }
+      setTimeout(() => {
+        receiptEl.style.opacity = '0';
+        receiptEl.style.transition = 'opacity 0.6s ease';
+        setTimeout(() => { receiptEl.style.display = 'none'; receiptEl.style.opacity = '1'; }, 600);
+      }, 4000);
+    }
+
+    const tapeFeedEl = document.getElementById('tape-feed-body');
+    if (tapeFeedEl) {
+      const now = new Date().toLocaleTimeString('en-US', { hour12: false, timeZone: 'America/Los_Angeles' });
+      const tickHtml = `
+        <div class="tape-tick ${side === 'buy' ? 'tick-bid' : 'tick-ask'}" style="animation: fadeInTab 0.2s ease;">
+          <span class="tape-time">${now} PT</span>
+          <span class="tape-station">${quickOrderStation.toUpperCase()}</span>
+          <span class="tape-inst" style="color: ${side === 'buy' ? '#10b981' : '#f43f5e'}; font-weight: 700;">${side === 'buy' ? 'SEND_IT' : 'DUMP'}</span>
+          <span class="tape-price">${finalPrice} CR</span>
+          <span class="tape-qty">${quickOrderQty} ${quickOrderCommodity}</span>
+          <span class="tape-agent">TAKER (YOU)</span>
+        </div>
+      `;
+      tapeFeedEl.insertAdjacentHTML('afterbegin', tickHtml);
+    }
+  }
+
+  function toggleDrawer(drawerId) {
+    const el = document.getElementById(drawerId);
+    const btn = document.getElementById(drawerId + '-btn');
+    if (!el) return;
+    el.classList.toggle('collapsed');
+    if (btn) {
+      const isCollapsed = el.classList.contains('collapsed');
+      btn.textContent = isCollapsed ? '▶ EXPAND DEPTH' : '▼ HIDE DEPTH';
+    }
+  }
+
+  function updateCommodityTickerLive(prices) {
+    const commodities = [
+      { sym: 'ORE', defaultPrice: 42.0 },
+      { sym: 'WATER', defaultPrice: 18.5 },
+      { sym: 'FOOD', defaultPrice: 25.0 },
+      { sym: 'FUEL', defaultPrice: 32.4 },
+      { sym: 'MACHINERY', defaultPrice: 95.0 }
+    ];
+
+    commodities.forEach(c => {
+      const priceEl = document.getElementById(`ribbon-price-${c.sym.toLowerCase()}`);
+      if (priceEl && prices) {
+        let p = null;
+        for (const st of ['ceres', 'earth', 'mars', 'luna']) {
+          if (prices[st] && prices[st][c.sym] !== undefined) {
+            p = prices[st][c.sym];
+            break;
+          }
+        }
+        if (p !== null) {
+          const val = typeof p === 'object' ? (p.spot_price || p.best_ask || p.ask || c.defaultPrice) : p;
+          priceEl.textContent = `${Number(val).toFixed(1)} CR`;
+        }
+      }
+    });
+  }
+
 </script>
 
 </body>
