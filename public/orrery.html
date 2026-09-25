@@ -3,56 +3,80 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#07030e">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#08090e">
 <title>AGORA // Sol System Orbital Orrery &middot; Astrodynamics Radar</title>
-<meta name="description" content="Fullscreen Keplerian orbital mechanics orrery, real-time syndicate fleet vectors, and Hohmann alignment corridor telemetry for Station Agora.">
 <style>
   :root {
-    --bg-void: #07030e;
-    --bg-surface: #0f071b;
-    --bg-card: rgba(22, 11, 38, 0.75);
-    --bg-card-hover: rgba(33, 16, 56, 0.88);
-    --border-card: rgba(168, 85, 247, 0.28);
-    --border-card-glow: rgba(192, 132, 252, 0.6);
-    --neon-purple: #c084fc;
-    --neon-purple-deep: #a855f7;
-    --neon-magenta: #d946ef;
-    --neon-cyan: #5ce1e6;
-    --neon-cyan-glow: rgba(92, 225, 230, 0.4);
-    --neon-amber: #fbbf24;
-    --neon-red: #f87171;
-    --neon-green: #4ade80;
-    --text-primary: #f3e8ff;
-    --text-secondary: #c084fc;
-    --text-muted: #8b72a8;
-    --font-mono: "Space Mono", "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
-    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --bg-deep: #08090e;
+    --bg-surface: #0e111a;
+    --bg-card: #131724;
+    --bg-card-hover: #171d2e;
+    --line: #1c2233;
+    --line-subtle: #171c2b;
+    --line-highlight: #28334a;
+
+    --emerald: #10b981;
+    --emerald-bg: rgba(16, 185, 129, 0.08);
+    --emerald-border: rgba(16, 185, 129, 0.25);
+
+    --rose: #f43f5e;
+    --rose-bg: rgba(244, 63, 94, 0.08);
+    --rose-border: rgba(244, 63, 94, 0.25);
+
+    --amber: #f59e0b;
+    --amber-bg: rgba(245, 158, 11, 0.08);
+    --amber-border: rgba(245, 158, 11, 0.25);
+
+    --indigo: #6366f1;
+    --indigo-bg: rgba(99, 102, 241, 0.08);
+    --indigo-border: rgba(99, 102, 241, 0.25);
+
+    --cyan: #06b6d4;
+    --cyan-bg: rgba(6, 182, 212, 0.08);
+    --cyan-border: rgba(6, 182, 212, 0.25);
+
+    --purple: #a855f7;
+    --purple-bg: rgba(168, 85, 247, 0.08);
+    --purple-border: rgba(168, 85, 247, 0.25);
+
+    --text: #f1f5f9;
+    --text-muted: #94a3b8;
+    --text-dim: #64748b;
+
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", "Helvetica Neue", sans-serif;
+    --font-mono: "JetBrains Mono", "SF Mono", "Fira Code", Menlo, Consolas, monospace;
+
+    --radius-sm: 4px;
+    --radius-md: 6px;
+    --radius-lg: 8px;
+    --radius-xl: 12px;
   }
 
-  * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-tap-highlight-color: transparent; }
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
 
   html, body {
     width: 100%;
     height: 100%;
+    background-color: var(--bg-deep);
+    color: var(--text);
+    font-family: var(--font-sans);
     overflow: hidden;
-    background-color: var(--bg-void);
-    color: var(--text-primary);
-    font-family: var(--font-mono);
-    font-size: 13px;
-    touch-action: none;
+    position: fixed;
   }
 
   #canvas-container {
     position: absolute;
     top: 0;
     left: 0;
-    width: 100vw;
-    height: 100vh;
+    width: 100%;
+    height: 100%;
     z-index: 1;
-    touch-action: none;
   }
 
   canvas {
@@ -60,422 +84,642 @@
     width: 100%;
     height: 100%;
     cursor: grab;
-    touch-action: none;
   }
+
   canvas:active {
     cursor: grabbing;
   }
 
-  .vignette-overlay {
-    position: absolute;
-    top: 0; left: 0; width: 100vw; height: 100vh;
-    pointer-events: none;
-    z-index: 2;
-    background: radial-gradient(circle at center, transparent 60%, rgba(7, 3, 14, 0.75) 100%);
-  }
-
-  .scanlines-overlay {
-    position: absolute;
-    top: 0; left: 0; width: 100vw; height: 100vh;
-    pointer-events: none;
-    z-index: 3;
-    background: linear-gradient(rgba(18, 16, 30, 0) 50%, rgba(0, 0, 0, 0.22) 50%);
-    background-size: 100% 4px;
-    opacity: 0.55;
-  }
-
-  .hud-overlay {
-    position: absolute;
+  /* --- Top Sleek Navigation Header --- */
+  .orrery-header {
+    position: fixed;
     top: 0;
     left: 0;
-    width: 100vw;
-    height: 100vh;
-    z-index: 10;
-    pointer-events: none;
-    display: grid;
-    grid-template-columns: 360px 1fr 340px;
-    grid-template-rows: auto 1fr auto;
-    padding: 20px;
-    gap: 20px;
-  }
-
-  .hud-card {
-    pointer-events: auto;
-    background: var(--bg-card);
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
-    border: 1px solid var(--border-card);
-    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.65), 0 0 16px rgba(168, 85, 247, 0.15);
-    border-radius: 8px;
-    padding: 14px 16px;
-    transition: all 0.25s ease;
-    overflow: hidden;
-    position: relative;
-  }
-  .hud-card::before {
-    content: "";
-    position: absolute;
-    top: 0; left: 0; width: 3px; height: 100%;
-    background: var(--neon-purple);
-    box-shadow: 0 0 8px var(--neon-purple);
-  }
-  .hud-card:hover {
-    background: var(--bg-card-hover);
-    border-color: var(--border-card-glow);
-    box-shadow: 0 8px 36px 0 rgba(0, 0, 0, 0.8), 0 0 24px rgba(192, 132, 252, 0.3);
-  }
-
-  .hud-card-header {
+    right: 0;
+    height: 52px;
+    background: rgba(14, 17, 26, 0.85);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border-bottom: 1px solid var(--line);
     display: flex;
+    align-items: center;
     justify-content: space-between;
-    align-items: center;
-    border-bottom: 1px solid rgba(168, 85, 247, 0.2);
-    padding-bottom: 8px;
-    margin-bottom: 12px;
+    padding: 0 16px;
+    z-index: 50;
   }
 
-  .hud-title {
-    font-size: 0.85rem;
-    font-weight: 700;
-    letter-spacing: 1px;
-    color: var(--neon-purple);
-    text-transform: uppercase;
+  .header-left {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 12px;
   }
 
-  .hud-top-left {
-    grid-column: 1;
-    grid-row: 1;
-    align-self: start;
-  }
-
-  .nav-back-pill {
+  .nav-link {
     display: inline-flex;
     align-items: center;
-    gap: 8px;
-    color: var(--neon-cyan);
-    background: rgba(92, 225, 230, 0.1);
-    border: 1px solid rgba(92, 225, 230, 0.4);
-    padding: 6px 12px;
-    border-radius: 4px;
+    gap: 6px;
+    padding: 5px 10px;
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
     text-decoration: none;
-    font-size: 0.8rem;
-    font-weight: 700;
-    letter-spacing: 0.5px;
-    transition: all 0.2s ease;
-    cursor: pointer;
-  }
-  .nav-back-pill:hover {
-    background: rgba(92, 225, 230, 0.25);
-    border-color: var(--neon-cyan);
-    box-shadow: 0 0 12px rgba(92, 225, 230, 0.4);
-    transform: translateX(-2px);
+    transition: all 0.15s ease;
   }
 
-  .status-row {
+  .nav-link:hover {
+    background: var(--bg-card-hover);
+    color: var(--text);
+    border-color: var(--line-highlight);
+  }
+
+  .view-switch {
     display: flex;
-    justify-content: space-between;
-    font-size: 0.75rem;
-    margin-top: 6px;
+    background: var(--bg-deep);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    padding: 2px;
+    gap: 2px;
+  }
+
+  .view-btn {
+    padding: 3px 8px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    border-radius: 3px;
+    text-decoration: none;
+    color: var(--text-dim);
+    transition: all 0.15s ease;
+  }
+
+  .view-btn.active {
+    background: var(--indigo);
+    color: #ffffff;
+  }
+
+  .view-btn:hover:not(.active) {
+    color: var(--text);
+  }
+
+  .header-title-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border-left: 1px solid var(--line);
+    padding-left: 12px;
+  }
+
+  .header-title {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: var(--text);
+    text-transform: uppercase;
+  }
+
+  .header-badge {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 500;
+    padding: 2px 6px;
+    border-radius: 3px;
+    background: var(--bg-card);
+    border: 1px solid var(--line);
     color: var(--text-muted);
   }
-  .status-val {
-    color: var(--text-primary);
+
+  .header-badge.pulse {
+    color: var(--emerald);
+    border-color: var(--emerald-border);
+    background: var(--emerald-bg);
+  }
+
+  /* --- 1-Click Focal Tracking Selector (Pills) --- */
+  .header-center {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    background: var(--bg-deep);
+    padding: 3px 6px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+  }
+
+  .focal-label {
+    font-family: var(--font-mono);
+    font-size: 9px;
     font-weight: 600;
-  }
-  .status-val.neon-purple { color: var(--neon-purple); }
-  .status-val.neon-cyan { color: var(--neon-cyan); }
-  .status-val.neon-amber { color: var(--neon-amber); }
-  .status-val.neon-green { color: var(--neon-green); }
-
-  .hud-top-right {
-    grid-column: 3;
-    grid-row: 1;
-    align-self: start;
+    color: var(--text-dim);
+    letter-spacing: 0.06em;
+    margin-right: 4px;
   }
 
-  .layer-toggles-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
+  .focal-pill {
+    padding: 4px 9px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .focal-pill:hover {
+    background: var(--bg-card);
+    color: var(--text);
+  }
+
+  .focal-pill.active {
+    background: var(--indigo-bg);
+    color: #818cf8;
+    border-color: var(--indigo-border);
+  }
+
+  /* --- Header Right Controls --- */
+  .header-right {
+    display: flex;
+    align-items: center;
     gap: 8px;
   }
 
-  .toggle-btn {
-    background: rgba(15, 7, 27, 0.7);
-    border: 1px solid rgba(168, 85, 247, 0.3);
+  .icon-btn {
+    width: 32px;
+    height: 32px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
     color: var(--text-muted);
-    padding: 6px 10px;
-    border-radius: 4px;
-    font-family: var(--font-mono);
-    font-size: 0.72rem;
-    font-weight: 600;
+    font-size: 14px;
     cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .icon-btn:hover {
+    background: var(--bg-card-hover);
+    color: var(--text);
+    border-color: var(--line-highlight);
+  }
+
+  .icon-btn.active {
+    background: var(--indigo-bg);
+    color: #818cf8;
+    border-color: var(--indigo-border);
+  }
+
+  /* Layer Menu Dropdown */
+  .dropdown-wrapper {
+    position: relative;
+  }
+
+  .dropdown-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    width: 200px;
+    background: rgba(14, 17, 26, 0.95);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid var(--line-highlight);
+    border-radius: var(--radius-md);
+    padding: 6px;
+    display: none;
+    flex-direction: column;
+    gap: 2px;
+    z-index: 100;
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.6);
+  }
+
+  .dropdown-menu.open {
+    display: flex;
+  }
+
+  .dropdown-header {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+    padding: 4px 8px;
+    text-transform: uppercase;
+  }
+
+  .layer-item {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    transition: all 0.2s ease;
+    padding: 6px 8px;
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    cursor: pointer;
+    transition: all 0.1s ease;
+    width: 100%;
+    text-align: left;
   }
-  .toggle-btn:hover {
-    border-color: var(--neon-purple);
-    color: var(--text-primary);
+
+  .layer-item:hover {
+    background: var(--bg-card-hover);
+    color: var(--text);
   }
-  .toggle-btn.active {
-    background: rgba(168, 85, 247, 0.2);
-    border-color: var(--neon-purple);
-    color: var(--neon-purple);
-    box-shadow: 0 0 10px rgba(168, 85, 247, 0.25);
+
+  .layer-item.active {
+    color: var(--text);
   }
-  .toggle-dot {
+
+  .layer-dot {
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: rgba(168, 85, 247, 0.4);
-    display: inline-block;
-  }
-  .toggle-btn.active .toggle-dot {
-    background: var(--neon-cyan);
-    box-shadow: 0 0 6px var(--neon-cyan);
+    background: var(--line-highlight);
+    transition: background 0.15s ease;
   }
 
-  .hud-bottom-left {
-    grid-column: 1;
-    grid-row: 3;
-    align-self: end;
+  .layer-item.active .layer-dot {
+    background: var(--emerald);
+    box-shadow: 0 0 6px rgba(16, 185, 129, 0.4);
   }
 
-  .time-controls {
-    display: flex;
-    gap: 8px;
-    margin-bottom: 10px;
-  }
-  .time-btn {
-    background: rgba(168, 85, 247, 0.15);
-    border: 1px solid rgba(168, 85, 247, 0.35);
-    color: var(--neon-purple);
-    padding: 6px 12px;
-    border-radius: 4px;
-    font-family: var(--font-mono);
-    font-size: 0.75rem;
-    font-weight: 700;
-    cursor: pointer;
-    transition: all 0.2s;
-  }
-  .time-btn:hover {
-    background: rgba(168, 85, 247, 0.3);
-    border-color: var(--neon-purple);
-    box-shadow: 0 0 8px rgba(168, 85, 247, 0.4);
-  }
-  .time-btn.primary {
-    background: rgba(92, 225, 230, 0.15);
-    border-color: var(--neon-cyan);
-    color: var(--neon-cyan);
-  }
-  .time-btn.primary:hover {
-    background: rgba(92, 225, 230, 0.3);
-    box-shadow: 0 0 10px rgba(92, 225, 230, 0.5);
-  }
-
-  .slider-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin-top: 8px;
-  }
-  .slider-row input[type="range"] {
-    flex: 1;
-    accent-color: var(--neon-purple);
-    cursor: pointer;
-  }
-
-  .hud-bottom-right {
-    grid-column: 3;
-    grid-row: 3;
-    align-self: end;
-    min-height: 200px;
-  }
-
-  .inspector-badge {
-    display: inline-block;
-    padding: 2px 6px;
-    border-radius: 3px;
-    font-size: 0.68rem;
-    font-weight: 700;
-    letter-spacing: 0.5px;
-    margin-bottom: 6px;
-  }
-  .badge-station { background: rgba(168, 85, 247, 0.25); color: var(--neon-purple); border: 1px solid var(--neon-purple); }
-  .badge-fleet { background: rgba(92, 225, 230, 0.2); color: var(--neon-cyan); border: 1px solid var(--neon-cyan); }
-  .badge-beacon { background: rgba(248, 113, 113, 0.25); color: var(--neon-red); border: 1px solid var(--neon-red); }
-
-  .data-kv {
-    display: flex;
-    justify-content: space-between;
-    font-size: 0.75rem;
-    margin: 4px 0;
-    padding-bottom: 4px;
-    border-bottom: 1px dashed rgba(168, 85, 247, 0.15);
-  }
-  .data-k { color: var(--text-muted); }
-  .data-v { color: var(--text-primary); font-weight: 600; text-align: right; }
-
-  #floating-tooltip {
-    position: absolute;
-    pointer-events: none;
-    z-index: 100;
-    transform: translate(-50%, -125%);
-    background: rgba(15, 7, 27, 0.92);
-    backdrop-filter: blur(8px);
-    border: 1px solid var(--neon-purple);
-    box-shadow: 0 0 16px rgba(168, 85, 247, 0.4);
-    border-radius: 5px;
-    padding: 6px 10px;
-    font-size: 0.72rem;
-    white-space: nowrap;
-    display: none;
-  }
-
-  .audio-toggle {
-    background: none;
-    border: none;
-    color: var(--text-muted);
-    font-size: 1rem;
-    cursor: pointer;
-    transition: color 0.2s;
-  }
-  .audio-toggle:hover { color: var(--neon-purple); }
-
-  /* Mobile Floating Toolbar & Controls */
-  .mobile-toolbar {
-    display: none;
+  /* --- Bottom Floating Simulation Dock --- */
+  .sim-dock {
     position: fixed;
-    bottom: 16px;
+    bottom: 20px;
     left: 50%;
     transform: translateX(-50%);
-    z-index: 100;
-    pointer-events: auto;
-    background: rgba(15, 7, 27, 0.9);
+    background: rgba(14, 17, 26, 0.88);
     backdrop-filter: blur(16px);
     -webkit-backdrop-filter: blur(16px);
-    border: 1px solid var(--border-card-glow);
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.85), 0 0 16px rgba(168, 85, 247, 0.3);
-    border-radius: 30px;
-    padding: 6px 10px;
-    gap: 6px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    padding: 6px 14px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    z-index: 40;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
   }
 
-  .mobile-nav-btn {
+  .dock-section {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .dock-btn {
+    padding: 5px 10px;
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .dock-btn:hover {
+    background: var(--bg-card-hover);
+    color: var(--text);
+    border-color: var(--line-highlight);
+  }
+
+  .dock-btn.primary {
+    background: var(--indigo-bg);
+    border-color: var(--indigo-border);
+    color: #818cf8;
+  }
+
+  .dock-btn.primary:hover {
+    background: var(--indigo);
+    color: #ffffff;
+  }
+
+  .speed-pill {
+    padding: 4px 7px;
     background: transparent;
     border: 1px solid transparent;
-    border-radius: 20px;
-    color: var(--text-primary);
-    padding: 6px 12px;
+    border-radius: var(--radius-sm);
+    color: var(--text-dim);
     font-family: var(--font-mono);
-    font-size: 0.68rem;
-    font-weight: 700;
-    letter-spacing: 0.5px;
+    font-size: 10px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .speed-pill:hover {
+    color: var(--text);
+  }
+
+  .speed-pill.active {
+    background: var(--bg-card);
+    color: var(--amber);
+    border-color: var(--line);
+  }
+
+  .speed-slider {
+    width: 64px;
+    accent-color: var(--indigo);
+    cursor: pointer;
+  }
+
+  .dock-divider {
+    width: 1px;
+    height: 18px;
+    background: var(--line);
+  }
+
+  .corridor-banner {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--cyan);
+    letter-spacing: 0.04em;
+    max-width: 260px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* --- Progressive Disclosure: Slide-Over Inspector Drawer --- */
+  .inspector-drawer {
+    position: fixed;
+    top: 52px;
+    right: 0;
+    bottom: 0;
+    width: 380px;
+    max-width: 90vw;
+    background: rgba(14, 17, 26, 0.95);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border-left: 1px solid var(--line);
     display: flex;
     flex-direction: column;
-    align-items: center;
-    gap: 2px;
-    cursor: pointer;
-    transition: all 0.2s;
-  }
-  .mobile-nav-btn:active, .mobile-nav-btn.active {
-    background: rgba(168, 85, 247, 0.25);
-    border-color: var(--neon-purple);
-    color: var(--neon-cyan);
-    box-shadow: 0 0 12px rgba(168, 85, 247, 0.4);
-  }
-  .mobile-nav-icon {
-    font-size: 1.05rem;
+    transform: translateX(100%);
+    transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    z-index: 60;
+    box-shadow: -10px 0 30px rgba(0, 0, 0, 0.6);
   }
 
-  .mobile-card-close {
-    display: none;
-    background: rgba(168, 85, 247, 0.2);
-    border: 1px solid var(--border-card);
-    color: var(--text-primary);
-    width: 26px;
-    height: 26px;
-    border-radius: 50%;
-    font-size: 1rem;
-    line-height: 1;
-    cursor: pointer;
+  .inspector-drawer.open {
+    transform: translateX(0);
+  }
+
+  .drawer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--line);
+    background: var(--bg-surface);
+  }
+
+  .drawer-title-group {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .drawer-title {
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: var(--text);
+    text-transform: uppercase;
+  }
+
+  .drawer-badge {
+    align-self: flex-start;
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 3px;
+    letter-spacing: 0.05em;
+  }
+
+  .badge-station {
+    background: var(--purple-bg);
+    color: #c084fc;
+    border: 1px solid var(--purple-border);
+  }
+
+  .badge-fleet {
+    background: var(--cyan-bg);
+    color: #22d3ee;
+    border: 1px solid var(--cyan-border);
+  }
+
+  .badge-beacon {
+    background: var(--rose-bg);
+    color: #fb7185;
+    border: 1px solid var(--rose-border);
+  }
+
+  .drawer-close-btn {
+    width: 28px;
+    height: 28px;
+    display: inline-flex;
     align-items: center;
     justify-content: center;
-    transition: all 0.2s;
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    font-size: 16px;
+    cursor: pointer;
+    transition: all 0.15s ease;
   }
-  .mobile-card-close:hover {
-    background: rgba(248, 113, 113, 0.3);
-    border-color: var(--neon-red);
-    color: var(--neon-red);
+
+  .drawer-close-btn:hover {
+    background: var(--bg-card-hover);
+    color: var(--text);
   }
 
-  /* Mobile Layout Breakpoints */
-  @media (max-width: 768px) {
-    .hud-overlay {
-      display: block;
-      padding: 10px;
-      pointer-events: none;
-    }
+  .drawer-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
 
-    .mobile-toolbar {
-      display: flex;
-    }
+  .drawer-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
 
-    .mobile-card-close {
-      display: inline-flex;
-    }
+  .section-label {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+    text-transform: uppercase;
+  }
 
-    /* Fixed top bar for navigation and critical telemetry */
-    .hud-top-left {
-      position: fixed;
-      top: 10px;
-      left: 10px;
-      right: 10px;
-      width: auto;
-      max-width: none;
-      padding: 10px 12px;
-      z-index: 20;
-    }
+  .data-card {
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
 
-    .hud-top-left .status-row:not(:first-child) {
-      display: none;
-    }
-    .hud-top-left.mobile-expanded .status-row {
-      display: flex !important;
-    }
+  .data-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 11px;
+  }
 
-    /* Modal bottom sheets for layer controls, time dilation, and inspector */
-    .hud-card.hud-top-right,
-    .hud-card.hud-bottom-left,
-    .hud-card.hud-bottom-right {
-      display: none;
-      position: fixed;
-      left: 12px;
-      right: 12px;
-      bottom: 80px;
-      max-height: 58vh;
-      overflow-y: auto;
-      z-index: 90;
-      box-shadow: 0 -8px 36px rgba(0, 0, 0, 0.9), 0 0 24px rgba(168, 85, 247, 0.4);
-      animation: slideUpMobile 0.22s cubic-bezier(0.16, 1, 0.3, 1);
-    }
+  .data-key {
+    color: var(--text-muted);
+  }
 
-    .hud-card.mobile-active {
-      display: block !important;
-    }
+  .data-val {
+    font-family: var(--font-mono);
+    font-weight: 500;
+    color: var(--text);
+  }
 
-    .layer-toggles-grid {
-      grid-template-columns: 1fr 1fr;
-    }
+  .data-val.cyan { color: #38bdf8; }
+  .data-val.amber { color: #fbbf24; }
+  .data-val.emerald { color: #34d399; }
+  .data-val.purple { color: #c084fc; }
+  .data-val.rose { color: #fb7185; }
 
-    @keyframes slideUpMobile {
-      from { transform: translateY(24px); opacity: 0; }
-      to { transform: translateY(0); opacity: 1; }
-    }
+  /* Cargo Manifest Table (Progressive Disclosure) */
+  .manifest-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+    font-family: var(--font-mono);
+  }
+
+  .manifest-table th {
+    text-align: left;
+    padding: 6px 8px;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--line);
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+
+  .manifest-table th:last-child,
+  .manifest-table td:last-child {
+    text-align: right;
+  }
+
+  .manifest-table td {
+    padding: 7px 8px;
+    border-bottom: 1px solid var(--line-subtle);
+    color: var(--text);
+  }
+
+  .manifest-table tr:last-child td {
+    border-bottom: none;
+  }
+
+  /* Progress Bar */
+  .transit-progress-bar {
+    width: 100%;
+    height: 6px;
+    background: var(--bg-deep);
+    border-radius: 3px;
+    overflow: hidden;
+    position: relative;
+    border: 1px solid var(--line);
+  }
+
+  .progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #38bdf8, #818cf8);
+    border-radius: 3px;
+    transition: width 0.3s ease;
+  }
+
+  .action-link-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px 12px;
+    background: var(--indigo-bg);
+    border: 1px solid var(--indigo-border);
+    border-radius: var(--radius-sm);
+    color: #818cf8;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-decoration: none;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    margin-top: 4px;
+  }
+
+  .action-link-btn:hover {
+    background: var(--indigo);
+    color: #ffffff;
+  }
+
+  /* Micro Tooltip */
+  #floating-tooltip {
+    position: fixed;
+    pointer-events: none;
+    background: rgba(14, 17, 26, 0.95);
+    backdrop-filter: blur(12px);
+    border: 1px solid var(--line-highlight);
+    border-radius: var(--radius-sm);
+    padding: 6px 10px;
+    font-size: 11px;
+    color: var(--text);
+    z-index: 90;
+    display: none;
+    flex-direction: column;
+    gap: 2px;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
+  }
+
+  #floating-tooltip .tt-title {
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  #floating-tooltip .tt-sub {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-muted);
+  }
+
+  /* Hidden Accessible & Test Compatibility Anchors */
+  .sr-compat {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    border: 0;
   }
 </style>
 </head>
@@ -485,168 +729,226 @@
   <canvas id="orrery-canvas"></canvas>
 </div>
 
-<div class="vignette-overlay"></div>
-<div class="scanlines-overlay"></div>
+<div id="floating-tooltip">
+  <div class="tt-title" id="tt-title"></div>
+  <div class="tt-sub" id="tt-sub"></div>
+</div>
 
-<div id="floating-tooltip"></div>
-
-<main class="hud-overlay">
-  <!-- Top-Left Navigation & Ephemeris -->
-  <div class="hud-card hud-top-left" id="card-status">
-    <div class="hud-card-header">
-      <div style="display:flex; align-items:center; gap:6px;">
-        <a href="/terminal" class="nav-back-pill">&larr; STATION TERMINAL</a>
-        <a href="/orrery-3d" class="nav-back-pill" style="color:var(--neon-cyan); border-color:rgba(92,225,230,0.35); background:rgba(92,225,230,0.12);">3D VIEW &rarr;</a>
-      </div>
-      <div style="display:flex; align-items:center; gap:8px;">
-        <button id="btn-audio-toggle" class="audio-toggle" title="Toggle Audio FX">🔊</button>
-        <button class="mobile-card-close" onclick="closeAllMobileCards()" title="Close">&times;</button>
-      </div>
+<!-- Header Navigation Bar -->
+<header class="orrery-header">
+  <div class="header-left">
+    <a href="/terminal" class="nav-link">&larr; STATION TERMINAL</a>
+    <div class="view-switch">
+      <span class="view-btn active">2D RADAR</span>
+      <a href="/orrery-3d" class="view-btn">3D ORRERY &rarr;</a>
     </div>
-    <div class="hud-title">SOL ASTRODYNAMICS // ORRERY</div>
-    <div class="status-row">
-      <span>COORDINATE FRAME:</span>
-      <span class="status-val neon-purple">HELIOCENTRIC J2000</span>
-    </div>
-    <div class="status-row">
-      <span>AGORA CURRENT ROUND:</span>
-      <span id="stat-round" class="status-val neon-cyan">ROUND 42</span>
-    </div>
-    <div class="status-row">
-      <span>SIMULATION MODE:</span>
-      <span id="stat-sim-mode" class="status-val neon-amber">ROUND-LOCK</span>
-    </div>
-    <div class="status-row">
-      <span>TELEMETRY LINK:</span>
-      <span id="stat-link" class="status-val neon-green">LIVE // 28ms</span>
-    </div>
-    <div class="status-row">
-      <span>CAMERA TRACKING:</span>
-      <span id="stat-tracked-entity" class="status-val neon-purple">FREE CAM</span>
+    <div class="header-title-group">
+      <h1 class="header-title">SOL ASTRODYNAMICS // ORRERY</h1>
+      <span class="header-badge">HELIOCENTRIC J2000</span>
+      <span class="header-badge pulse" id="stat-link">LIVE // 28ms</span>
+      <span class="header-badge" id="stat-round">ROUND 42</span>
+      <span class="header-badge" id="stat-tracked-entity" style="color: #818cf8;">FREE CAM</span>
+      <span id="stat-sim-mode" class="sr-compat">ROUND-LOCK</span>
     </div>
   </div>
 
-  <!-- Top-Right Layer & Trajectory Toggles -->
-  <div class="hud-card hud-top-right" id="card-layers">
-    <div class="hud-card-header">
-      <div class="hud-title">LAYER VISIBILITY // HUD</div>
-      <div style="display:flex; align-items:center; gap:8px;">
-        <button class="time-btn" onclick="resetView()" style="padding: 2px 8px; font-size: 0.7rem;">RESET</button>
-        <button class="mobile-card-close" onclick="closeAllMobileCards()" title="Close">&times;</button>
-      </div>
-    </div>
-    <div class="layer-toggles-grid">
-      <button class="toggle-btn active" id="toggle-trajectories" onclick="toggleLayer('trajectories')">
-        <span>TRAJECTORIES</span><span class="toggle-dot"></span>
-      </button>
-      <button class="toggle-btn active" id="toggle-orbits" onclick="toggleLayer('orbits')">
-        <span>PLANET ORBITS</span><span class="toggle-dot"></span>
-      </button>
-      <button class="toggle-btn active" id="toggle-belt" onclick="toggleLayer('belt')">
-        <span>ASTEROID BELT</span><span class="toggle-dot"></span>
-      </button>
-      <button class="toggle-btn active" id="toggle-fleets" onclick="toggleLayer('fleets')">
-        <span>FLEET VECTORS</span><span class="toggle-dot"></span>
-      </button>
-      <button class="toggle-btn active" id="toggle-corridors" onclick="toggleLayer('corridors')">
-        <span>ALIGNMENTS</span><span class="toggle-dot"></span>
-      </button>
-      <button class="toggle-btn active" id="toggle-beacons" onclick="toggleLayer('beacons')">
-        <span>SOS BEACONS</span><span class="toggle-dot"></span>
-      </button>
-      <button class="toggle-btn active" id="toggle-grid" onclick="toggleLayer('grid')">
-        <span>AU GRID</span><span class="toggle-dot"></span>
-      </button>
-      <button class="toggle-btn active" id="toggle-labels" onclick="toggleLayer('labels')">
-        <span>DATA LABELS</span><span class="toggle-dot"></span>
-      </button>
-    </div>
+  <!-- 1-Click Focal Tracking Selector (Pill Bar) -->
+  <div class="header-center">
+    <span class="focal-label">FOCUS:</span>
+    <button class="focal-pill active" data-focus="free" onclick="setFocus('free')">FREE</button>
+    <button class="focal-pill" data-focus="sun" onclick="setFocus('sun')">SOL</button>
+    <button class="focal-pill" data-focus="earth" onclick="setFocus('earth')">EARTH</button>
+    <button class="focal-pill" data-focus="luna" onclick="setFocus('luna')">LUNA</button>
+    <button class="focal-pill" data-focus="mars" onclick="setFocus('mars')">MARS</button>
+    <button class="focal-pill" data-focus="ceres" onclick="setFocus('ceres')">CERES</button>
+    <button class="focal-pill" data-focus="fleets" onclick="setFocus('fleets')">FLEETS</button>
+    <button class="focal-pill" onclick="resetView()">RESET</button>
   </div>
 
-  <!-- Bottom-Left Astrodynamics Deck -->
-  <div class="hud-card hud-bottom-left" id="card-sim">
-    <div class="hud-card-header">
-      <div class="hud-title">TIME DILATION &amp; SIMULATION</div>
-      <button class="mobile-card-close" onclick="closeAllMobileCards()" title="Close">&times;</button>
+  <div class="header-right">
+    <div class="dropdown-wrapper">
+      <button class="dock-btn" id="btn-layers" onclick="toggleDropdown()">LAYERS &blacktriangledown;</button>
+      <div class="dropdown-menu" id="layers-menu">
+        <div class="dropdown-header">Layer Visibility</div>
+        <button class="layer-item active" id="toggle-trajectories" onclick="toggleLayer('trajectories')">
+          <span>TRAJECTORIES</span><span class="layer-dot"></span>
+        </button>
+        <button class="layer-item active" id="toggle-orbits" onclick="toggleLayer('orbits')">
+          <span>PLANET ORBITS</span><span class="layer-dot"></span>
+        </button>
+        <button class="layer-item active" id="toggle-belt" onclick="toggleLayer('belt')">
+          <span>ASTEROID BELT</span><span class="layer-dot"></span>
+        </button>
+        <button class="layer-item active" id="toggle-fleets" onclick="toggleLayer('fleets')">
+          <span>FLEET VECTORS</span><span class="layer-dot"></span>
+        </button>
+        <button class="layer-item active" id="toggle-corridors" onclick="toggleLayer('corridors')">
+          <span>ALIGNMENTS</span><span class="layer-dot"></span>
+        </button>
+        <button class="layer-item active" id="toggle-beacons" onclick="toggleLayer('beacons')">
+          <span>SOS BEACONS</span><span class="layer-dot"></span>
+        </button>
+        <button class="layer-item active" id="toggle-grid" onclick="toggleLayer('grid')">
+          <span>AU GRID</span><span class="layer-dot"></span>
+        </button>
+        <button class="layer-item active" id="toggle-labels" onclick="toggleLayer('labels')">
+          <span>DATA LABELS</span><span class="layer-dot"></span>
+        </button>
+      </div>
     </div>
-    <div class="time-controls">
-      <button class="time-btn primary" id="btn-play-pause" onclick="togglePlayPause()">⏸ PAUSE</button>
-      <button class="time-btn" onclick="stepRound(-1)">&larr; RND</button>
-      <button class="time-btn" onclick="stepRound(1)">RND &rarr;</button>
-      <button class="time-btn" id="btn-mode-toggle" onclick="toggleSimMode()">MODE: KEPLER</button>
-    </div>
-    <div class="slider-row">
-      <span class="status-val neon-purple" style="font-size: 0.72rem; min-width: 60px;">SPEED: <span id="speed-label">1.0x</span></span>
-      <input type="range" id="slider-speed" min="0.1" max="10.0" step="0.1" value="1.0" oninput="updateSpeed(this.value)">
-    </div>
-    <div class="status-row" style="margin-top: 8px;">
-      <span>HOHMANN STATUS:</span>
-      <span id="stat-active-rush" class="status-val neon-cyan">NO CORRIDOR ACTIVE</span>
-    </div>
+    <button id="btn-audio-toggle" class="icon-btn" onclick="toggleAudio()" title="Toggle Audio FX">🔊</button>
+    <button id="btn-toggle-inspector" class="icon-btn" onclick="toggleInspector()" title="Toggle Telemetry Drawer">📡</button>
+  </div>
+</header>
+
+<!-- Floating Simulation Dock -->
+<div class="sim-dock" id="sim-dock">
+  <div class="dock-section">
+    <span class="sr-compat">TIME DILATION &amp; SIMULATION</span>
+    <button class="dock-btn primary" id="btn-play-pause" onclick="togglePlayPause()">⏸ PAUSE</button>
+    <button class="dock-btn" onclick="stepRound(-1)">&larr; RND</button>
+    <button class="dock-btn" onclick="stepRound(1)">RND &rarr;</button>
+    <button class="dock-btn" id="btn-mode-toggle" onclick="toggleSimMode()">MODE: KEPLER</button>
   </div>
 
-  <!-- Bottom-Right Target Inspector -->
-  <div class="hud-card hud-bottom-right" id="inspector-card">
-    <div class="hud-card-header">
-      <div class="hud-title" id="inspector-title">TARGET TELEMETRY</div>
-      <div style="display:flex; align-items:center; gap:8px;">
-        <span class="inspector-badge badge-station" id="inspector-badge">STATION</span>
-        <button class="mobile-card-close" onclick="closeAllMobileCards()" title="Close">&times;</button>
-      </div>
+  <div class="dock-divider"></div>
+
+  <div class="dock-section">
+    <span style="font-family: var(--font-mono); font-size: 10px; color: var(--text-dim); margin-right: 4px;">SPEED:</span>
+    <button class="speed-pill" onclick="setSpeedPreset(0.5)">0.5x</button>
+    <button class="speed-pill active" id="speed-pill-1" onclick="setSpeedPreset(1.0)">1.0x</button>
+    <button class="speed-pill" onclick="setSpeedPreset(2.0)">2.0x</button>
+    <button class="speed-pill" onclick="setSpeedPreset(5.0)">5.0x</button>
+    <span id="speed-label" style="display:none;">1.0x</span>
+    <input type="range" id="slider-speed" class="speed-slider" min="0.1" max="10.0" step="0.1" value="1.0" oninput="updateSpeed(this.value)" title="Time Dilation Speed">
+  </div>
+
+  <div class="dock-divider"></div>
+
+  <div class="dock-section">
+    <span id="stat-active-rush" class="corridor-banner">NO CORRIDOR ACTIVE</span>
+  </div>
+</div>
+
+<!-- Progressive Disclosure: Slide-Over Inspector Drawer -->
+<aside class="inspector-drawer" id="inspector-drawer" aria-label="Target Telemetry Inspector">
+  <div class="drawer-header">
+    <div class="drawer-title-group">
+      <div class="drawer-title" id="inspector-title">TARGET TELEMETRY</div>
+      <span class="drawer-badge badge-station" id="inspector-badge">STATION</span>
     </div>
-    <div id="inspector-body">
-      <div class="data-kv">
-        <span class="data-k">ENTITY:</span>
-        <span class="data-v neon-purple" id="insp-name">CERES // PIAZZI</span>
+    <button class="drawer-close-btn" id="btn-close-inspector" onclick="closeInspector()" title="Close Drawer (Esc)">&times;</button>
+  </div>
+
+  <div class="drawer-content" id="inspector-body">
+    <!-- Station / Celestial View -->
+    <div id="pane-station" class="drawer-section">
+      <div class="section-label">Orbital Astrodynamics</div>
+      <div class="data-card">
+        <div class="data-row">
+          <span class="data-key">Entity</span>
+          <span class="data-val purple" id="insp-name">CERES // PIAZZI</span>
+        </div>
+        <div class="data-row">
+          <span class="data-key">Orbital Distance</span>
+          <span class="data-val" id="insp-dist">2.77 AU (414.4M km)</span>
+        </div>
+        <div class="data-row">
+          <span class="data-key">Orbital Period</span>
+          <span class="data-val" id="insp-period">4.60 Earth Yrs (1,681d)</span>
+        </div>
+        <div class="data-row">
+          <span class="data-key">Circuit Breaker</span>
+          <span class="data-val emerald" id="insp-circuit">NOMINAL (&plusmn;10% LULD)</span>
+        </div>
       </div>
-      <div class="data-kv">
-        <span class="data-k">ORBITAL DISTANCE:</span>
-        <span class="data-v" id="insp-dist">2.77 AU (414.4M km)</span>
+
+      <div class="section-label">Spot Prices &amp; Market Marks</div>
+      <div class="data-card">
+        <div class="data-row">
+          <span class="data-key">Market Summary</span>
+          <span class="data-val amber" id="insp-spots">FRAG: 22 CR // FUEL: 26 CR</span>
+        </div>
+        <div id="station-commodity-grid" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin-top: 6px;"></div>
       </div>
-      <div class="data-kv">
-        <span class="data-k">ORBITAL PERIOD:</span>
-        <span class="data-v" id="insp-period">4.60 Earth Yrs (1,681d)</span>
+
+      <div class="section-label">Docked Syndicate Fleets</div>
+      <div class="data-card">
+        <div class="data-row">
+          <span class="data-key">Berths</span>
+          <span class="data-val cyan" id="insp-docked">AERIAL, AMOS</span>
+        </div>
+        <div id="docked-fleet-details" style="display: flex; flex-direction: column; gap: 4px; margin-top: 4px;"></div>
       </div>
-      <div class="data-kv">
-        <span class="data-k">SPOT PRICING:</span>
-        <span class="data-v neon-amber" id="insp-spots">FRAG: 22 CR // FUEL: 26 CR</span>
+
+      <a id="btn-station-terminal-link" href="/terminal" class="action-link-btn">OPEN IN STATION TERMINAL &rarr;</a>
+    </div>
+
+    <!-- Vessel Transit View (Progressive Disclosure Manifest) -->
+    <div id="pane-vessel" class="drawer-section" style="display: none;">
+      <div class="section-label">Transit Flight Corridor</div>
+      <div class="data-card">
+        <div class="data-row">
+          <span class="data-key">Vessel</span>
+          <span class="data-val cyan" id="vessel-name">ZERO // FLAGSHIP</span>
+        </div>
+        <div class="data-row">
+          <span class="data-key">Corridor Route</span>
+          <span class="data-val" id="vessel-route">EARTH &rarr; MARS</span>
+        </div>
+        <div class="data-row" style="margin-top: 4px;">
+          <span class="data-key">Transit Progress</span>
+          <span class="data-val" id="vessel-progress-text">RND 40 &rarr; RND 42 (50%)</span>
+        </div>
+        <div class="transit-progress-bar">
+          <div class="progress-fill" id="vessel-progress-fill" style="width: 50%;"></div>
+        </div>
+        <div class="data-row">
+          <span class="data-key">Alignment Rush</span>
+          <span class="data-val emerald" id="vessel-bonus">-50% FUEL/TIME BONUS</span>
+        </div>
+        <div class="data-row">
+          <span class="data-key">Cargo Decay Risk</span>
+          <span class="data-val" id="vessel-decay">STABLE CARGO</span>
+        </div>
       </div>
-      <div class="data-kv">
-        <span class="data-k">CIRCUIT BREAKER:</span>
-        <span class="data-v neon-green" id="insp-circuit">NOMINAL (±10% LULD)</span>
+
+      <div class="section-label">Cargo Manifest Breakdown</div>
+      <div class="data-card" style="padding: 0; overflow: hidden;">
+        <table class="manifest-table">
+          <thead>
+            <tr>
+              <th>Commodity</th>
+              <th>Units</th>
+              <th>Est Value</th>
+            </tr>
+          </thead>
+          <tbody id="vessel-manifest-body">
+            <!-- Rendered dynamically -->
+          </tbody>
+        </table>
       </div>
-      <div class="data-kv">
-        <span class="data-k">DOCKED FLEET:</span>
-        <span class="data-v neon-cyan" id="insp-docked">AERIAL (Zenith Drift)</span>
+
+      <div class="data-card">
+        <div class="data-row">
+          <span class="data-key">Hold Utilization</span>
+          <span class="data-val" id="vessel-capacity">150 / 200 Units (75%)</span>
+        </div>
+        <div class="data-row">
+          <span class="data-key">Total Freight Value</span>
+          <span class="data-val amber" id="vessel-total-value">2,400 CR</span>
+        </div>
       </div>
     </div>
   </div>
-</main>
-
-<!-- Mobile Floating Toolbar -->
-<nav class="mobile-toolbar" id="mobile-toolbar" aria-label="Mobile Controls">
-  <button class="mobile-nav-btn" id="mbtn-status" onclick="toggleMobileCard('status')">
-    <span class="mobile-nav-icon">🛰️</span>
-    <span class="mobile-nav-label">STATUS</span>
-  </button>
-  <button class="mobile-nav-btn" id="mbtn-layers" onclick="toggleMobileCard('layers')">
-    <span class="mobile-nav-icon">⚙️</span>
-    <span class="mobile-nav-label">LAYERS</span>
-  </button>
-  <button class="mobile-nav-btn" id="mbtn-sim" onclick="toggleMobileCard('sim')">
-    <span class="mobile-nav-icon">⏱️</span>
-    <span class="mobile-nav-label">SIM</span>
-  </button>
-  <button class="mobile-nav-btn" id="mbtn-inspector" onclick="toggleMobileCard('inspector')">
-    <span class="mobile-nav-icon">📡</span>
-    <span class="mobile-nav-label">TARGET</span>
-  </button>
-</nav>
+</aside>
 
 <script>
 const canvas = document.getElementById("orrery-canvas");
 const ctx = canvas.getContext("2d");
 const tooltip = document.getElementById("floating-tooltip");
+const ttTitle = document.getElementById("tt-title");
+const ttSub = document.getElementById("tt-sub");
 
 let dpr = window.devicePixelRatio || 1;
 
@@ -686,8 +988,8 @@ const AU_PX = 180;
 const CELESTIAL_BODIES = {
   sun: {
     name: "SOL (STAR)",
-    color: "#fffaed",
-    glow: "rgba(255, 210, 100, 0.4)",
+    color: "#fffbeb",
+    glow: "rgba(245, 158, 11, 0.45)",
     size: 14,
     au: 0,
     period: 0
@@ -703,8 +1005,8 @@ const CELESTIAL_BODIES = {
   },
   luna: {
     name: "LUNA // SHACKLETON",
-    color: "#e2e8f0",
-    glow: "rgba(226, 232, 240, 0.25)",
+    color: "#cbd5e1",
+    glow: "rgba(203, 213, 225, 0.25)",
     size: 3.5,
     parent: "earth",
     period: 27.32,
@@ -721,8 +1023,8 @@ const CELESTIAL_BODIES = {
   },
   ceres: {
     name: "CERES // PIAZZI",
-    color: "#c084fc",
-    glow: "rgba(192, 132, 252, 0.4)",
+    color: "#a78bfa",
+    glow: "rgba(167, 139, 250, 0.4)",
     size: 5,
     au: 2.767,
     period: 1681.6,
@@ -737,35 +1039,59 @@ function generateAsteroidBelt() {
   for (let i = 0; i < count; i++) {
     const r = (2.15 + Math.random() * 1.15) * AU_PX;
     const theta = Math.random() * Math.PI * 2;
-    const size = 0.8 + Math.random() * 1.4;
-    const speed = (0.0002 / Math.sqrt(r / AU_PX)) * (0.8 + Math.random() * 0.4);
-    const alpha = 0.25 + Math.random() * 0.45;
-    asteroidBelt.push({ r, theta, size, speed, alpha });
+    const size = 0.6 + Math.random() * 1.2;
+    const alpha = 0.15 + Math.random() * 0.35;
+    const speed = (0.0003 + Math.random() * 0.0004) * (Math.random() > 0.5 ? 1 : 1);
+    asteroidBelt.push({ r, theta, size, alpha, speed });
   }
 }
 
 let stationPrices = {
-  earth: { FRAG: 10.0, FUEL: 8.0 },
-  luna:  { FRAG: 12.0, FUEL: 16.0 },
-  mars:  { FRAG: 16.0, FUEL: 14.0 },
-  ceres: { FRAG: 22.0, FUEL: 26.0 }
+  earth: { FRAG: 10.0, FOOD: 18.0, ORE: 12.0, MACHINERY: 24.0, FUEL: 14.0 },
+  luna:  { FRAG: 12.0, FOOD: 22.0, ORE: 16.0, MACHINERY: 28.0, FUEL: 18.0 },
+  mars:  { FRAG: 16.0, FOOD: 24.0, ORE: 14.0, MACHINERY: 22.0, FUEL: 16.0 },
+  ceres: { FRAG: 22.0, FOOD: 28.0, ORE: 11.0, MACHINERY: 30.0, FUEL: 26.0 }
 };
+
 let fleetLocations = [
   { agent_id: "amos", station_id: "ceres", status: "docked" },
   { agent_id: "marvin", station_id: "mars", status: "docked" },
-  { agent_id: "zero", station_id: "in_transit", status: "in_transit", transit: { origin: "earth", destination: "mars", departure_round: 40, arrival_round: 42, commodity: "FRAG", cargo_qty: 150, perishable: false } },
+  {
+    agent_id: "zero",
+    station_id: "in_transit",
+    status: "in_transit",
+    transit: {
+      origin: "earth",
+      destination: "mars",
+      departure_round: 40,
+      arrival_round: 43,
+      commodity: "FRAG",
+      cargo_qty: 150,
+      manifest: {
+        FRAG: 150,
+        FUEL: 40,
+        FOOD: 0,
+        ORE: 0,
+        MACHINERY: 0
+      },
+      perishable: false,
+      capacity: 200
+    }
+  },
   { agent_id: "aerial", station_id: "ceres", status: "docked" }
 ];
+
 let distressBeacons = [
   { beacon_id: "sos-blc-1", agent_id: "marvin", location: "mars_ceres", cargo_bounty: { FRAG: 40 }, status: "active" }
 ];
+
 let orbitalWindows = [
   { corridor_id: "earth_mars", name: "Earth-Mars Perihelion Opposition", period_rounds: 8, window_offsets: [4, 5], is_active: false },
   { corridor_id: "mars_ceres", name: "Martian-Ceres Belt Opposition", period_rounds: 10, window_offsets: [5, 6], is_active: true, rounds_remaining: 1 },
   { corridor_id: "earth_ceres", name: "Sol Direct Corridor", period_rounds: 12, window_offsets: [6, 7], is_active: false }
 ];
-let circuitBreakerHalts = [];
 
+let circuitBreakerHalts = [];
 let selectedEntity = "ceres";
 let hoveredEntity = null;
 
@@ -793,17 +1119,63 @@ function resizeCanvas() {
   canvas.height = window.innerHeight * dpr;
   ctx.scale(dpr, dpr);
 }
+
 window.addEventListener("resize", resizeCanvas);
 
 function resetView() {
+  camera.zoom = 1.0;
   camera.panX = window.innerWidth / 2;
   camera.panY = window.innerHeight / 2;
-  camera.zoom = 1.0;
-  camera.trackedEntity = null;
   camera.velX = 0;
   camera.velY = 0;
+  camera.trackedEntity = null;
   updateTrackedBadge();
-  playBlip(750, 0.08);
+  document.querySelectorAll(".focal-pill").forEach(p => p.classList.remove("active"));
+  const freeBtn = document.querySelector('[data-focus="free"]');
+  if (freeBtn) freeBtn.classList.add("active");
+}
+
+function setFocus(targetKey) {
+  playBlip(750, 0.04);
+  document.querySelectorAll(".focal-pill").forEach(p => p.classList.remove("active"));
+  const btn = document.querySelector(`[data-focus="${targetKey}"]`);
+  if (btn) btn.classList.add("active");
+
+  if (targetKey === "free" || targetKey === "reset") {
+    camera.trackedEntity = null;
+    updateTrackedBadge();
+    return;
+  }
+
+  if (targetKey === "fleets") {
+    const transitFleet = fleetLocations.find(f => f.status === "in_transit");
+    if (transitFleet) {
+      camera.trackedEntity = transitFleet.agent_id;
+      selectedEntity = transitFleet.agent_id;
+      updateInspector({ type: "vessel", id: transitFleet.agent_id, data: transitFleet });
+      openInspector();
+    }
+    updateTrackedBadge();
+    return;
+  }
+
+  camera.trackedEntity = targetKey;
+  selectedEntity = targetKey;
+  updateTrackedBadge();
+  updateInspector({ type: "body", id: targetKey });
+  openInspector();
+}
+
+function updateTrackedBadge() {
+  const el = document.getElementById("stat-tracked-entity");
+  if (!el) return;
+  if (camera.trackedEntity) {
+    el.textContent = "TRACKING: " + camera.trackedEntity.toUpperCase();
+    el.style.color = "#818cf8";
+  } else {
+    el.textContent = "FREE CAM";
+    el.style.color = "var(--text-muted)";
+  }
 }
 
 function getBodyCoords(bodyKey, t, rnd) {
@@ -822,31 +1194,38 @@ function getBodyCoords(bodyKey, t, rnd) {
     } else {
       lunarTheta = (t / conf.period) * Math.PI * 2;
     }
-    const minVisualDist = Math.max(28, 65 / Math.max(0.4, camera.zoom));
-    const lx = earthCoords.x + Math.cos(lunarTheta) * minVisualDist;
-    const ly = earthCoords.y + Math.sin(lunarTheta) * minVisualDist;
-    return { x: lx, y: ly, r: minVisualDist, theta: lunarTheta, parent: earthCoords };
+    const minVisualDist = Math.max(16, 22 * (1 / Math.max(0.5, camera.zoom)));
+    return {
+      x: earthCoords.x + Math.cos(lunarTheta) * minVisualDist,
+      y: earthCoords.y + Math.sin(lunarTheta) * minVisualDist,
+      r: minVisualDist,
+      theta: lunarTheta
+    };
   }
 
+  const r = conf.au * AU_PX;
   let theta = 0;
+
   if (simState.mode === "round_lock") {
-    if (bodyKey === "earth") theta = (rnd * (Math.PI * 2 / 8)) + 0.8;
-    else if (bodyKey === "mars") theta = (rnd * (Math.PI * 2 / 16)) + 2.5;
-    else if (bodyKey === "ceres") theta = (rnd * (Math.PI * 2 / 24)) + 4.2;
+    const seedAngle = { earth: 0.8, mars: 2.1, ceres: 4.4 };
+    const roundSpeed = { earth: 0.12, mars: 0.065, ceres: 0.028 };
+    theta = (seedAngle[bodyKey] || 0) + rnd * (roundSpeed[bodyKey] || 0.05);
   } else {
     theta = (t / conf.period) * Math.PI * 2;
   }
 
-  const r = conf.au * AU_PX;
-  const x = Math.cos(theta) * r;
-  const y = Math.sin(theta) * r;
-  return { x, y, r, theta };
+  return {
+    x: Math.cos(theta) * r,
+    y: Math.sin(theta) * r,
+    r: r,
+    theta: theta
+  };
 }
 
 function worldToScreen(wx, wy) {
   return {
-    x: wx * camera.zoom + camera.panX,
-    y: wy * camera.zoom + camera.panY
+    x: camera.panX + wx * camera.zoom,
+    y: camera.panY + wy * camera.zoom
   };
 }
 
@@ -857,17 +1236,267 @@ function screenToWorld(sx, sy) {
   };
 }
 
+function toggleDropdown() {
+  const m = document.getElementById("layers-menu");
+  m.classList.toggle("open");
+}
+
+document.addEventListener("click", (e) => {
+  const btn = document.getElementById("btn-layers");
+  const menu = document.getElementById("layers-menu");
+  if (btn && menu && !btn.contains(e.target) && !menu.contains(e.target)) {
+    menu.classList.remove("open");
+  }
+});
+
+function toggleLayer(layerKey) {
+  layers[layerKey] = !layers[layerKey];
+  const btn = document.getElementById("toggle-" + layerKey);
+  if (btn) btn.classList.toggle("active", layers[layerKey]);
+}
+
+function toggleAudio() {
+  simState.audioEnabled = !simState.audioEnabled;
+  const btn = document.getElementById("btn-audio-toggle");
+  if (btn) {
+    btn.textContent = simState.audioEnabled ? "🔊" : "🔇";
+    btn.classList.toggle("active", simState.audioEnabled);
+  }
+}
+
+function togglePlayPause() {
+  simState.isPlaying = !simState.isPlaying;
+  const btn = document.getElementById("btn-play-pause");
+  if (btn) {
+    btn.textContent = simState.isPlaying ? "⏸ PAUSE" : "▶ PLAY";
+    btn.classList.toggle("primary", simState.isPlaying);
+  }
+}
+
+function setSpeedPreset(val) {
+  updateSpeed(val);
+}
+
+function updateSpeed(val) {
+  simState.speed = parseFloat(val);
+  const sSlider = document.getElementById("slider-speed");
+  if (sSlider) sSlider.value = val;
+  const sLabel = document.getElementById("speed-label");
+  if (sLabel) sLabel.textContent = parseFloat(val).toFixed(1) + "x";
+
+  document.querySelectorAll(".speed-pill").forEach(p => {
+    p.classList.toggle("active", Math.abs(parseFloat(p.textContent) - simState.speed) < 0.05);
+  });
+}
+
+function toggleSimMode() {
+  simState.mode = simState.mode === "round_lock" ? "continuous" : "round_lock";
+  const btn = document.getElementById("btn-mode-toggle");
+  if (btn) btn.textContent = "MODE: " + (simState.mode === "round_lock" ? "ROUND-LOCK" : "KEPLER");
+  const sMode = document.getElementById("stat-sim-mode");
+  if (sMode) sMode.textContent = simState.mode.toUpperCase();
+}
+
+function stepRound(delta) {
+  simState.currentRound = Math.max(1, simState.currentRound + delta);
+  const rEl = document.getElementById("stat-round");
+  if (rEl) rEl.textContent = "ROUND " + simState.currentRound;
+  playBlip(700, 0.03);
+}
+
+function toggleInspector() {
+  const d = document.getElementById("inspector-drawer");
+  d.classList.toggle("open");
+}
+
+function openInspector() {
+  const d = document.getElementById("inspector-drawer");
+  if (d) d.classList.add("open");
+}
+
+function closeInspector() {
+  const d = document.getElementById("inspector-drawer");
+  if (d) d.classList.remove("open");
+}
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    closeInspector();
+    camera.trackedEntity = null;
+    updateTrackedBadge();
+  } else if (e.key === " ") {
+    e.preventDefault();
+    togglePlayPause();
+  } else if (e.key === "[") {
+    stepRound(-1);
+  } else if (e.key === "]") {
+    stepRound(1);
+  } else if (e.key.toLowerCase() === "r") {
+    resetView();
+  }
+});
+
+function updateInspector(target) {
+  const title = document.getElementById("inspector-title");
+  const badge = document.getElementById("inspector-badge");
+  const paneStation = document.getElementById("pane-station");
+  const paneVessel = document.getElementById("pane-vessel");
+
+  if (!target) return;
+
+  if (target.type === "body") {
+    paneStation.style.display = "flex";
+    paneVessel.style.display = "none";
+
+    const conf = CELESTIAL_BODIES[target.id] || {};
+    title.textContent = conf.name || target.id.toUpperCase();
+    badge.textContent = "STATION";
+    badge.className = "drawer-badge badge-station";
+
+    const nameEl = document.getElementById("insp-name");
+    const distEl = document.getElementById("insp-dist");
+    const periodEl = document.getElementById("insp-period");
+    const spotsEl = document.getElementById("insp-spots");
+    const circuitEl = document.getElementById("insp-circuit");
+    const dockedEl = document.getElementById("insp-docked");
+    const termLink = document.getElementById("btn-station-terminal-link");
+
+    if (nameEl) nameEl.textContent = conf.name || target.id.toUpperCase();
+    if (distEl) distEl.textContent = conf.au ? conf.au.toFixed(2) + " AU (" + (conf.au * 149.6).toFixed(1) + "M km)" : "0.00 AU (SOL CORE)";
+    if (periodEl) periodEl.textContent = conf.period ? (conf.period / 365.25).toFixed(2) + " Earth Yrs (" + conf.period + "d)" : "STATIONARY";
+
+    const p = stationPrices[target.id] || {};
+    if (spotsEl) {
+      spotsEl.textContent = p.FRAG !== undefined ? `FRAG: ${Number(p.FRAG).toFixed(0)} CR // FUEL: ${Number(p.FUEL).toFixed(0)} CR` : "-- CR";
+    }
+
+    const grid = document.getElementById("station-commodity-grid");
+    if (grid) {
+      grid.innerHTML = "";
+      for (const [comm, price] of Object.entries(p)) {
+        const item = document.createElement("div");
+        item.style.cssText = "background: var(--bg-surface); padding: 5px 8px; border-radius: 4px; border: 1px solid var(--line); display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 10px;";
+        item.innerHTML = `<span style="color: var(--text-dim);">${comm}</span><span style="color: var(--amber); font-weight: 600;">${Number(price).toFixed(0)} CR</span>`;
+        grid.appendChild(item);
+      }
+    }
+
+    const isHalted = circuitBreakerHalts.some(h => (h.station_id || "").toLowerCase() === target.id);
+    if (circuitEl) {
+      circuitEl.textContent = isHalted ? "⚠️ TRADING HALTED (LULD)" : "NOMINAL (&plusmn;10% LULD)";
+      circuitEl.className = isHalted ? "data-val rose" : "data-val emerald";
+    }
+
+    const docked = fleetLocations.filter(f => f.status === "docked" && f.station_id === target.id).map(f => f.agent_id.toUpperCase());
+    if (dockedEl) dockedEl.textContent = docked.length > 0 ? docked.join(", ") : "NO VESSELS BERTHED";
+
+    if (termLink) {
+      termLink.href = `/terminal?station=${target.id}`;
+      termLink.textContent = `OPEN ${conf.name || target.id.toUpperCase()} IN TERMINAL →`;
+    }
+  } else if (target.type === "vessel") {
+    paneStation.style.display = "none";
+    paneVessel.style.display = "flex";
+
+    const f = target.data || {};
+    const t = f.transit || {};
+    title.textContent = `${f.agent_id.toUpperCase()} // FLAGSHIP`;
+    badge.textContent = "IN TRANSIT";
+    badge.className = "drawer-badge badge-fleet";
+
+    const vName = document.getElementById("vessel-name");
+    const vRoute = document.getElementById("vessel-route");
+    const vProgText = document.getElementById("vessel-progress-text");
+    const vProgFill = document.getElementById("vessel-progress-fill");
+    const vBonus = document.getElementById("vessel-bonus");
+    const vDecay = document.getElementById("vessel-decay");
+    const vCap = document.getElementById("vessel-capacity");
+    const vTotalVal = document.getElementById("vessel-total-value");
+
+    if (vName) vName.textContent = `${f.agent_id.toUpperCase()} [${t.cargo_qty || 0} ${t.commodity || 'FRAG'}]`;
+    if (vRoute) vRoute.textContent = `${(t.origin || 'EARTH').toUpperCase()} → ${(t.destination || 'MARS').toUpperCase()}`;
+
+    const dep = t.departure_round || 40;
+    const arr = t.arrival_round || 43;
+    const cur = simState.currentRound;
+    const pct = Math.max(0, Math.min(100, Math.round(((cur - dep) / Math.max(1, arr - dep)) * 100)));
+
+    if (vProgText) vProgText.textContent = `RND ${dep} → RND ${arr} (${pct}% En Route)`;
+    if (vProgFill) vProgFill.style.width = `${pct}%`;
+
+    const activeWin = orbitalWindows.find(w => w.is_active);
+    if (vBonus) {
+      vBonus.textContent = activeWin ? `⚡ ${activeWin.name.toUpperCase()} (-50% TIME)` : "DIRECT FLIGHT CORRIDOR";
+    }
+
+    if (vDecay) {
+      vDecay.textContent = t.perishable ? "⚠️ PERISHABLE (5% DECAY/RND)" : "STABLE FREIGHT";
+      vDecay.className = t.perishable ? "data-val amber" : "data-val emerald";
+    }
+
+    // Populate Progressive Disclosure Cargo Manifest Table
+    const tbody = document.getElementById("vessel-manifest-body");
+    if (tbody) {
+      tbody.innerHTML = "";
+      const manifest = t.manifest || { [t.commodity || 'FRAG']: t.cargo_qty || 150, FUEL: 40 };
+      const destPrices = stationPrices[t.destination || 'mars'] || {};
+      let totalValue = 0;
+      let totalUnits = 0;
+
+      for (const [comm, qty] of Object.entries(manifest)) {
+        if (!qty) continue;
+        totalUnits += qty;
+        const spot = destPrices[comm] || 15.0;
+        const val = qty * spot;
+        totalValue += val;
+
+        const row = document.createElement("tr");
+        row.innerHTML = `
+          <td style="color: var(--text-dim); font-weight: 600;">${comm}</td>
+          <td>${qty} Units</td>
+          <td style="color: var(--amber);">${val.toLocaleString()} CR</td>
+        `;
+        tbody.appendChild(row);
+      }
+
+      if (vCap) {
+        const maxCap = t.capacity || 200;
+        const capPct = Math.round((totalUnits / maxCap) * 100);
+        vCap.textContent = `${totalUnits} / ${maxCap} Units (${capPct}%)`;
+      }
+      if (vTotalVal) {
+        vTotalVal.textContent = `${totalValue.toLocaleString()} CR`;
+      }
+    }
+  }
+}
+
+// Canvas Interaction Listeners
 canvas.addEventListener("mousedown", (e) => {
   camera.isDragging = true;
   camera.dragStartX = e.clientX;
   camera.dragStartY = e.clientY;
   camera.velX = 0;
   camera.velY = 0;
-  camera.trackedEntity = null;
-  updateTrackedBadge();
 });
 
-window.addEventListener("mousemove", (e) => {
+window.addEventListener("mouseup", () => {
+  camera.isDragging = false;
+});
+
+canvas.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const zoomFactor = e.deltaY < 0 ? 1.08 : 0.92;
+  const newZoom = Math.max(0.25, Math.min(6.0, camera.zoom * zoomFactor));
+
+  const mouseX = e.clientX;
+  const mouseY = e.clientY;
+  camera.panX = mouseX - (mouseX - camera.panX) * (newZoom / camera.zoom);
+  camera.panY = mouseY - (mouseY - camera.panY) * (newZoom / camera.zoom);
+  camera.zoom = newZoom;
+}, { passive: false });
+
+canvas.addEventListener("mousemove", (e) => {
   if (camera.isDragging) {
     const dx = e.clientX - camera.dragStartX;
     const dy = e.clientY - camera.dragStartY;
@@ -881,7 +1510,7 @@ window.addEventListener("mousemove", (e) => {
 
   const wMouse = screenToWorld(e.clientX, e.clientY);
   let found = null;
-  let minDist = 26 / camera.zoom;
+  let minDist = 24 / camera.zoom;
 
   for (const [key, conf] of Object.entries(CELESTIAL_BODIES)) {
     const pos = getBodyCoords(key, simState.epochTime, simState.currentRound);
@@ -894,349 +1523,50 @@ window.addEventListener("mousemove", (e) => {
 
   fleetLocations.filter(f => f.status === "in_transit" && f.transit).forEach(f => {
     const t = f.transit;
-    const origPos = getBodyCoords(t.origin, simState.epochTime, simState.currentRound);
-    const destPos = getBodyCoords(t.destination, simState.epochTime, simState.currentRound);
-    const progress = Math.max(0.05, Math.min(0.95, (simState.currentRound - t.departure_round) / Math.max(1, t.arrival_round - t.departure_round)));
-    const midX = (origPos.x + destPos.x) / 2;
-    const midY = (origPos.y + destPos.y) / 2;
-    const shipX = (1 - progress) * (1 - progress) * origPos.x + 2 * (1 - progress) * progress * (midX * 0.7) + progress * progress * destPos.x;
-    const shipY = (1 - progress) * (1 - progress) * origPos.y + 2 * (1 - progress) * progress * (midY * 0.7) + progress * progress * destPos.y;
-    const dist = Math.hypot(wMouse.x - shipX, wMouse.y - shipY);
+    const p1 = getBodyCoords(t.origin, simState.epochTime, simState.currentRound);
+    const p2 = getBodyCoords(t.destination, simState.epochTime, simState.currentRound);
+    const dep = t.departure_round || 0;
+    const arr = t.arrival_round || (dep + 2);
+    const progress = Math.max(0.05, Math.min(0.95, (simState.currentRound - dep) / Math.max(1, arr - dep)));
+    const sx = p1.x + (p2.x - p1.x) * progress;
+    const sy = p1.y + (p2.y - p1.y) * progress;
+    const dist = Math.hypot(wMouse.x - sx, wMouse.y - sy);
     if (dist < minDist) {
       minDist = dist;
-      found = { type: "vessel", id: f.agent_id, name: "VESSEL: " + f.agent_id.toUpperCase(), x: shipX, y: shipY, data: f };
+      found = { type: "vessel", id: f.agent_id, name: f.agent_id.toUpperCase() + " FLAGSHIP", data: f, x: sx, y: sy };
     }
   });
 
   hoveredEntity = found;
-  canvas.style.cursor = found ? "pointer" : (camera.isDragging ? "grabbing" : "grab");
 
   if (found) {
-    tooltip.style.display = "block";
-    tooltip.style.left = e.clientX + "px";
-    tooltip.style.top = e.clientY + "px";
-    tooltip.innerHTML = '<span style="color:var(--neon-cyan); font-weight:700;">' + found.name + '</span><br><span style="color:var(--text-muted);">Double-click to lock camera</span>';
+    canvas.style.cursor = "pointer";
+    tooltip.style.display = "flex";
+    tooltip.style.left = (e.clientX + 14) + "px";
+    tooltip.style.top = (e.clientY + 14) + "px";
+    ttTitle.textContent = found.name;
+    ttSub.textContent = found.type === "body" ? "Click to focus & inspect telemetry" : "Click to inspect cargo manifest";
   } else {
+    canvas.style.cursor = camera.isDragging ? "grabbing" : "grab";
     tooltip.style.display = "none";
   }
 });
 
-window.addEventListener("mouseup", () => {
-  camera.isDragging = false;
-});
-
-canvas.addEventListener("wheel", (e) => {
-  e.preventDefault();
-  const zoomFactor = e.deltaY < 0 ? 1.15 : 0.87;
-  const newZoom = Math.max(0.18, Math.min(14.0, camera.zoom * zoomFactor));
-
-  const mouseX = e.clientX;
-  const mouseY = e.clientY;
-  const wBefore = screenToWorld(mouseX, mouseY);
-
-  camera.zoom = newZoom;
-  const sAfter = worldToScreen(wBefore.x, wBefore.y);
-  camera.panX += mouseX - sAfter.x;
-  camera.panY += mouseY - sAfter.y;
-}, { passive: false });
-
+// Single-Click Focal Tracking
 canvas.addEventListener("click", () => {
   if (hoveredEntity) {
     selectedEntity = hoveredEntity.id;
-    updateInspector(hoveredEntity);
-    playBlip(880, 0.05);
-    openMobileInspector();
-  }
-});
-
-canvas.addEventListener("dblclick", () => {
-  if (hoveredEntity) {
     camera.trackedEntity = hoveredEntity.id;
     updateTrackedBadge();
-    playBlip(1200, 0.08);
+    updateInspector(hoveredEntity);
+    openInspector();
+    playBlip(880, 0.05);
+
+    document.querySelectorAll(".focal-pill").forEach(p => {
+      p.classList.toggle("active", p.getAttribute("data-focus") === hoveredEntity.id);
+    });
   }
 });
-
-// --- Mobile Touch Gestures & Pinch-to-Zoom Engine ---
-let activeTouches = {};
-let touchPinchStartDist = 0;
-let touchPinchStartZoom = 1;
-let lastTapTime = 0;
-
-canvas.addEventListener("touchstart", (e) => {
-  e.preventDefault();
-  for (let i = 0; i < e.changedTouches.length; i++) {
-    const t = e.changedTouches[i];
-    activeTouches[t.identifier] = { clientX: t.clientX, clientY: t.clientY };
-  }
-  const touchList = Object.values(activeTouches);
-  if (touchList.length === 1) {
-    camera.isDragging = true;
-    camera.dragStartX = touchList[0].clientX;
-    camera.dragStartY = touchList[0].clientY;
-    camera.velX = 0;
-    camera.velY = 0;
-    camera.trackedEntity = null;
-    updateTrackedBadge();
-  } else if (touchList.length === 2) {
-    camera.isDragging = false;
-    const t1 = touchList[0];
-    const t2 = touchList[1];
-    touchPinchStartDist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
-    touchPinchStartZoom = camera.zoom;
-  }
-}, { passive: false });
-
-canvas.addEventListener("touchmove", (e) => {
-  e.preventDefault();
-  for (let i = 0; i < e.changedTouches.length; i++) {
-    const t = e.changedTouches[i];
-    if (activeTouches[t.identifier]) {
-      activeTouches[t.identifier] = { clientX: t.clientX, clientY: t.clientY };
-    }
-  }
-  const touchList = Object.values(activeTouches);
-  if (touchList.length === 1 && camera.isDragging) {
-    const t = touchList[0];
-    const dx = t.clientX - camera.dragStartX;
-    const dy = t.clientY - camera.dragStartY;
-    camera.panX += dx;
-    camera.panY += dy;
-    camera.velX = dx;
-    camera.velY = dy;
-    camera.dragStartX = t.clientX;
-    camera.dragStartY = t.clientY;
-  } else if (touchList.length === 2 && touchPinchStartDist > 0) {
-    const t1 = touchList[0];
-    const t2 = touchList[1];
-    const currDist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
-    const midX = (t1.clientX + t2.clientX) / 2;
-    const midY = (t1.clientY + t2.clientY) / 2;
-    const scaleFactor = currDist / touchPinchStartDist;
-    const newZoom = Math.max(0.18, Math.min(14.0, touchPinchStartZoom * scaleFactor));
-
-    const wBefore = screenToWorld(midX, midY);
-    camera.zoom = newZoom;
-    const sAfter = worldToScreen(wBefore.x, wBefore.y);
-    camera.panX += midX - sAfter.x;
-    camera.panY += midY - sAfter.y;
-  }
-}, { passive: false });
-
-canvas.addEventListener("touchend", (e) => {
-  e.preventDefault();
-  const touchListBefore = Object.values(activeTouches);
-  for (let i = 0; i < e.changedTouches.length; i++) {
-    delete activeTouches[e.changedTouches[i].identifier];
-  }
-  const touchListAfter = Object.values(activeTouches);
-  if (touchListAfter.length === 0) {
-    camera.isDragging = false;
-    touchPinchStartDist = 0;
-
-    if (e.changedTouches.length === 1 && touchListBefore.length === 1) {
-      const endT = e.changedTouches[0];
-      const now = Date.now();
-      const isDoubleTap = (now - lastTapTime) < 300;
-      lastTapTime = now;
-
-      const wTap = screenToWorld(endT.clientX, endT.clientY);
-      let found = null;
-      let minDist = 38 / camera.zoom;
-      for (const [key, conf] of Object.entries(CELESTIAL_BODIES)) {
-        const pos = getBodyCoords(key, simState.epochTime, simState.currentRound);
-        const dist = Math.hypot(wTap.x - pos.x, wTap.y - pos.y);
-        if (dist < minDist) {
-          minDist = dist;
-          found = { type: "body", id: key, name: conf.name, x: pos.x, y: pos.y };
-        }
-      }
-      fleetLocations.filter(f => f.status === "in_transit" && f.transit).forEach(f => {
-        const t = f.transit;
-        const origPos = getBodyCoords(t.origin, simState.epochTime, simState.currentRound);
-        const destPos = getBodyCoords(t.destination, simState.epochTime, simState.currentRound);
-        const progress = Math.max(0.05, Math.min(0.95, (simState.currentRound - t.departure_round) / Math.max(1, t.arrival_round - t.departure_round)));
-        const midX = (origPos.x + destPos.x) / 2;
-        const midY = (origPos.y + destPos.y) / 2;
-        const shipX = (1 - progress) * (1 - progress) * origPos.x + 2 * (1 - progress) * progress * (midX * 0.7) + progress * progress * destPos.x;
-        const shipY = (1 - progress) * (1 - progress) * origPos.y + 2 * (1 - progress) * progress * (midY * 0.7) + progress * progress * destPos.y;
-        const dist = Math.hypot(wTap.x - shipX, wTap.y - shipY);
-        if (dist < minDist) {
-          minDist = dist;
-          found = { type: "vessel", id: f.agent_id, name: "VESSEL: " + f.agent_id.toUpperCase(), x: shipX, y: shipY, data: f };
-        }
-      });
-
-      if (found) {
-        if (isDoubleTap) {
-          camera.trackedEntity = found.id;
-          updateTrackedBadge();
-          playBlip(1200, 0.08);
-        } else {
-          selectedEntity = found.id;
-          updateInspector(found);
-          playBlip(880, 0.05);
-          openMobileInspector();
-        }
-      }
-    }
-  } else if (touchListAfter.length === 1) {
-    camera.isDragging = true;
-    camera.dragStartX = touchListAfter[0].clientX;
-    camera.dragStartY = touchListAfter[0].clientY;
-    touchPinchStartDist = 0;
-  }
-}, { passive: false });
-
-canvas.addEventListener("touchcancel", () => {
-  activeTouches = {};
-  camera.isDragging = false;
-  touchPinchStartDist = 0;
-});
-
-// --- Mobile Navigation Drawer Controller ---
-function toggleMobileCard(cardKey) {
-  const cardMap = {
-    status: document.getElementById("card-status"),
-    layers: document.getElementById("card-layers"),
-    sim: document.getElementById("card-sim"),
-    inspector: document.getElementById("inspector-card")
-  };
-  const btnMap = {
-    status: document.getElementById("mbtn-status"),
-    layers: document.getElementById("mbtn-layers"),
-    sim: document.getElementById("mbtn-sim"),
-    inspector: document.getElementById("mbtn-inspector")
-  };
-
-  const targetCard = cardMap[cardKey];
-  const targetBtn = btnMap[cardKey];
-  if (!targetCard) return;
-
-  const isAlreadyActive = targetCard.classList.contains("mobile-active") || (cardKey === "status" && targetCard.classList.contains("mobile-expanded"));
-
-  closeAllMobileCards();
-
-  if (!isAlreadyActive) {
-    if (cardKey === "status") {
-      targetCard.classList.add("mobile-expanded");
-    } else {
-      targetCard.classList.add("mobile-active");
-    }
-    if (targetBtn) targetBtn.classList.add("active");
-    playBlip(750, 0.04);
-  }
-}
-
-function closeAllMobileCards() {
-  document.getElementById("card-status")?.classList.remove("mobile-expanded");
-  document.getElementById("card-layers")?.classList.remove("mobile-active");
-  document.getElementById("card-sim")?.classList.remove("mobile-active");
-  document.getElementById("inspector-card")?.classList.remove("mobile-active");
-  document.querySelectorAll(".mobile-nav-btn").forEach(b => b.classList.remove("active"));
-}
-
-function openMobileInspector() {
-  if (window.innerWidth <= 768) {
-    toggleMobileCard("inspector");
-  }
-}
-
-function updateTrackedBadge() {
-  const el = document.getElementById("stat-tracked-entity");
-  if (camera.trackedEntity) {
-    el.textContent = "LOCKED: " + camera.trackedEntity.toUpperCase();
-    el.className = "status-val neon-cyan";
-  } else {
-    el.textContent = "FREE CAM";
-    el.className = "status-val neon-purple";
-  }
-}
-
-function toggleLayer(layerKey) {
-  layers[layerKey] = !layers[layerKey];
-  const btn = document.getElementById("toggle-" + layerKey);
-  if (btn) {
-    btn.classList.toggle("active", layers[layerKey]);
-  }
-  playBlip(620, 0.04);
-}
-
-function togglePlayPause() {
-  simState.isPlaying = !simState.isPlaying;
-  const btn = document.getElementById("btn-play-pause");
-  btn.textContent = simState.isPlaying ? "⏸ PAUSE" : "▶ RESUME";
-  playBlip(simState.isPlaying ? 700 : 500, 0.06);
-}
-
-function updateSpeed(val) {
-  simState.speed = parseFloat(val);
-  document.getElementById("speed-label").textContent = simState.speed.toFixed(1) + "x";
-}
-
-function toggleSimMode() {
-  simState.mode = (simState.mode === "round_lock") ? "kepler" : "round_lock";
-  document.getElementById("stat-sim-mode").textContent = simState.mode.toUpperCase().replace("_", "-");
-  document.getElementById("btn-mode-toggle").textContent = simState.mode === "round_lock" ? "MODE: KEPLER" : "MODE: ROUND-LOCK";
-  playBlip(950, 0.06);
-}
-
-function stepRound(delta) {
-  simState.currentRound = Math.max(1, simState.currentRound + delta);
-  document.getElementById("stat-round").textContent = "ROUND " + simState.currentRound;
-  playBlip(600 + delta * 100, 0.05);
-}
-
-document.getElementById("btn-audio-toggle").addEventListener("click", () => {
-  simState.audioEnabled = !simState.audioEnabled;
-  document.getElementById("btn-audio-toggle").textContent = simState.audioEnabled ? "🔊" : "🔇";
-});
-
-function updateInspector(target) {
-  const title = document.getElementById("inspector-title");
-  const badge = document.getElementById("inspector-badge");
-  const name = document.getElementById("insp-name");
-  const dist = document.getElementById("insp-dist");
-  const period = document.getElementById("insp-period");
-  const spots = document.getElementById("insp-spots");
-  const circuit = document.getElementById("insp-circuit");
-  const docked = document.getElementById("insp-docked");
-
-  if (!target) return;
-
-  if (target.type === "body") {
-    const conf = CELESTIAL_BODIES[target.id] || {};
-    title.textContent = "STATION // CELESTIAL NODE";
-    badge.textContent = "STATION";
-    badge.className = "inspector-badge badge-station";
-    name.textContent = conf.name || target.id.toUpperCase();
-    dist.textContent = conf.au ? conf.au.toFixed(2) + " AU (" + (conf.au * 149.6).toFixed(1) + "M km)" : "0.00 AU (SOL CORE)";
-    period.textContent = conf.period ? (conf.period / 365.25).toFixed(2) + " Earth Yrs (" + conf.period + "d)" : "STATIONARY";
-    
-    const p = stationPrices[target.id] || {};
-    spots.textContent = p.FRAG !== undefined ? "FRAG: " + Number(p.FRAG).toFixed(0) + " CR // FUEL: " + Number(p.FUEL).toFixed(0) + " CR" : "-- CR";
-
-    const isHalted = circuitBreakerHalts.some(h => (h.station_id || "").toLowerCase() === target.id);
-    circuit.textContent = isHalted ? "⚠️ TRADING HALTED (LULD)" : "NOMINAL (±10% LULD)";
-    circuit.className = isHalted ? "data-v neon-red" : "data-v neon-green";
-
-    const vessels = fleetLocations.filter(f => f.status === "docked" && f.station_id === target.id).map(f => f.agent_id.toUpperCase());
-    docked.textContent = vessels.length > 0 ? vessels.join(", ") : "NO VESSELS BERTHED";
-  } else if (target.type === "vessel") {
-    const f = target.data || {};
-    const t = f.transit || {};
-    title.textContent = "HAULER // FLIGHT MANIFEST";
-    badge.textContent = "IN TRANSIT";
-    badge.className = "inspector-badge badge-fleet";
-    name.textContent = f.agent_id.toUpperCase() + " // FLAGSHIP";
-    dist.textContent = "ROUTE: " + t.origin.toUpperCase() + " → " + t.destination.toUpperCase();
-    period.textContent = "PROGRESS: RND " + t.departure_round + " → RND " + t.arrival_round;
-    spots.textContent = "CARGO: " + (t.cargo_qty || 0) + " " + (t.commodity || 'FRAG');
-    circuit.textContent = t.perishable ? "⚠️ PERISHABLE (5% DECAY/RND)" : "STABLE CARGO";
-    circuit.className = t.perishable ? "data-v neon-amber" : "data-v neon-green";
-    docked.textContent = "STATUS: IN TRANSIT";
-  }
-}
 
 function render(timestamp) {
   requestAnimationFrame(render);
@@ -1249,7 +1579,21 @@ function render(timestamp) {
   }
 
   if (camera.trackedEntity) {
-    const tPos = getBodyCoords(camera.trackedEntity, simState.epochTime, simState.currentRound);
+    let tPos = { x: 0, y: 0 };
+    if (CELESTIAL_BODIES[camera.trackedEntity]) {
+      tPos = getBodyCoords(camera.trackedEntity, simState.epochTime, simState.currentRound);
+    } else {
+      const v = fleetLocations.find(f => f.agent_id === camera.trackedEntity && f.transit);
+      if (v) {
+        const t = v.transit;
+        const p1 = getBodyCoords(t.origin, simState.epochTime, simState.currentRound);
+        const p2 = getBodyCoords(t.destination, simState.epochTime, simState.currentRound);
+        const dep = t.departure_round || 0;
+        const arr = t.arrival_round || (dep + 2);
+        const prog = Math.max(0.05, Math.min(0.95, (simState.currentRound - dep) / Math.max(1, arr - dep)));
+        tPos = { x: p1.x + (p2.x - p1.x) * prog, y: p1.y + (p2.y - p1.y) * prog };
+      }
+    }
     const targetScreenX = w / 2 - tPos.x * camera.zoom;
     const targetScreenY = h / 2 - tPos.y * camera.zoom;
     camera.panX += (targetScreenX - camera.panX) * 0.08;
@@ -1266,11 +1610,11 @@ function render(timestamp) {
   const cx = camera.panX;
   const cy = camera.panY;
 
-  // 1. AU Distance Grid Rings
+  // 1. Subtle AU Distance Grid Rings
   if (layers.grid) {
     const gridAUs = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5];
     ctx.lineWidth = 1;
-    ctx.strokeStyle = "rgba(168, 85, 247, 0.07)";
+    ctx.strokeStyle = "rgba(148, 163, 184, 0.08)";
     ctx.setLineDash([4, 6]);
     gridAUs.forEach(au => {
       const rScreen = au * AU_PX * camera.zoom;
@@ -1278,28 +1622,28 @@ function render(timestamp) {
       ctx.arc(cx, cy, rScreen, 0, Math.PI * 2);
       ctx.stroke();
 
-      ctx.fillStyle = "rgba(168, 85, 247, 0.35)";
-      ctx.font = "9px 'Space Mono', monospace";
+      ctx.fillStyle = "rgba(148, 163, 184, 0.35)";
+      ctx.font = "10px var(--font-mono)";
       ctx.textAlign = "left";
-      ctx.fillText(au.toFixed(1) + " AU", cx + rScreen + 4, cy - 2);
+      ctx.fillText(au.toFixed(1) + " AU", cx + rScreen + 6, cy - 3);
     });
     ctx.setLineDash([]);
 
-    ctx.strokeStyle = "rgba(168, 85, 247, 0.05)";
+    ctx.strokeStyle = "rgba(148, 163, 184, 0.04)";
     ctx.beginPath();
     ctx.moveTo(cx - 3000, cy); ctx.lineTo(cx + 3000, cy);
     ctx.moveTo(cx, cy - 3000); ctx.lineTo(cx, cy + 3000);
     ctx.stroke();
   }
 
-  // 2. Planetary Orbit Paths
+  // 2. Minimal Keplerian Planetary Orbit Paths
   if (layers.orbits) {
     for (const [key, conf] of Object.entries(CELESTIAL_BODIES)) {
       if (key === "sun" || key === "luna") continue;
       const rScreen = conf.au * AU_PX * camera.zoom;
-      ctx.strokeStyle = "rgba(168, 85, 247, 0.22)";
+      ctx.strokeStyle = "rgba(148, 163, 184, 0.16)";
       ctx.lineWidth = 1.2;
-      ctx.setLineDash([2, 4]);
+      ctx.setLineDash([3, 5]);
       ctx.beginPath();
       ctx.arc(cx, cy, rScreen, 0, Math.PI * 2);
       ctx.stroke();
@@ -1307,14 +1651,14 @@ function render(timestamp) {
     }
   }
 
-  // 3. Asteroid Belt Particle Field
+  // 3. Asteroid Belt Particle Field (Subtle Stardust)
   if (layers.belt) {
     asteroidBelt.forEach(ast => {
       if (simState.isPlaying) ast.theta += ast.speed * simState.speed;
       const ax = cx + Math.cos(ast.theta) * ast.r * camera.zoom;
       const ay = cy + Math.sin(ast.theta) * ast.r * camera.zoom;
       if (ax >= -10 && ax <= w + 10 && ay >= -10 && ay <= h + 10) {
-        ctx.fillStyle = "rgba(192, 132, 252, " + ast.alpha + ")";
+        ctx.fillStyle = "rgba(148, 163, 184, " + ast.alpha + ")";
         ctx.beginPath();
         ctx.arc(ax, ay, ast.size * Math.max(0.6, camera.zoom * 0.7), 0, Math.PI * 2);
         ctx.fill();
@@ -1325,30 +1669,26 @@ function render(timestamp) {
   // 4. Active Hohmann Alignment Corridors
   if (layers.corridors && orbitalWindows && orbitalWindows.length > 0) {
     orbitalWindows.filter(win => win.is_active).forEach(win => {
-      document.getElementById("stat-active-rush").textContent = "ACTIVE: " + win.name.toUpperCase() + " (-50% TIME)";
-      document.getElementById("stat-active-rush").className = "status-val neon-cyan";
+      const rushEl = document.getElementById("stat-active-rush");
+      if (rushEl) {
+        rushEl.textContent = "⚡ ACTIVE: " + win.name.toUpperCase() + " (-50% TIME)";
+        rushEl.style.color = "var(--cyan)";
+      }
 
       const rEarth = getBodyCoords("earth", simState.epochTime, simState.currentRound);
       const rMars = getBodyCoords("mars", simState.epochTime, simState.currentRound);
       const sE = worldToScreen(rEarth.x, rEarth.y);
       const sM = worldToScreen(rMars.x, rMars.y);
 
-      const pulse = 0.3 + Math.sin(timestamp * 0.004) * 0.2;
-      ctx.strokeStyle = "rgba(92, 225, 230, " + pulse + ")";
-      ctx.lineWidth = 2.5;
-      ctx.setLineDash([8, 6]);
+      const pulse = 0.25 + Math.sin(timestamp * 0.003) * 0.15;
+      ctx.strokeStyle = "rgba(6, 182, 212, " + pulse + ")";
+      ctx.lineWidth = 2.0;
+      ctx.setLineDash([6, 6]);
       ctx.beginPath();
       ctx.moveTo(sE.x, sE.y);
       ctx.lineTo(sM.x, sM.y);
       ctx.stroke();
       ctx.setLineDash([]);
-
-      const mx = (sE.x + sM.x) / 2;
-      const my = (sE.y + sM.y) / 2;
-      ctx.fillStyle = "#5ce1e6";
-      ctx.font = "bold 9px 'Space Mono', monospace";
-      ctx.textAlign = "center";
-      ctx.fillText("⚡ HOHMANN ALIGNMENT RUSH (-50% FUEL/TIME)", mx, my - 8);
     });
   }
 
@@ -1366,9 +1706,9 @@ function render(timestamp) {
       const cpX = (midX + cx) / 2;
       const cpY = (midY + cy) / 2;
 
-      ctx.strokeStyle = "rgba(192, 132, 252, 0.45)";
+      ctx.strokeStyle = "rgba(99, 102, 241, 0.4)";
       ctx.lineWidth = 1.5;
-      ctx.setLineDash([5, 5]);
+      ctx.setLineDash([4, 4]);
       ctx.beginPath();
       ctx.moveTo(s1.x, s1.y);
       ctx.quadraticCurveTo(cpX, cpY, s2.x, s2.y);
@@ -1378,12 +1718,12 @@ function render(timestamp) {
       const dep = t.departure_round || 0;
       const arr = t.arrival_round || (dep + 2);
       const progress = Math.max(0.05, Math.min(0.95, (simState.currentRound - dep) / Math.max(1, arr - dep)));
-      const fracT = progress + (Math.sin(timestamp * 0.002) * 0.015);
+      const fracT = progress + (Math.sin(timestamp * 0.002) * 0.01);
       const invT = 1 - fracT;
       const shipX = invT * invT * s1.x + 2 * invT * fracT * cpX + fracT * fracT * s2.x;
       const shipY = invT * invT * s1.y + 2 * invT * fracT * cpY + fracT * fracT * s2.y;
 
-      ctx.fillStyle = "var(--neon-cyan)";
+      ctx.fillStyle = "#38bdf8";
       ctx.beginPath();
       ctx.arc(shipX, shipY, 4.5, 0, Math.PI * 2);
       ctx.fill();
@@ -1395,8 +1735,8 @@ function render(timestamp) {
       ctx.stroke();
 
       if (layers.labels) {
-        ctx.fillStyle = "#ffffff";
-        ctx.font = "bold 9px 'Space Mono', monospace";
+        ctx.fillStyle = "#f1f5f9";
+        ctx.font = "600 10px var(--font-mono)";
         ctx.textAlign = "left";
         ctx.fillText("✈ " + f.agent_id.toUpperCase() + " [" + (t.cargo_qty || 0) + " " + (t.commodity || 'FRAG') + "]", shipX + 10, shipY - 4);
       }
@@ -1418,21 +1758,21 @@ function render(timestamp) {
       }
       const sBeacon = worldToScreen(bWorld.x, bWorld.y);
 
-      const pulse = 5 + (Math.sin(timestamp * 0.008) + 1) * 6;
-      ctx.strokeStyle = "rgba(248, 113, 113, 0.7)";
+      const pulse = 4 + (Math.sin(timestamp * 0.008) + 1) * 5;
+      ctx.strokeStyle = "rgba(244, 63, 94, 0.7)";
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.arc(sBeacon.x, sBeacon.y, pulse * camera.zoom, 0, Math.PI * 2);
       ctx.stroke();
 
-      ctx.fillStyle = "#f87171";
+      ctx.fillStyle = "#f43f5e";
       ctx.beginPath();
       ctx.arc(sBeacon.x, sBeacon.y, 4 * camera.zoom, 0, Math.PI * 2);
       ctx.fill();
 
       if (layers.labels) {
-        ctx.fillStyle = "#f87171";
-        ctx.font = "bold 9px 'Space Mono', monospace";
+        ctx.fillStyle = "#fb7185";
+        ctx.font = "600 10px var(--font-mono)";
         ctx.textAlign = "left";
         ctx.fillText("⚠️ SOS: " + b.agent_id.toUpperCase() + " WRECK", sBeacon.x + 10, sBeacon.y + 3);
       }
@@ -1442,8 +1782,8 @@ function render(timestamp) {
   // 7. Sol (Central Radiant Star)
   const sunGrad = ctx.createRadialGradient(cx, cy, 2, cx, cy, 32 * camera.zoom);
   sunGrad.addColorStop(0, "#ffffff");
-  sunGrad.addColorStop(0.2, "#ffe066");
-  sunGrad.addColorStop(0.5, "rgba(217, 70, 239, 0.4)");
+  sunGrad.addColorStop(0.2, "#fef08a");
+  sunGrad.addColorStop(0.5, "rgba(245, 158, 11, 0.35)");
   sunGrad.addColorStop(1, "transparent");
   ctx.fillStyle = sunGrad;
   ctx.beginPath();
@@ -1452,84 +1792,59 @@ function render(timestamp) {
 
   ctx.fillStyle = "#fffbeb";
   ctx.beginPath();
-  ctx.arc(cx, cy, 7 * Math.max(0.8, camera.zoom * 0.7), 0, Math.PI * 2);
+  ctx.arc(cx, cy, 8 * camera.zoom, 0, Math.PI * 2);
   ctx.fill();
 
-  // 8. Celestial Bodies & Stations
+  if (layers.labels) {
+    ctx.fillStyle = "#fef08a";
+    ctx.font = "700 10px var(--font-sans)";
+    ctx.textAlign = "center";
+    ctx.fillText("SOL", cx, cy + 22 * camera.zoom);
+  }
+
+  // 8. Planets & Stations
   for (const [key, conf] of Object.entries(CELESTIAL_BODIES)) {
     if (key === "sun") continue;
     const pos = getBodyCoords(key, simState.epochTime, simState.currentRound);
     const sPos = worldToScreen(pos.x, pos.y);
 
-    const isHovered = hoveredEntity && hoveredEntity.id === key;
-    const isSelected = selectedEntity === key;
-    const isHalted = circuitBreakerHalts.some(h => (h.station_id || "").toLowerCase() === key);
-
-    const bodySize = conf.size * Math.max(0.7, camera.zoom * 0.8);
-    const glowRad = bodySize * 3;
-    const glowGrad = ctx.createRadialGradient(sPos.x, sPos.y, bodySize * 0.5, sPos.x, sPos.y, glowRad);
+    // Subtle atmospheric glow
+    const glowGrad = ctx.createRadialGradient(sPos.x, sPos.y, conf.size * 0.5, sPos.x, sPos.y, conf.size * 2.2 * camera.zoom);
     glowGrad.addColorStop(0, conf.glow);
     glowGrad.addColorStop(1, "transparent");
     ctx.fillStyle = glowGrad;
     ctx.beginPath();
-    ctx.arc(sPos.x, sPos.y, glowRad, 0, Math.PI * 2);
+    ctx.arc(sPos.x, sPos.y, conf.size * 2.2 * camera.zoom, 0, Math.PI * 2);
     ctx.fill();
 
-    ctx.fillStyle = isHalted ? "#f87171" : conf.color;
+    // Solid core
+    ctx.fillStyle = conf.color;
     ctx.beginPath();
-    ctx.arc(sPos.x, sPos.y, bodySize, 0, Math.PI * 2);
+    ctx.arc(sPos.x, sPos.y, conf.size * Math.max(0.6, camera.zoom * 0.85), 0, Math.PI * 2);
     ctx.fill();
 
-    if (isHovered || isSelected) {
-      ctx.strokeStyle = isSelected ? "var(--neon-purple)" : "rgba(255, 255, 255, 0.7)";
-      ctx.lineWidth = 1.5;
-      const reticleR = bodySize + 6 + Math.sin(timestamp * 0.006) * 2;
+    // Active Tracking Selection Ring
+    if (camera.trackedEntity === key || selectedEntity === key) {
+      ctx.strokeStyle = "#818cf8";
+      ctx.lineWidth = 1.8;
       ctx.beginPath();
-      ctx.arc(sPos.x, sPos.y, reticleR, 0, Math.PI * 2);
+      ctx.arc(sPos.x, sPos.y, (conf.size * 1.5 + 4) * Math.max(0.7, camera.zoom * 0.85), 0, Math.PI * 2);
       ctx.stroke();
-
-      if (isSelected) {
-        ctx.fillStyle = "rgba(192, 132, 252, 0.12)";
-        ctx.beginPath();
-        ctx.arc(sPos.x, sPos.y, reticleR, 0, Math.PI * 2);
-        ctx.fill();
-      }
     }
 
+    // Station Data Labels
     if (layers.labels) {
-      ctx.fillStyle = isSelected ? "var(--neon-purple)" : "#ffffff";
-      ctx.font = isSelected ? "bold 10px 'Space Mono', monospace" : "9px 'Space Mono', monospace";
+      ctx.fillStyle = "#f1f5f9";
+      ctx.font = "600 11px var(--font-sans)";
       ctx.textAlign = "center";
-      ctx.fillText(conf.name.split(" // ")[0], sPos.x, sPos.y + bodySize + 12);
+      ctx.fillText(conf.name.split(" // ")[0], sPos.x, sPos.y + conf.size * camera.zoom + 14);
 
-      const p = stationPrices[key] || {};
-      if (p.FRAG !== undefined) {
-        ctx.fillStyle = "var(--neon-amber)";
-        ctx.font = "8px 'Space Mono', monospace";
-        ctx.fillText(Number(p.FRAG).toFixed(0) + " CR", sPos.x, sPos.y + bodySize + 22);
+      if (conf.stationId && stationPrices[conf.stationId]) {
+        const fragPrice = stationPrices[conf.stationId].FRAG;
+        ctx.fillStyle = "#fbbf24";
+        ctx.font = "500 10px var(--font-mono)";
+        ctx.fillText(fragPrice ? Number(fragPrice).toFixed(0) + " CR" : "--", sPos.x, sPos.y + conf.size * camera.zoom + 26);
       }
-    }
-
-    if (layers.fleets) {
-      const docked = fleetLocations.filter(f => f.status === "docked" && f.station_id === key);
-      docked.forEach((f, idx) => {
-        const angle = (Math.PI * 2 / Math.max(1, docked.length)) * idx + (timestamp * 0.001);
-        const orbitR = bodySize + 9;
-        const dx = sPos.x + Math.cos(angle) * orbitR;
-        const dy = sPos.y + Math.sin(angle) * orbitR;
-
-        ctx.fillStyle = "var(--neon-cyan)";
-        ctx.beginPath();
-        ctx.arc(dx, dy, 2.5, 0, Math.PI * 2);
-        ctx.fill();
-
-        if (layers.labels) {
-          ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
-          ctx.font = "7px 'Space Mono', monospace";
-          ctx.textAlign = "center";
-          ctx.fillText(f.agent_id[0].toUpperCase(), dx, dy - 4);
-        }
-      });
     }
   }
 }
@@ -1553,7 +1868,8 @@ async function fetchTelemetry() {
     orbitalWindows = winData.windows;
     if (winData.current_round) {
       simState.currentRound = winData.current_round;
-      document.getElementById("stat-round").textContent = "ROUND " + simState.currentRound;
+      const rEl = document.getElementById("stat-round");
+      if (rEl) rEl.textContent = "ROUND " + simState.currentRound;
     }
   }
 
@@ -1571,6 +1887,7 @@ async function fetchTelemetry() {
 resizeCanvas();
 generateAsteroidBelt();
 resetView();
+updateInspector({ type: "body", id: "ceres" });
 fetchTelemetry();
 setInterval(fetchTelemetry, 6000);
 requestAnimationFrame(render);
