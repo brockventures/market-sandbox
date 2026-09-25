@@ -4666,6 +4666,8 @@
     const finalPrice = Number(unitPrice).toFixed(1);
     const notional = (Number(unitPrice) * quickOrderQty).toFixed(1);
 
+    let orderResult = null;
+
     if (!isSimulationMode) {
       try {
         const orderPayload = {
@@ -4698,25 +4700,38 @@
           }
           return;
         }
+
+        orderResult = await res.json().catch(() => null);
       } catch (e) {
         console.warn('Order dispatch error:', e);
         return;
       }
     }
 
+    const payload = (orderResult && orderResult.payload) ? orderResult.payload : {};
+    const orderStatus = payload.order_status || (payload.trades_count > 0 ? 'filled' : (payload.auction_resting ? 'resting' : ''));
+    const isResting = !isSimulationMode && (orderStatus === 'resting' || (payload.filled_qty === 0 && payload.trades_count === 0));
+    const isFill = isSimulationMode || (!isResting && (orderStatus === 'filled' || (payload.filled_qty || 0) > 0 || (payload.trades_count || 0) > 0));
+    const filledQty = isSimulationMode ? quickOrderQty : (payload.filled_qty ?? (isFill ? quickOrderQty : 0));
+
     if (receiptEl) {
       receiptEl.style.display = 'block';
       const modePrefix = isSimulationMode ? '[SIMULATED] ' : '';
-      if (side === 'buy') {
+      if (!isFill) {
+        receiptEl.style.borderColor = 'rgba(56, 189, 248, 0.4)';
+        receiptEl.style.background = 'rgba(56, 189, 248, 0.12)';
+        receiptEl.style.color = '#38bdf8';
+        receiptEl.innerHTML = `⏳ <strong>ORDER RESTING // BOOK ENTRY POSTED:</strong> ${side.toUpperCase()} order for ${quickOrderQty} ${quickOrderCommodity} @ ${finalPrice} CR posted to ${quickOrderStation.toUpperCase()} order book. Order resting unfilled awaiting counterparty match.`;
+      } else if (side === 'buy') {
         receiptEl.style.borderColor = 'rgba(16, 185, 129, 0.4)';
         receiptEl.style.background = 'rgba(16, 185, 129, 0.12)';
         receiptEl.style.color = '#10b981';
-        receiptEl.innerHTML = `🚀 <strong>${modePrefix}CAPITAL ALLOCATED // POSITION CONFIRMED:</strong> Acquired ${quickOrderQty} ${quickOrderCommodity} @ ${finalPrice} CR (${Number(notional).toLocaleString()} CR) at ${quickOrderStation.toUpperCase()}. Fiduciary alignment achieved. Downstream risk successfully externalized.`;
+        receiptEl.innerHTML = `🚀 <strong>${modePrefix}CAPITAL ALLOCATED // POSITION CONFIRMED:</strong> Acquired ${filledQty} ${quickOrderCommodity} @ ${finalPrice} CR (${Number(notional).toLocaleString()} CR) at ${quickOrderStation.toUpperCase()}. Fiduciary alignment achieved. Downstream risk successfully externalized.`;
       } else {
         receiptEl.style.borderColor = 'rgba(244, 63, 94, 0.4)';
         receiptEl.style.background = 'rgba(244, 63, 94, 0.12)';
         receiptEl.style.color = '#f43f5e';
-        receiptEl.innerHTML = `💥 <strong>${modePrefix}EXPOSURE TERMINATED // POSITION LIQUIDATED:</strong> Divested ${quickOrderQty} ${quickOrderCommodity} @ ${finalPrice} CR (${Number(notional).toLocaleString()} CR) at ${quickOrderStation.toUpperCase()}. Residual liability disclaimed. Corporate integrity preserved.`;
+        receiptEl.innerHTML = `💥 <strong>${modePrefix}EXPOSURE TERMINATED // POSITION LIQUIDATED:</strong> Divested ${filledQty} ${quickOrderCommodity} @ ${finalPrice} CR (${Number(notional).toLocaleString()} CR) at ${quickOrderStation.toUpperCase()}. Residual liability disclaimed. Corporate integrity preserved.`;
       }
       setTimeout(() => {
         receiptEl.style.opacity = '0';
@@ -4725,21 +4740,23 @@
       }, 4000);
     }
 
-    const tapeFeedEl = document.getElementById('tape-feed-body');
-    if (tapeFeedEl) {
-      const now = new Date().toLocaleTimeString('en-US', { hour12: false, timeZone: 'America/Los_Angeles' });
-      const deskLabel = isSimulationMode ? 'EXECUTIVE DESK (SIM)' : 'EXECUTIVE DESK (LIVE)';
-      const tickHtml = `
-        <div class="tape-tick ${side === 'buy' ? 'tick-bid' : 'tick-ask'}" style="animation: fadeInTab 0.2s ease;">
-          <span class="tape-time">${now} PT</span>
-          <span class="tape-station">${quickOrderStation.toUpperCase()}</span>
-          <span class="tape-inst" style="color: ${side === 'buy' ? '#10b981' : '#f43f5e'}; font-weight: 700;">${side === 'buy' ? 'ALLOCATE' : 'DIVEST'}</span>
-          <span class="tape-price">${finalPrice} CR</span>
-          <span class="tape-qty">${quickOrderQty} ${quickOrderCommodity}</span>
-          <span class="tape-agent">${deskLabel}</span>
-        </div>
-      `;
-      tapeFeedEl.insertAdjacentHTML('afterbegin', tickHtml);
+    if (isFill) {
+      const tapeFeedEl = document.getElementById('tape-feed-body');
+      if (tapeFeedEl) {
+        const now = new Date().toLocaleTimeString('en-US', { hour12: false, timeZone: 'America/Los_Angeles' });
+        const deskLabel = isSimulationMode ? 'EXECUTIVE DESK (SIM)' : 'EXECUTIVE DESK (LIVE)';
+        const tickHtml = `
+          <div class="tape-tick ${side === 'buy' ? 'tick-bid' : 'tick-ask'}" style="animation: fadeInTab 0.2s ease;">
+            <span class="tape-time">${now} PT</span>
+            <span class="tape-station">${quickOrderStation.toUpperCase()}</span>
+            <span class="tape-inst" style="color: ${side === 'buy' ? '#10b981' : '#f43f5e'}; font-weight: 700;">${side === 'buy' ? 'ALLOCATE' : 'DIVEST'}</span>
+            <span class="tape-price">${finalPrice} CR</span>
+            <span class="tape-qty">${filledQty} ${quickOrderCommodity}</span>
+            <span class="tape-agent">${deskLabel}</span>
+          </div>
+        `;
+        tapeFeedEl.insertAdjacentHTML('afterbegin', tickHtml);
+      }
     }
   }
 
@@ -4763,20 +4780,38 @@
       { sym: 'FRAG', defaultPrice: 18.5 }
     ];
 
+    if (!window._lastCommodityPrices) {
+      window._lastCommodityPrices = {};
+    }
+
     commodities.forEach(c => {
       const priceEl = document.getElementById(`ribbon-price-${c.sym.toLowerCase()}`);
+      const deltaEl = document.getElementById(`ribbon-delta-${c.sym.toLowerCase()}`);
       if (priceEl && prices) {
-        let p = null;
+        let sum = 0;
+        let count = 0;
         for (const st of ['ceres', 'earth', 'mars', 'luna']) {
           if (prices[st] && prices[st][c.sym] !== undefined) {
-            p = prices[st][c.sym];
-            break;
+            const p = prices[st][c.sym];
+            const val = typeof p === 'object' ? (p.spot_price || p.best_ask || p.ask || null) : p;
+            if (val !== null && !isNaN(val)) {
+              sum += Number(val);
+              count++;
+            }
           }
         }
-        if (p !== null) {
-          const val = typeof p === 'object' ? (p.spot_price || p.best_ask || p.ask || c.defaultPrice) : p;
-          priceEl.textContent = `${Number(val).toFixed(1)} CR`;
+        const solWidePrice = count > 0 ? (sum / count) : c.defaultPrice;
+        priceEl.textContent = `${solWidePrice.toFixed(1)} CR`;
+
+        if (deltaEl) {
+          const prev = window._lastCommodityPrices[c.sym] !== undefined ? window._lastCommodityPrices[c.sym] : c.defaultPrice;
+          const diff = solWidePrice - prev;
+          const pct = prev > 0 ? ((diff / prev) * 100) : 0;
+          const sign = pct > 0 ? '+' : '';
+          deltaEl.textContent = `${sign}${pct.toFixed(1)}%`;
+          deltaEl.className = `commodity-ticker-delta ${pct > 0.05 ? 'up' : (pct < -0.05 ? 'down' : 'neutral')}`;
         }
+        window._lastCommodityPrices[c.sym] = solWidePrice;
       }
     });
   }
