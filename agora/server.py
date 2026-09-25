@@ -1565,6 +1565,18 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 self.wfile.write(content)
                 return
 
+        if path in ('/index', '/index.html'):
+            index_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'public', 'index.html')
+            if os.path.exists(index_path):
+                with open(index_path, 'rb') as f:
+                    content = f.read()
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.send_header('Content-Length', str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+                return
+
         if path in ('/orrery', '/orrery.html'):
             orrery_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'public', 'orrery.html')
             if os.path.exists(orrery_path):
@@ -1572,6 +1584,44 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                     content = f.read()
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.send_header('Content-Length', str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+                return
+
+        if path in ('/orrery-3d', '/orrery-3d.html', '/orrery3d'):
+            orrery3d_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'public', 'orrery-3d.html')
+            if os.path.exists(orrery3d_path):
+                with open(orrery3d_path, 'rb') as f:
+                    content = f.read()
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.send_header('Content-Length', str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+                return
+
+        if path in ('/patch-notes', '/patch-notes.html'):
+            pn_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'public', 'patch-notes.html')
+            if os.path.exists(pn_path):
+                with open(pn_path, 'rb') as f:
+                    content = f.read()
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.send_header('Content-Length', str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+                return
+
+        if path.startswith('/images/'):
+            img_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'public', path.lstrip('/'))
+            if os.path.exists(img_path) and os.path.isfile(img_path):
+                ext = os.path.splitext(img_path)[1].lower()
+                mime = 'image/jpeg' if ext in ('.jpg', '.jpeg') else 'image/png' if ext == '.png' else 'application/octet-stream'
+                with open(img_path, 'rb') as f:
+                    content = f.read()
+                self.send_response(200)
+                self.send_header('Content-Type', mime)
                 self.send_header('Content-Length', str(len(content)))
                 self.end_headers()
                 self.wfile.write(content)
