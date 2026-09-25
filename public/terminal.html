@@ -1859,6 +1859,16 @@
   </main>
 
 <script>
+  function escapeHtml(val) {
+    if (val === null || val === undefined) return '';
+    return String(val)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
   const AGENT_ROLES = {
     amos: "Atlantean Paperclip Manufacturing",
     marvin: "Ballistic Liquidation Co.",
@@ -2640,13 +2650,14 @@
       const crPct = Math.max(0, Math.min(100, Math.round((liquid / nw) * 100)));
       const fragPct = 100 - crPct;
       const agentKey = (a.agent_id || "").toLowerCase();
-      const role = AGENT_ROLES[agentKey] || "Autonomous Syndicate";
+      const role = escapeHtml(AGENT_ROLES[agentKey] || "Autonomous Syndicate");
+      const agentDisp = escapeHtml((a.agent_id || "").toUpperCase());
 
       return `
         <tr>
           <td class="rank-tag">#${i + 1}</td>
           <td>
-            <div class="agent-name">${(a.agent_id || "").toUpperCase()}</div>
+            <div class="agent-name">${agentDisp}</div>
             <div class="agent-role">${role}</div>
           </td>
           <td class="val-highlight">${Number(nw).toLocaleString()}<span class="unit-tag" style="color: var(--amber);">CR</span></td>
@@ -2965,7 +2976,7 @@
         } else {
           asksBody.innerHTML = asks.slice(0, 5).map(o => {
             const agentKey = (o.agent_id || "").toLowerCase();
-            const syndicate = AGENT_ROLES[agentKey] || (o.agent_id || "").toUpperCase();
+            const syndicate = escapeHtml(AGENT_ROLES[agentKey] || (o.agent_id || "").toUpperCase());
             return `
             <tr class="ask-row">
               <td style="font-weight: bold;">${Number(o.limit_price).toLocaleString()} CR</td>
@@ -2983,7 +2994,7 @@
         } else {
           bidsBody.innerHTML = bids.slice(0, 5).map(o => {
             const agentKey = (o.agent_id || "").toLowerCase();
-            const syndicate = AGENT_ROLES[agentKey] || (o.agent_id || "").toUpperCase();
+            const syndicate = escapeHtml(AGENT_ROLES[agentKey] || (o.agent_id || "").toUpperCase());
             return `
             <tr class="bid-row">
               <td style="font-weight: bold;">${Number(o.limit_price).toLocaleString()} CR</td>
@@ -3079,13 +3090,13 @@
             const p = t.payload || {};
 
             if (t.kind === "news") {
-              const headline = p.headline || "BREAKING NEWS";
-              const st = (p.station_id || "").toUpperCase();
-              const comm = (p.commodity || "").toUpperCase();
+              const headline = escapeHtml(p.headline || "BREAKING NEWS");
+              const st = escapeHtml((p.station_id || "").toUpperCase());
+              const comm = escapeHtml((p.commodity || "").toUpperCase());
               return `
                 <div class="tape-row" style="border-left: 2px solid var(--amber); background: rgba(255, 184, 52, 0.06);">
                   <div>
-                    <span class="badge-seq">#${t.seq || 0}</span>
+                    <span class="badge-seq">#${escapeHtml(t.seq || 0)}</span>
                     <span style="font-weight: bold; margin-left: 6px; color: var(--amber);">WIRE</span>
                     <span style="margin-left: 8px; color: #fff;">[${st} // ${comm}] ${headline}</span>
                   </div>
@@ -3098,14 +3109,14 @@
             const tagLabel = isTrade ? "FILL" : "RESTING";
             const price = p.price !== undefined ? p.price : (p.limit_price !== undefined ? p.limit_price : 0);
             const qty = p.qty || 0;
-            const agent = (p.agent_id || p.buyer || p.seller || "").toUpperCase();
+            const agent = escapeHtml((p.agent_id || p.buyer || p.seller || "").toUpperCase());
             const tagColor = isTrade ? "var(--green)" : "var(--amber)";
-            const commTag = p.instrument || p.commodity || currentCommodity;
+            const commTag = escapeHtml(p.instrument || p.commodity || currentCommodity);
 
             return `
               <div class="tape-row ${tagClass}">
                 <div>
-                  <span class="badge-seq">#${t.seq || 0}</span>
+                  <span class="badge-seq">#${escapeHtml(t.seq || 0)}</span>
                   <span style="font-weight: bold; margin-left: 6px; color: ${tagColor};">${tagLabel}</span>
                   <span style="margin-left: 8px; color: var(--text);">${Number(qty).toLocaleString()} ${commTag} @ ${Number(price).toLocaleString()} CR</span>
                 </div>
@@ -3142,23 +3153,26 @@
 
         if (feed.length > 0 && wireEl) {
           const itemsHtml = feed.map(item => {
-            const round = item.round || currentRound || 42;
-            const st = (item.target_station || item.station_id || '').toUpperCase();
-            const inst = (item.target_instrument || item.commodity || '').toUpperCase();
+            const round = escapeHtml(item.round || currentRound || 42);
+            const st = escapeHtml((item.target_station || item.station_id || '').toUpperCase());
+            const inst = escapeHtml((item.target_instrument || item.commodity || '').toUpperCase());
             const bias = item.drift_bias != null ? item.drift_bias : 0;
             const biasVal = Math.abs(Math.round(bias * 100));
             const sign = bias >= 0 ? `+${biasVal}%` : `-${biasVal}%`;
             const biasClass = bias >= 0 ? "pos" : "neg";
-            const impact = (item.impact || (Math.abs(bias) >= 0.2 ? "HIGH" : (Math.abs(bias) >= 0.1 ? "MED" : "LOW"))).toUpperCase();
-            const impactClass = impact.toLowerCase();
+            const impactRaw = String(item.impact || (Math.abs(bias) >= 0.2 ? "HIGH" : (Math.abs(bias) >= 0.1 ? "MED" : "LOW")));
+            const impact = escapeHtml(impactRaw.toUpperCase());
+            const impactClass = escapeHtml(impactRaw.toLowerCase());
+            const headline = escapeHtml(item.headline || '');
+            const body = escapeHtml(item.body || '');
 
             return `
               <span class="galnet-bulletin-item">
                 <span class="galnet-meta">[RND #${round} // ${st} // ${inst}]</span>
                 <span class="galnet-impact-badge ${impactClass}">${impact} IMPACT</span>
                 <span class="galnet-drift-badge ${biasClass}">${sign} DRIFT BIAS</span>
-                <strong style="color: #fff;">${item.headline}</strong> &mdash; 
-                <span style="color: var(--text-dim);">${item.body}</span>
+                <strong style="color: #fff;">${headline}</strong> &mdash; 
+                <span style="color: var(--text-dim);">${body}</span>
               </span>
             `;
           }).join('<span class="galnet-separator">✦</span>');
@@ -3314,7 +3328,7 @@
         const manifestTbody = document.getElementById("manifest-tbody");
         if (manifestTbody) {
           if (activeTransits.length === 0) {
-            const dockedSummary = fleetLocations.map(l => `${(l.agent_id||'').toUpperCase()} @ ${(l.station_id||'').toUpperCase()}`).join(" · ");
+            const dockedSummary = fleetLocations.map(l => `${escapeHtml(l.agent_id||'').toUpperCase()} @ ${escapeHtml(l.station_id||'').toUpperCase()}`).join(" · ");
             manifestTbody.innerHTML = `
               <tr>
                 <td colspan="8" style="color: var(--text-dim); text-align: center; padding: 14px;">
@@ -3326,7 +3340,12 @@
             manifestTbody.innerHTML = activeTransits.map(v => {
               const t = v.transit || {};
               const agentKey = (v.agent_id || "").toLowerCase();
-              const syndicate = AGENT_ROLES[agentKey] || (v.agent_id || "").toUpperCase();
+              const syndicate = escapeHtml(AGENT_ROLES[agentKey] || (v.agent_id || "").toUpperCase());
+              const agentDisp = escapeHtml((v.agent_id || '').toUpperCase());
+              const transitId = escapeHtml((t.transit_id || 'TX-?').slice(0, 12));
+              const origDisp = escapeHtml((t.origin || '').toUpperCase());
+              const destDisp = escapeHtml((t.destination || '').toUpperCase());
+              const commDisp = escapeHtml(t.commodity || 'FRAG');
               const progressRounds = (currentRound - t.departure_round);
               const totalRounds = Math.max(1, (t.arrival_round - t.departure_round));
               const pct = Math.max(0, Math.min(100, Math.round((progressRounds / totalRounds) * 100)));
@@ -3353,15 +3372,15 @@
 
               return `
                 <tr>
-                  <td style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--cyan);">${(t.transit_id || 'TX-?').slice(0, 12)}</td>
+                  <td style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--cyan);">${transitId}</td>
                   <td>
-                    <div style="font-weight: 600; color: #fff;">${(v.agent_id || '').toUpperCase()}</div>
+                    <div style="font-weight: 600; color: #fff;">${agentDisp}</div>
                     <div style="font-size: 0.72rem; color: var(--text-dim);">${syndicate}</div>
                   </td>
                   <td>
-                    <span style="color: var(--amber); font-weight: bold;">${(t.origin || '').toUpperCase()}</span>
+                    <span style="color: var(--amber); font-weight: bold;">${origDisp}</span>
                     <span style="color: var(--text-dim); margin: 0 4px;">&rarr;</span>
-                    <span style="color: var(--green); font-weight: bold;">${(t.destination || '').toUpperCase()}</span>
+                    <span style="color: var(--green); font-weight: bold;">${destDisp}</span>
                   </td>
                   <td>
                     ${hazardBadges.join(" ")}
@@ -3371,7 +3390,7 @@
                     <div style="font-size: 0.7rem; color: var(--cyan);">${pct}% completed (${totalRounds - progressRounds} rnds remaining)</div>
                   </td>
                   <td style="color: var(--cyan); font-weight: 600;">
-                    ${Number(t.cargo_qty || 0).toLocaleString()} ${t.commodity || 'FRAG'}
+                    ${Number(t.cargo_qty || 0).toLocaleString()} ${commDisp}
                     ${(() => {
                       if (!t.perishable) return "";
                       const cargoQty = Number(t.cargo_qty || 0);
@@ -4110,7 +4129,10 @@
             const feePct = ln.fee_rate !== undefined ? Math.round(Number(ln.fee_rate) * 100) : (ln.fee_pct || 2.0);
             const shares = Number(ln.shares) || 0;
             const collateral = Number(ln.collateral_cr) || 0;
-            const eqSym = ln.equity_symbol || ln.ticker || "EQUITY";
+            const loanId = escapeHtml((ln.loan_id || '').slice(0, 14));
+            const borrower = escapeHtml((ln.borrower_id || '').toUpperCase());
+            const lender = escapeHtml((ln.lender_id || '').toUpperCase());
+            const eqSym = escapeHtml(ln.equity_symbol || ln.ticker || "EQUITY");
 
             // Resolve spot price for coverage ratio
             let spot = 20.0;
@@ -4126,9 +4148,9 @@
 
             return `
               <tr>
-                <td style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--amber);">${(ln.loan_id || '').slice(0, 14)}</td>
-                <td style="font-weight: bold; color: #fff;">${(ln.borrower_id || '').toUpperCase()}</td>
-                <td style="color: var(--cyan);">${(ln.lender_id || '').toUpperCase()}</td>
+                <td style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--amber);">${loanId}</td>
+                <td style="font-weight: bold; color: #fff;">${borrower}</td>
+                <td style="color: var(--cyan);">${lender}</td>
                 <td style="color: var(--purple-neon); font-weight: bold;">${shares} shs ${eqSym}</td>
                 <td style="color: var(--green);">${collateral.toLocaleString()} CR</td>
                 <td style="font-size: 0.75rem; color: var(--text-dim);">${feePct}.0%/rnd</td>
@@ -4186,15 +4208,20 @@
               const isActive = b.status === "active";
               const isRescued = b.status === "rescued";
               const statusClass = isActive ? "status-tag neg" : (isRescued ? "status-tag active" : "status-tag");
-              const statusLabel = isActive ? "⚠️ SOS ACTIVE" : (isRescued ? `RESCUED by ${(b.rescued_by||'').toUpperCase()}` : `SALVAGED by ${(b.salvaged_by||'').toUpperCase()}`);
-              const bountyText = Object.entries(b.cargo_bounty || {}).map(([c, q]) => `<span style="color: var(--green); font-weight: bold;">${q} ${c}</span>`).join(", ") || "<span style='color: var(--text-dim);'>None</span>";
+              const rescuerText = escapeHtml((b.rescued_by||'').toUpperCase());
+              const salvagerText = escapeHtml((b.salvaged_by||'').toUpperCase());
+              const statusLabel = isActive ? "⚠️ SOS ACTIVE" : (isRescued ? `RESCUED by ${rescuerText}` : `SALVAGED by ${salvagerText}`);
+              const bountyText = Object.entries(b.cargo_bounty || {}).map(([c, q]) => `<span style="color: var(--green); font-weight: bold;">${escapeHtml(q)} ${escapeHtml(c)}</span>`).join(", ") || "<span style='color: var(--text-dim);'>None</span>";
+              const beaconId = escapeHtml((b.beacon_id || '').slice(0, 16));
+              const agentId = escapeHtml((b.agent_id || '').toUpperCase());
+              const location = escapeHtml((b.location || '').toUpperCase());
               return `
                 <tr>
-                  <td style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--amber);">${(b.beacon_id || '').slice(0, 16)}</td>
-                  <td style="font-weight: bold; color: #fff;">${(b.agent_id || '').toUpperCase()}</td>
-                  <td style="color: var(--cyan);">${(b.location || '').toUpperCase()}</td>
+                  <td style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--amber);">${beaconId}</td>
+                  <td style="font-weight: bold; color: #fff;">${agentId}</td>
+                  <td style="color: var(--cyan);">${location}</td>
                   <td>${bountyText}</td>
-                  <td style="font-family: var(--font-mono); font-size: 0.75rem;">RND #${b.round_declared}</td>
+                  <td style="font-family: var(--font-mono); font-size: 0.75rem;">RND #${escapeHtml(b.round_declared)}</td>
                   <td><span class="${statusClass}" style="font-size: 0.7rem;">${statusLabel}</span></td>
                 </tr>
               `;
@@ -4220,17 +4247,25 @@
                 let bestQuoteText = "<span style='color: var(--text-dim);'>No Quotes Yet</span>";
                 if (quotes.length > 0) {
                   const q = quotes[0];
-                  bestQuoteText = `<span style="color: var(--cyan);">${(q.rescuer_id||'').toUpperCase()}</span>: <strong style="color: var(--amber);">${q.price_cr} CR</strong> (${q.fuel_offered} FUEL)`;
+                  const rescuer = escapeHtml((q.rescuer_id||'').toUpperCase());
+                  const priceCr = escapeHtml(q.price_cr);
+                  const fuelOffered = escapeHtml(q.fuel_offered);
+                  bestQuoteText = `<span style="color: var(--cyan);">${rescuer}</span>: <strong style="color: var(--amber);">${priceCr} CR</strong> (${fuelOffered} FUEL)`;
                 }
                 const stClass = rfq.status === "open" ? "status-tag active" : "status-tag";
+                const rfqId = escapeHtml((rfq.rfq_id || '').slice(0, 16));
+                const agentId = escapeHtml((rfq.agent_id || '').toUpperCase());
+                const fuelNeeded = escapeHtml(rfq.fuel_needed);
+                const maxReward = rfq.max_reward_cr > 0 ? escapeHtml(rfq.max_reward_cr) + ' CR' : 'Negotiable';
+                const rfqStatus = escapeHtml((rfq.status || '').toUpperCase());
                 return `
                   <tr>
-                    <td style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--amber);">${(rfq.rfq_id || '').slice(0, 16)}</td>
-                    <td style="font-weight: bold; color: #fff;">${(rfq.agent_id || '').toUpperCase()}</td>
-                    <td style="color: var(--cyan); font-weight: bold;">${rfq.fuel_needed} FUEL</td>
-                    <td style="color: var(--amber);">${rfq.max_reward_cr > 0 ? rfq.max_reward_cr + ' CR' : 'Negotiable'}</td>
+                    <td style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--amber);">${rfqId}</td>
+                    <td style="font-weight: bold; color: #fff;">${agentId}</td>
+                    <td style="color: var(--cyan); font-weight: bold;">${fuelNeeded} FUEL</td>
+                    <td style="color: var(--amber);">${maxReward}</td>
                     <td>${bestQuoteText}</td>
-                    <td><span class="${stClass}" style="font-size: 0.7rem;">${(rfq.status || '').toUpperCase()}</span></td>
+                    <td><span class="${stClass}" style="font-size: 0.7rem;">${rfqStatus}</span></td>
                   </tr>
                 `;
               }).join("");
@@ -4246,14 +4281,17 @@
             cTbody.innerHTML = `<tr><td colspan="5" style="color: var(--text-dim); text-align: center; padding: 14px;">No recent salvage claims recorded.</td></tr>`;
           } else {
             cTbody.innerHTML = claims.map(c => {
-              const loot = Object.entries(c.cargo_claimed || {}).map(([comm, q]) => `<span style="color: var(--green); font-weight: bold;">${q} ${comm}</span>`).join(", ") || "No cargo";
+              const loot = Object.entries(c.cargo_claimed || {}).map(([comm, q]) => `<span style="color: var(--green); font-weight: bold;">${escapeHtml(q)} ${escapeHtml(comm)}</span>`).join(", ") || "No cargo";
+              const claimId = escapeHtml((c.claim_id || '').slice(0, 16));
+              const salvagerId = escapeHtml((c.salvager_id || '').toUpperCase());
+              const beaconId = escapeHtml((c.beacon_id || '').slice(0, 16));
               return `
                 <tr>
-                  <td style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--amber);">${(c.claim_id || '').slice(0, 16)}</td>
-                  <td style="font-weight: bold; color: var(--cyan);">${(c.salvager_id || '').toUpperCase()}</td>
-                  <td style="color: var(--text-dim); font-size: 0.75rem;">${(c.beacon_id || '').slice(0, 16)}</td>
+                  <td style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--amber);">${claimId}</td>
+                  <td style="font-weight: bold; color: var(--cyan);">${salvagerId}</td>
+                  <td style="color: var(--text-dim); font-size: 0.75rem;">${beaconId}</td>
                   <td>${loot}</td>
-                  <td style="font-family: var(--font-mono); font-size: 0.75rem;">RND #${c.claim_round}</td>
+                  <td style="font-family: var(--font-mono); font-size: 0.75rem;">RND #${escapeHtml(c.claim_round)}</td>
                 </tr>
               `;
             }).join("");
@@ -4293,8 +4331,8 @@
               : `<span class="status-tag active" style="font-size: 0.7rem;">● OPEN</span>`;
             return `
               <tr>
-                <td style="font-weight: bold; color: #fff;">${(b.station_id || '').toUpperCase()}</td>
-                <td style="color: var(--cyan); font-weight: bold;">${(b.instrument || '').toUpperCase()}</td>
+                <td style="font-weight: bold; color: #fff;">${escapeHtml((b.station_id || '').toUpperCase())}</td>
+                <td style="color: var(--cyan); font-weight: bold;">${escapeHtml((b.instrument || '').toUpperCase())}</td>
                 <td style="font-family: var(--font-mono); color: var(--amber); font-weight: bold;">${Number(b.vwap).toFixed(2)} CR</td>
                 <td style="font-family: var(--font-mono); color: var(--green);">${Number(b.lower_limit).toFixed(2)} CR</td>
                 <td style="font-family: var(--font-mono); color: var(--red);">${Number(b.upper_limit).toFixed(2)} CR</td>
@@ -4335,7 +4373,7 @@
             cardEl.classList.toggle("station-halted", !!stHalt);
           }
           if (statusEl && stHalt) {
-            statusEl.textContent = `⚠️ HALTED (${(stHalt.instrument || '').toUpperCase()})`;
+            statusEl.textContent = `⚠️ HALTED (${escapeHtml((stHalt.instrument || '').toUpperCase())})`;
             statusEl.className = "station-card-status halt-pulse";
           }
         });
@@ -4364,10 +4402,12 @@
               const clearInfo = h.status === "reopened" && h.clearing_price != null
                 ? `<span style="color: var(--cyan);">${Number(h.clearing_price).toFixed(2)} CR</span> (${h.reopen_volume || 0} vol)`
                 : `<span style="color: var(--text-dim);">Pre-Auction</span>`;
+              const haltId = escapeHtml((h.halt_id || '').slice(0, 18));
+              const stInst = `${escapeHtml((h.station_id || '').toUpperCase())} // ${escapeHtml((h.instrument || '').toUpperCase())}`;
               return `
                 <tr>
-                  <td style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--amber);">${(h.halt_id || '').slice(0, 18)}</td>
-                  <td style="font-weight: bold; color: #fff;">${(h.station_id || '').toUpperCase()} // ${(h.instrument || '').toUpperCase()}</td>
+                  <td style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--amber);">${haltId}</td>
+                  <td style="font-weight: bold; color: #fff;">${stInst}</td>
                   <td>
                     <span style="color: var(--red); font-weight: bold;">${Number(h.trigger_price).toFixed(1)} CR</span>
                     <span style="color: var(--text-dim); font-size: 0.75rem;"> (Ref: ${Number(h.reference_vwap).toFixed(1)})</span>

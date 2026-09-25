@@ -290,16 +290,17 @@ class CovertDesk:
         is_bullish = dir_clean in ('bullish', 'spike', 'short_squeeze', 'shortage')
 
         # N1 & N5: Strict string validation and length capping on headline & body
+        # Defense-in-depth (#264): Strip angle brackets to neutralize HTML tags
         if headline is not None:
             if not isinstance(headline, str):
                 return _reject('invalid_headline', "Headline must be a string")
-            headline = headline.strip()
+            headline = headline.replace('<', '').replace('>', '').strip()
             if len(headline) > 280:
                 return _reject('invalid_headline', f"Headline exceeds maximum length of 280 characters ({len(headline)} chars)")
         if body is not None:
             if not isinstance(body, str):
                 return _reject('invalid_body', "Body must be a string")
-            body = body.strip()
+            body = body.replace('<', '').replace('>', '').strip()
             if len(body) > 1000:
                 return _reject('invalid_body', f"Body exceeds maximum length of 1000 characters ({len(body)} chars)")
         cost = RUMOR_COST
@@ -386,7 +387,7 @@ class CovertDesk:
             'event_id': event_id, 'actor': actor, 'station_id': station_id, 'commodity': commodity,
             'direction': 'bullish' if is_bullish else 'bearish', 'drift_bias': drift_bias,
             'duration_rounds': duration, 'cost': cost, 'traced': traced, 'fine': fine_paid,
-            'headline': headline, 'round': rnd
+            'headline': headline, 'body': body, 'round': rnd
         }}
 
     # ------------------------------------------------------------ Sabotage (#135)
