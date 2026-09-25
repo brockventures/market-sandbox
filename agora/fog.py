@@ -101,6 +101,10 @@ class FogEngine:
     def exact_station(self, ref, viewer: Optional[str], st: str) -> bool:
         if viewer == ADMIN:
             return True
+        from agora.hazards import check_cme_relay_interference
+        cme = check_cme_relay_interference(ref, viewer, st)
+        if cme.get("interfered"):
+            return False
         if viewer and getattr(ref, 'upgrades_enabled', False) and getattr(ref, 'upgrades', None):
             if ref.upgrades.has_telemetry(viewer):
                 return True
@@ -111,7 +115,10 @@ class FogEngine:
         live = ref.get_depot_summary()
         has_telemetry = bool(viewer and getattr(ref, 'upgrades_enabled', False) and
                              getattr(ref, 'upgrades', None) and ref.upgrades.has_telemetry(viewer))
-        if viewer == ADMIN or has_telemetry or not self.snapshots:
+        cme_active = bool(hasattr(ref, 'galnet') and ref.galnet and hasattr(ref.galnet, 'is_cme_active') and ref.galnet.is_cme_active())
+        if (viewer == ADMIN or (has_telemetry and not cme_active)) and self.snapshots:
+            return live
+        if not self.snapshots:
             return live
         here, rnd = self.docked_at(ref, viewer), ref.current_round
         live_at = self.docked_everywhere(ref, viewer)
@@ -119,8 +126,10 @@ class FogEngine:
         out = dict(live)
         out['stations'] = {}
         out['fog'] = {'lag': self.lag, 'noise': self.noise, 'exact_station': here}
+        from agora.hazards import check_cme_relay_interference
         for st in STATIONS:
-            if st == here or st in live_at:
+            cme = check_cme_relay_interference(ref, viewer, st)
+            if not cme.get("interfered") and (st == here or st in live_at or has_telemetry):
                 out['stations'][st] = live['stations'][st]
                 continue
             out['stations'][st] = {}
@@ -138,14 +147,23 @@ class FogEngine:
         live = ref.spatial.get_prices()
         has_telemetry = bool(viewer and getattr(ref, 'upgrades_enabled', False) and
                              getattr(ref, 'upgrades', None) and ref.upgrades.has_telemetry(viewer))
-        if viewer == ADMIN or has_telemetry or not self.snapshots:
+        cme_active = bool(hasattr(ref, 'galnet') and ref.galnet and hasattr(ref.galnet, 'is_cme_active') and ref.galnet.is_cme_active())
+        if (viewer == ADMIN or (has_telemetry and not cme_active)) and self.snapshots:
+            return live
+        if not self.snapshots:
             return live
         rnd = ref.current_round
         live_at = self.docked_everywhere(ref, viewer)
         old = self._old(rnd)['spots']
-        return {st: (live[st] if st in live_at else
-                     {c: self._jitter(viewer, rnd, st, c, 'spot_price', p) for c, p in old.get(st, {}).items()})
-                for st in STATIONS}
+        from agora.hazards import check_cme_relay_interference
+        out = {}
+        for st in STATIONS:
+            cme = check_cme_relay_interference(ref, viewer, st)
+            if not cme.get("interfered") and (st in live_at or has_telemetry):
+                out[st] = live[st]
+            else:
+                out[st] = {c: self._jitter(viewer, rnd, st, c, 'spot_price', p) for c, p in old.get(st, {}).items()}
+        return out
 
     def leaderboard_view(self, ref, viewer: Optional[str], leaderboard: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """A fog-safe leaderboard view for viewer (#121). Admin sees exact

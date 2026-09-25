@@ -121,7 +121,7 @@ class TestStagedTiers181(unittest.TestCase):
 
     SCHEDULE = {0: [('armor', 1), ('shielding', 1)], 10: [('boarding_pods', 1)],
                 15: [('telemetry', 1)], 20: [('algo_desk', 1)], 25: [('priority_slips', 1)],
-                35: [('bulk_storage', 1)],
+                30: [('hardened_comm', 1)], 35: [('bulk_storage', 1)],
                 40: [('engines', 1)], 50: [('hold', 1)], 60: [('ecm_jammers', 1)],
                 75: [('shielding', 2)], 80: [('refinery_loop', 1)], 90: [('stealth_drives', 1)],
                 100: [('armor', 2)], 125: [('hold', 2)], 175: [('shielding', 3)],

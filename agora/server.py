@@ -1247,7 +1247,8 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 'poison_pill', 'rights_exercise',
                 'loan', 'loan_offer', 'loan_accept', 'loan_cancel',
                 'loan/offer', 'loan/accept', 'loan/cancel',
-                'debt_buy', 'loan_repay'
+                'debt_buy', 'loan_repay',
+                'spin_off', 'spin-off', 'asset_spin_off'
             )
             if action in allowed_actions:
                 auth_agent, auth_err = self._authenticate_request()
@@ -1298,6 +1299,13 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                         result = ref.corporate.buy_distressed_debt(agent, str(data.get('debtor', '')), data.get('amount', 0))
                     elif action == 'loan_repay':
                         result = ref.corporate.repay_loan(agent, data.get('loan_id', 0))
+                    elif action in ('spin_off', 'spin-off', 'asset_spin_off'):
+                        result = ref.corporate.spin_off_asset(
+                            agent,
+                            data.get('asset_type', ''),
+                            asset_id=data.get('asset_id') or data.get('vessel_id'),
+                            shares=data.get('shares')
+                        )
                     else:
                         result = {'v': 1, 'kind': 'reject', 'payload': {'reason': 'unknown_action', 'detail': f"Unknown governance action '{action}'"}}
                 except (ValueError, TypeError, OverflowError) as e:
@@ -1527,6 +1535,13 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
 
         ref = self.referee or AgoraReferee()
         result = ref.submit_envelope(envelope)
+        if result.get('kind') != 'reject':
+            st = payload.get('station_id') or 'ceres'
+            from agora.hazards import check_cme_relay_interference
+            cme = check_cme_relay_interference(ref, claimed_agent, st)
+            if cme.get('interfered'):
+                result['cme_relay_latency'] = 1
+                result['cme_interfered'] = True
         if result.get('kind') == 'reject':
             self._send_json(400, result)
         else:
@@ -1648,12 +1663,19 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             else:
                 self._send_json(200, {'status': 'ok', **ticker.status()})
         elif path == '/referee/book':
-            station_id = query_params.get('station_id', [None])[0]
-            instrument = query_params.get('instrument', [None])[0]
+            station_id = (query_params.get('station_id', [None])[0] or 'ceres').lower()
+            instrument = (query_params.get('instrument', [None])[0] or getattr(ref, 'default_instrument', 'FRAG')).upper()
+            viewer = self._reader()
+            if not instrument.startswith('EQ_'):
+                from agora.hazards import check_cme_relay_interference
+                cme = check_cme_relay_interference(ref, viewer, station_id)
+                if cme.get('interfered'):
+                    self._fogged(f"Coronal Mass Ejection (CME) solar flare has disrupted the relay to '{station_id}'. Remote order book depth blinded (fog of war). Mitigate with hardened_comm upgrade or local station docking.")
+                    return
             self._send_json(200, {
                 'status': 'ok',
-                'station_id': station_id or 'ceres',
-                'instrument': instrument or getattr(ref, 'default_instrument', 'FRAG'),
+                'station_id': station_id,
+                'instrument': instrument,
                 'book': ref.get_book_snapshot(station_id=station_id, instrument=instrument)
             })
         elif path == '/referee/history':

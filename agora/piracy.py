@@ -81,7 +81,7 @@ from fractions import Fraction
 
 from agora.bag import Bags, MAX_N
 from agora.galnet import GalNetNewsEvent
-from agora.spatial import STATIONS, COMMODITIES, BASE_PRICES
+from agora.spatial import STATIONS, COMMODITIES, BASE_PRICES, BELT_ROUTES
 
 DEFAULT_P_BELT = 0.15
 DEFAULT_P_INNER = 0.04
@@ -311,9 +311,19 @@ class PiracyDesk:
                 stealth = self.ref.upgrades.factor(agent, 'stealth_drives')
                 stealth_tier = st
                 p *= stealth
+
+        # Belt Salvage Surge (#245): doubles pirate raid & privateer ambush odds along Ceres corridors
+        salvage_surge = False
+        if hasattr(self.ref, 'galnet') and self.ref.galnet and hasattr(self.ref.galnet, 'is_salvage_surge_active'):
+            if self.ref.galnet.is_salvage_surge_active():
+                if tolled or origin == 'ceres' or dest == 'ceres' or (origin, dest) in BELT_ROUTES:
+                    p = min(1.0, p * 2.0)
+                    salvage_surge = True
+
         return {'odds': round(min(1.0, p), 4), 'exact_odds': min(1.0, p), 'base': base, 'hot': hot, 'value': value,
                 'value_mult': round(vm, 3), 'privateers': priv, 'escort': bool(escort), 'armor': armor,
-                'armor_tier': armor_tier, 'stealth': stealth, 'stealth_tier': stealth_tier, 'tolled': bool(tolled)}
+                'armor_tier': armor_tier, 'stealth': stealth, 'stealth_tier': stealth_tier, 'tolled': bool(tolled),
+                'salvage_surge': salvage_surge}
 
     @staticmethod
     def raid_key(vessel_id: str, c: Dict[str, Any]) -> str:
@@ -324,9 +334,10 @@ class PiracyDesk:
         are fixed, so its bag's rate is exact, and luck built up on one kind
         of trip never lands on another: an escorted trip draws only from its
         ship's escorted bag."""
+        surge_tag = "|surge" if c.get('salvage_surge') else ""
         return (f"{vessel_id}|{'belt' if c.get('tolled') else 'inner'}|{'hot' if c.get('hot') else 'cool'}"
                 f"|v{c.get('value_mult')}|{'priv' if c.get('privateers') else 'free'}"
-                f"|a{c.get('armor_tier', 0)}|s{c.get('stealth_tier', 0)}|{'escort' if c.get('escort') else 'bare'}")
+                f"|a{c.get('armor_tier', 0)}|s{c.get('stealth_tier', 0)}{surge_tag}|{'escort' if c.get('escort') else 'bare'}")
 
     @staticmethod
     def bag_odds(p: float) -> float:
