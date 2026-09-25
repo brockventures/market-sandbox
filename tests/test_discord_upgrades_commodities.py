@@ -21,8 +21,6 @@ class TestDiscordUpgradesAndCommodities(unittest.TestCase):
     def test_commodity_normalization(self):
         self.assertEqual(normalize_commodity("ORGANICS"), "FOOD")
         self.assertEqual(normalize_commodity("organics"), "FOOD")
-        self.assertEqual(normalize_commodity("bio"), "FOOD")
-        self.assertEqual(normalize_commodity("HYDROPONICS"), "FOOD")
         self.assertEqual(normalize_commodity("banana"), "FRAG")
         self.assertEqual(normalize_commodity("BANANA"), "FRAG")
         self.assertEqual(normalize_commodity("FUEL"), "FUEL")

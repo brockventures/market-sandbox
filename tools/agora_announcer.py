@@ -89,7 +89,7 @@ STOCK_TICKERS = {
 }
 
 TRADE_PATTERN = re.compile(
-    r"\b(BUY|BID|SELL|ASK)\s+(\d+)\s+(FRAG|FUEL|FOOD|ORE|BANANA|ORGANICS|BIO|HYDROPONICS|EQ_[A-Za-z0-9_]+|EQ\s+[A-Za-z0-9_]+|AMOS|MARV|ZERO|AERL)\b(?:[^\d]*?(\d+))?(?:.*?\b(?:AT|IN|STATION)\s+([A-Za-z]+))?",
+    r"\b(BUY|BID|SELL|ASK)\s+(\d+)\s+(FRAG|FUEL|FOOD|ORE|BANANA|ORGANICS|EQ_[A-Za-z0-9_]+|EQ\s+[A-Za-z0-9_]+|AMOS|MARV|ZERO|AERL)\b(?:[^\d]*?(\d+))?(?:.*?\b(?:AT|IN|STATION)\s+([A-Za-z]+))?",
     re.IGNORECASE
 )
 
@@ -162,7 +162,7 @@ SHIP_BUY_PATTERN = re.compile(
     re.IGNORECASE
 )
 
-GOODS_TRANSFER_PATTERN = r"(?:FRAG|FUEL|FOOD|ORE|BANANA|ORGANICS|BIO|HYDROPONICS)"
+GOODS_TRANSFER_PATTERN = r"(?:FRAG|FUEL|FOOD|ORE|BANANA|ORGANICS)"
 TRANSFER_PATTERN = re.compile(
     rf"(?:!|/)?\bTRANSFER\s+(?:(\d+)\s+({GOODS_TRANSFER_PATTERN})\s+(?:FROM\s+)?([A-Za-z0-9_/@]+)\s+(?:TO\s+)?([A-Za-z0-9_/@]+)|(?:FROM\s+)?([A-Za-z0-9_/@]+)\s+(?:TO\s+)([A-Za-z0-9_/@]+)\s+(\d+)\s+({GOODS_TRANSFER_PATTERN})|([A-Za-z0-9_/@]+)\s+([A-Za-z0-9_/@]+)\s+(\d+)\s+({GOODS_TRANSFER_PATTERN}))\b",
     re.IGNORECASE
