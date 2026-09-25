@@ -37,7 +37,11 @@ class TestDiscordUpgradesAndCommodities(unittest.TestCase):
         self.assertEqual(trade_org["limit_price"], 15)
         self.assertEqual(trade_org["station_id"], "ceres")
 
-        trade_fuel = parse_discord_trade("!sell 25 fuel at 20 in earth as amos", "123", "User")
+        trade_fuel_unauth = parse_discord_trade("!sell 25 fuel at 20 in earth as amos", "123", "User")
+        self.assertIsNotNone(trade_fuel_unauth)
+        self.assertEqual(trade_fuel_unauth["action"], "unauthorized")
+
+        trade_fuel = parse_discord_trade("!sell 25 fuel at 20 in earth as amos", "1468012353206354197", "Amos")
         self.assertIsNotNone(trade_fuel)
         self.assertEqual(trade_fuel["instrument"], "FUEL")
         self.assertEqual(trade_fuel["qty"], 25)
@@ -51,16 +55,26 @@ class TestDiscordUpgradesAndCommodities(unittest.TestCase):
         self.assertEqual(transit_org["destination"], "mars")
 
         # Multi-commodity peer offer
-        peer_org = parse_discord_peer("!offer 30 organics @ 22 at ceres as marvin", "123", "User")
+        peer_unauth = parse_discord_peer("!offer 30 organics @ 22 at ceres as marvin", "123", "User")
+        self.assertIsNotNone(peer_unauth)
+        self.assertEqual(peer_unauth["action"], "unauthorized")
+
+        peer_org = parse_discord_peer("!offer 30 organics @ 22 at ceres as marvin", "1492043459618537492", "Marvin")
         self.assertIsNotNone(peer_org)
         self.assertEqual(peer_org["instrument"], "FOOD")
         self.assertEqual(peer_org["qty"], 30)
+        self.assertEqual(peer_org["agent_id"], "marvin")
 
         # Multi-commodity transfer
-        xfer_org = parse_discord_transfer_cmd("!transfer 15 organics from amos/1 to amos/@ceres", "123", "User")
+        xfer_unauth = parse_discord_transfer_cmd("!transfer 15 organics from amos/1 to amos/@ceres", "123", "User")
+        self.assertIsNotNone(xfer_unauth)
+        self.assertEqual(xfer_unauth["action"], "unauthorized")
+
+        xfer_org = parse_discord_transfer_cmd("!transfer 15 organics from amos/1 to amos/@ceres", "1468012353206354197", "Amos")
         self.assertIsNotNone(xfer_org)
         self.assertEqual(xfer_org["instrument"], "FOOD")
         self.assertEqual(xfer_org["qty"], 15)
+        self.assertEqual(xfer_org["agent_id"], "amos")
 
     def test_discord_announcer_upgrade_command_parsing(self):
         # Buy upgrade
@@ -69,7 +83,11 @@ class TestDiscordUpgradesAndCommodities(unittest.TestCase):
         self.assertEqual(cmd1["kind"], "priority_slips")
         self.assertEqual(cmd1["agent_id"], "zero")
 
-        cmd2 = parse_discord_upgrade_buy_cmd("!buy upgrade bulk_storage as amos", "123", "User")
+        cmd2_unauth = parse_discord_upgrade_buy_cmd("!buy upgrade bulk_storage as amos", "123", "User")
+        self.assertIsNotNone(cmd2_unauth)
+        self.assertEqual(cmd2_unauth["action"], "unauthorized")
+
+        cmd2 = parse_discord_upgrade_buy_cmd("!buy upgrade bulk_storage as amos", "1468012353206354197", "Amos")
         self.assertIsNotNone(cmd2)
         self.assertEqual(cmd2["kind"], "bulk_storage")
         self.assertEqual(cmd2["agent_id"], "amos")
