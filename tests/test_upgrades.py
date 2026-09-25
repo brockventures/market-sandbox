@@ -267,5 +267,25 @@ class TestStagedTiers181(unittest.TestCase):
         self.assertIn('t2 9,000 x0.45 (locked until round 125)', b)
 
 
+    def test_corporate_doublespeak_tier_names_and_news(self):
+        """Verify corporate doublespeak tier names in catalog and GalNet unlock news (#250)."""
+        from agora.upgrades import TIER_NAMES, unlock_news
+        ref = game()
+        cat = ref.upgrades.catalog()
+        by_kind = {c['kind']: c for c in cat}
+
+        # Check that tier names exist in tier_detail
+        self.assertEqual(by_kind['shielding']['tier_detail'][0]['name'], 'Disruption Dampeners')
+        self.assertEqual(by_kind['hold']['tier_detail'][0]['name'], 'Just-in-Time Hold Pods')
+        self.assertEqual(by_kind['armor']['tier_detail'][0]['name'], 'Synergy Plating')
+        self.assertEqual(by_kind['engines']['tier_detail'][0]['name'], 'Turnaround Thrusters')
+
+        # Check unlock news incorporates corporate flavor
+        headline, body = unlock_news('shielding', 1)
+        self.assertIn('DISRUPTION DAMPENERS', headline)
+        self.assertIn('SHIELDING TIER 1', headline)
+        self.assertIn('capital expenditure', body)
+
+
 if __name__ == '__main__':
     unittest.main()
