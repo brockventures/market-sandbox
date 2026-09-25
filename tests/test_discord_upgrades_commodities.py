@@ -148,15 +148,19 @@ class TestDiscordUpgradesAndCommodities(unittest.TestCase):
         self.assertEqual(res_buy.get("kind"), "upgrade_ok")
         self.assertTrue(ref.upgrades.has_priority_slips("zero"))
 
-        # Test idle fee exemption with priority_slips (#167)
+        # Test idle fee exemption with priority_slips (#167, #266)
         ref.idle_fee = 100
         ref._active_this_round = set()
         # Mark another fleet active so idle fee evaluates
-        ref.conn.execute("INSERT OR IGNORE INTO fleet_roster (agent_id, home_station, genesis_cr, genesis_frag, genesis_fuel) VALUES ('other_agent', 'ceres', 1000, 0, 0)")
+        ref.conn.execute("INSERT OR REPLACE INTO fleet_roster (agent_id, display_name, home_station, genesis_cr, genesis_frag, genesis_fuel) VALUES ('other_agent', 'Other Fleet', 'ceres', 1000, 0, 0)")
         ref._active_this_round.add("other_agent")
         # Ensure zero is docked and has cash
         ref.conn.execute("UPDATE accounts SET balance = 1000 WHERE agent_id = 'zero' AND instrument = 'CR'")
+        # Ensure another idle fleet (e.g. amos) is docked and has cash as positive control (#266)
+        ref.conn.execute("UPDATE accounts SET balance = 1000 WHERE agent_id = 'amos' AND instrument = 'CR'")
         charged = ref._charge_idle_fees_locked(26)
+        self.assertIn("amos", charged)
+        self.assertEqual(charged["amos"], 100)
         self.assertNotIn("zero", charged)
 
         # Test bulk_storage hold capacity bonus (#167)
