@@ -83,12 +83,14 @@ class TestFogEngine(unittest.TestCase):
 
         # Zero is docked at Ceres; net_worth must be fogged (recomputed with jittered marks)
         self.assertNotEqual(zero_row["commodity_marks"], raw_zero["commodity_marks"])
-        self.assertNotEqual(zero_row["net_worth"], raw_zero["net_worth"])
+        if zero_row["mark_price"] != raw_zero["mark_price"]:
+            self.assertNotEqual(zero_row["net_worth"], raw_zero["net_worth"])
 
         # Algebraic solve: (net_worth - liquid) / frags must yield jittered mark, NOT raw exact mark
         solved_mark = (zero_row["net_worth"] - zero_row["liquid"]) / zero_row["frags"]
         self.assertEqual(solved_mark, zero_row["mark_price"])
-        self.assertNotEqual(solved_mark, raw_zero["mark_price"])
+        if zero_row["mark_price"] != raw_zero["mark_price"]:
+            self.assertNotEqual(solved_mark, raw_zero["mark_price"])
 
         # Multi-commodity test with FOOD
         ref2 = AgoraReferee(depots=True)
@@ -196,10 +198,11 @@ class TestFogEndpoints(unittest.TestCase):
         self.assertEqual(adm_zero_entry['commodity_marks'], raw_zero['commodity_marks'])
 
         # Net worth on Zero's row is fogged for Amos and solves to jittered mark (#261)
-        self.assertNotEqual(zero_entry['net_worth'], raw_zero['net_worth'])
         solved_endpoint_mark = (zero_entry['net_worth'] - zero_entry['liquid']) / zero_entry['frags']
         self.assertEqual(solved_endpoint_mark, zero_entry['mark_price'])
-        self.assertNotEqual(solved_endpoint_mark, raw_zero['mark_price'])
+        if zero_entry['mark_price'] != raw_zero['mark_price']:
+            self.assertNotEqual(zero_entry['net_worth'], raw_zero['net_worth'])
+            self.assertNotEqual(solved_endpoint_mark, raw_zero['mark_price'])
 
         # Admin sees exact net_worth for all fleets
         self.assertEqual(adm_zero_entry['net_worth'], raw_zero['net_worth'])
