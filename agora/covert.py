@@ -199,8 +199,8 @@ class CovertDesk:
         loc = ref.get_vessel_location(target)
         liquid = ref.get_balance(target, 'CR')
         # A wiretap reveals the whole fleet (#175): every ship, where it is and its hold.
-        hold = {c: ref.get_balance(target, c) for c in ('FRAG', 'FOOD', 'ORE', 'FUEL')}
-        fleet = [dict(l, hold={c: ref.get_balance(l['vessel_id'], c) for c in ('FRAG', 'FOOD', 'ORE', 'FUEL')})
+        hold = {c: ref.get_balance(target, c) for c in ('FRAG', 'FOOD', 'ORE', 'FUEL', 'MACHINERY')}
+        fleet = [dict(l, hold={c: ref.get_balance(l['vessel_id'], c) for c in ('FRAG', 'FOOD', 'ORE', 'FUEL', 'MACHINERY')})
                  for l in ref.fleet_locations(target)]
         contracts = []
         if getattr(ref, 'contracts_enabled', False):
@@ -277,7 +277,7 @@ class CovertDesk:
             return _reject('invalid_actor', f"Unknown fleet '{actor}'")
         if station_id not in ('ceres', 'mars', 'luna', 'earth'):
             return _reject('invalid_station', f"Unknown station '{station_id}'")
-        if commodity not in ('FRAG', 'FOOD', 'ORE', 'FUEL'):
+        if commodity not in ('FRAG', 'FOOD', 'ORE', 'FUEL', 'MACHINERY'):
             return _reject('invalid_commodity', f"Unknown commodity '{commodity}'")
 
         if not self.enabled:
@@ -466,7 +466,7 @@ class CovertDesk:
                 # Docked cargo destruction or fuel siphon
                 best_comm = None
                 best_qty = 0
-                for c in ('FRAG', 'FOOD', 'ORE'):
+                for c in ('FRAG', 'FOOD', 'ORE', 'MACHINERY'):
                     b = ref.get_balance(ship, c)
                     if b > best_qty:
                         best_qty, best_comm = b, c

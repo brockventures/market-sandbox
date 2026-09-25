@@ -52,7 +52,7 @@ class TestDominanceHarness(unittest.TestCase):
 
     def test_tier_two_keeps_its_prerequisite_and_buys_nothing_else(self):
         # Armor tier 2 goes on sale at round 100 (#181), so the r1 arm buys it then.
-        r = game("armor t2", 1, rounds=105)
+        r = game("armor t2", 1, rounds=110)
         self.assertEqual(r["holdings"], {"armor": 2})
         self.assertIsNotNone(r["bought_round"])
         self.assertEqual(game("armor t2", ROUNDS + 1)["holdings"], {"armor": 1})

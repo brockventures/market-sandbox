@@ -41,11 +41,13 @@ class TestLeaderboardCommodityMarks(unittest.TestCase):
         ore_mark = round(ref.spatial.get_station_price('ceres', 'ORE'))
         food_mark = round(ref.spatial.get_station_price('ceres', 'FOOD'))
         frag_mark = round(ref.spatial.get_station_price('ceres', 'FRAG'))
+        machinery_mark = round(ref.spatial.get_station_price('ceres', 'MACHINERY'))
         self.assertGreater(ore_mark, 0)
         self.assertGreater(food_mark, 0)
         self.assertGreater(frag_mark, 0)
+        self.assertGreater(machinery_mark, 0)
         self.assertEqual(e['net_worth'], before + 100 * ore_mark + 50 * food_mark)
-        self.assertEqual(e['commodity_marks'], {'FRAG': frag_mark, 'FOOD': food_mark, 'ORE': ore_mark})
+        self.assertEqual(e['commodity_marks'], {'FRAG': frag_mark, 'FOOD': food_mark, 'ORE': ore_mark, 'MACHINERY': machinery_mark})
 
     def test_spatial_variation_across_stations(self):
         ref = AgoraReferee(asymmetric=True)

@@ -13,7 +13,7 @@ class TestSpatial(unittest.TestCase):
         assert len(STATIONS) == 4
         assert "ceres" in STATIONS
         assert "earth" in STATIONS
-        assert len(COMMODITIES) == 4
+        assert len(COMMODITIES) == 5
 
 
     def test_route_lookup(self):
@@ -81,8 +81,8 @@ class TestSpatial(unittest.TestCase):
         cur = ref.conn.cursor()
         cur.execute("SELECT COUNT(*) FROM station_prices WHERE round = 1")
         count = cur.fetchone()[0]
-        # 4 stations * 4 commodities = 16 rows
-        assert count == 16
+        # 4 stations * 5 commodities = 20 rows
+        assert count == 20
 
         # 3. Solvency double-spend prevention across multiple station books
         # amos has 10,000 CR

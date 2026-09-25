@@ -374,7 +374,7 @@ class CorporateDesk:
     def _sell_account(self, agent: str, st: str, acct: str) -> None:
         ref = self.ref
         depot = f"depot_{st}"
-        for comm in ("FRAG", "FOOD", "ORE"):
+        for comm in ("FRAG", "FOOD", "ORE", "MACHINERY"):
             debt = self._row(agent)["debt"]
             have = ref.available_account(acct, comm)
             book = ref.books.get(st, {}).get(comm)
