@@ -678,3 +678,24 @@ class CovertDesk:
             'rivalries': board,
             'hostility': hostility
         }
+
+    # ------------------------------------------------------------ audit dossiers & whistleblowing (#248)
+
+    def compile_audit_dossier(self, actor: str, target: str) -> Dict[str, Any]:
+        """Compile an encrypted audit dossier on a target with active negligence directives (#248)."""
+        if not getattr(self.ref, 'corporate_enabled', False) or not hasattr(self.ref, 'corporate'):
+            return _reject('corporate_disabled', "Corporate moral hazard engine is not enabled")
+        return self.ref.corporate.compile_audit_dossier(actor, target)
+
+    def leak_audit_dossier(self, actor: str, dossier_id: int) -> Dict[str, Any]:
+        """Leak an audit dossier to GalNet, triggering Sol Regulatory Commission treble fines (#248)."""
+        if not getattr(self.ref, 'corporate_enabled', False) or not hasattr(self.ref, 'corporate'):
+            return _reject('corporate_disabled', "Corporate moral hazard engine is not enabled")
+        return self.ref.corporate.leak_audit_dossier(actor, dossier_id)
+
+    def get_dossiers(self, viewer: str) -> List[Dict[str, Any]]:
+        """List audit dossiers held by viewer."""
+        if not getattr(self.ref, 'corporate_enabled', False) or not hasattr(self.ref, 'corporate'):
+            return []
+        return self.ref.corporate.get_dossiers(viewer)
+
