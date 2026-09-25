@@ -340,7 +340,7 @@ class TestBackstops(unittest.TestCase):
             st = home(ref)
             unload(ref, 'amos', 'FRAG', ref.fleet.hold_status('amos/1')['hold_used'])
             q = ref.get_depot_summary()['stations'][st]['ORE']
-            r = order(ref, 'amos', 'bid', 200, q['best_bid'] + 1, 'ORE', st)
+            r = order(ref, 'amos', 'bid', 200, q['best_bid'], 'ORE', st)
             self.assertEqual(r['payload'].get('order_status'), 'resting', r)
             # Something outside the order fills the reserved room (a test
             # fixture: no real path can), then the station's sellers arrive.

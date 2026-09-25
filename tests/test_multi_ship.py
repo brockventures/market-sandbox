@@ -317,7 +317,7 @@ class TestLeaderboardAndStanding(unittest.TestCase):
         ref.step_round()  # book the genesis and purchase
         before = {r['lane']: r['cum_profit'] for r in ref.conn.execute(
             "SELECT lane, cum_profit FROM standing_lanes WHERE agent_id = 'amos'")}
-        px = 11  # Ceres FRAG spot price (#243)
+        px = int(round(ref.spatial.get_station_price(st, 'FRAG')))  # Ceres FRAG spot price (#243, #247)
         order(ref, 'amos', 'ask', 200, px, 'FRAG', st, vessel='amos/1', oid='x-ask')
         r = order(ref, 'amos', 'bid', 200, px, 'FRAG', st, vessel='amos/2', oid='x-bid')
         self.assertEqual(r['payload'].get('filled_qty'), 200, r)

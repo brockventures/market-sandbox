@@ -75,7 +75,7 @@ class TestLeaderboardInTransitCargo(unittest.TestCase):
         # Expected decay: 100 * 0.05 * 1 = 5 food decayed -> 95 food remaining
         expected_remaining = 95
         self.assertEqual(entry1['food'], 0)
-        expected_nw = entry1['liquid'] + entry1['frags'] * entry1['commodity_marks']['FRAG'] + expected_remaining * food_mark
+        expected_nw = entry1['liquid'] + entry1['frags'] * entry1['commodity_marks']['FRAG'] + expected_remaining * entry1['commodity_marks']['FOOD']
         self.assertEqual(entry1['net_worth'], expected_nw)
 
     def test_arrival_settlement_no_double_count(self):

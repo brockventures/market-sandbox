@@ -1105,7 +1105,7 @@ class TestAgoraAdminReset(unittest.TestCase):
         opening = payload['opening_prices']
         self.assertEqual(set(opening.keys()), {'earth', 'luna', 'mars', 'ceres'})
         for station_prices in opening.values():
-            self.assertEqual(set(station_prices.keys()), {'FRAG', 'FUEL', 'FOOD', 'ORE'})
+            self.assertEqual(set(station_prices.keys()), {'FRAG', 'FUEL', 'FOOD', 'ORE', 'MACHINERY'})
 
         # Book is empty again.
         status, data = self._get('/referee/book')
