@@ -72,7 +72,7 @@ def _ships(ref, agent: str) -> List[Dict[str, Any]]:
         vid = loc['vessel_id']
         h = fleet.hold_status(vid)
         out.append({'vessel_id': vid, 'where': _where(loc), 'location': loc,
-                    'hold': {c: ref.get_balance(vid, c) for c in ('FUEL', 'FRAG', 'FOOD', 'ORE')},
+                    'hold': {c: ref.get_balance(vid, c) for c in ('FUEL', 'FRAG', 'FOOD', 'ORE', 'MACHINERY')},
                     'hold_used': h['hold_used'], 'hold_capacity': h['hold_capacity']})
     return out
 
@@ -92,7 +92,7 @@ def build_state(ref, viewer: Optional[str] = None) -> Dict[str, Any]:
                                    'aligned': r.get('is_aligned', False)})
     fleets = []
     for row in ref.get_leaderboard():
-        fleets.append({k: row.get(k) for k in ('agent_id', 'net_worth', 'liquid', 'fuel', 'frags', 'food', 'ore')}
+        fleets.append({k: row.get(k) for k in ('agent_id', 'net_worth', 'liquid', 'fuel', 'frags', 'food', 'ore', 'machinery')}
                       | {'location': locs.get(row['agent_id']) or ref.get_vessel_location(row['agent_id']),
                          'ships': _ships(ref, row['agent_id'])})
     return {'round': rnd, 'viewer': viewer, 'depots': _depots(ref, viewer), 'routes': routes, 'fleets': fleets}
@@ -111,7 +111,7 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
     out.append("Live page, regenerated on every fetch. Re-read it each round; prices and positions move.")
     out.append("")
     out.append("## Goal")
-    out.append("Finish with the highest net worth. Net worth = CR + (FRAG, FOOD, ORE) "
+    out.append("Finish with the highest net worth. Net worth = CR + (FRAG, FOOD, ORE, MACHINERY) "
                "x their local station spot price. "
                "FUEL counts for nothing at the end, but you need it to move.")
     out.append("")
@@ -215,8 +215,8 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
     out.extend(_route_table(rnd))
     out.append("")
     out.append("## Fleets")
-    out.append("| Fleet | Where | CR | FUEL | FRAG | FOOD | ORE | Net worth |")
-    out.append("|---|---|---|---|---|---|---|---|")
+    out.append("| Fleet | Where | CR | FUEL | FRAG | FOOD | ORE | MACHINERY | Net worth |")
+    out.append("|---|---|---|---|---|---|---|---|---|")
     for row in board:
         loc = locs.get(row['agent_id']) or ref.get_vessel_location(row['agent_id'])
         where = _where(loc)
@@ -224,7 +224,7 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
         if n > 1:
             where += f" (ship 1 of {n})"
         out.append(f"| {row['agent_id']} | {where} | {row['liquid']} | {row['fuel']} | {row['frags']} | "
-                   f"{row.get('food') or 0} | {row.get('ore') or 0} | {row['net_worth']} |")
+                   f"{row.get('food') or 0} | {row.get('ore') or 0} | {row.get('machinery') or 0} | {row['net_worth']} |")
     out.append("")
     out.extend(_ships_section(ref, board, viewer))
     if getattr(ref, 'rival_shares', 0):
@@ -564,7 +564,7 @@ def _ships_section(ref, board, viewer: Optional[str]) -> List[str]:
     cap = getattr(ref, 'ship_hold', 0) or 0
     if cap:
         out[-1:] = [
-            f"- **Hold size.** Each ship's hold carries at most {cap} cargo units: one unit per FRAG, FOOD or ORE. "
+            f"- **Hold size.** Each ship's hold carries at most {cap} cargo units: one unit per FRAG, FOOD, ORE or MACHINERY. "
             f"FUEL rides in the ship's tank, up to {F.FUEL_TANK}; only FUEL above that takes hold space. "
             "Cargo on a trip is still aboard. A BUY whose goods would not fit, beside what your ship's other "
             "resting BUYs already keep room for, is rejected (`hold_full`); so is a transfer onto a full ship. "
@@ -583,13 +583,13 @@ def _ships_section(ref, board, viewer: Optional[str]) -> List[str]:
                 out[-1:] = [f"Your holds now: {'; '.join(mine)}.", ""]
     multi = [r for r in board if (r.get('ships') or 1) > 1]
     if multi:
-        out.append("| Fleet | Ship | Where | FUEL | FRAG | FOOD | ORE | Hold used |")
-        out.append("|---|---|---|---|---|---|---|---|")
+        out.append("| Fleet | Ship | Where | FUEL | FRAG | FOOD | ORE | MACHINERY | Hold used |")
+        out.append("|---|---|---|---|---|---|---|---|---|")
         for r in multi:
             for sh in _ships(ref, r['agent_id']):
                 h = sh['hold']
                 used = f"{sh['hold_used']} / {sh['hold_capacity']}" if sh['hold_capacity'] else str(sh['hold_used'])
                 out.append(f"| {r['agent_id']} | {sh['vessel_id']} | {sh['where']} | {h['FUEL']} | {h['FRAG']} | "
-                           f"{h['FOOD']} | {h['ORE']} | {used} |")
+                           f"{h['FOOD']} | {h['ORE']} | {h.get('MACHINERY', 0)} | {used} |")
         out.append("")
     return out

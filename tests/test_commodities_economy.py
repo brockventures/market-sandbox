@@ -53,6 +53,18 @@ class TestCommoditiesEconomy(unittest.TestCase):
         self.assertEqual(max(STATIONS, key=lambda s: BASE_PRICES[s]['MACHINERY']), 'ceres')
         self.assertEqual(max(STATIONS, key=lambda s: BASE_PRICES[s]['FOOD']), 'ceres')
 
+        # Invariant verification across all 5 commodities:
+        # Every commodity has distinct min and max station prices with positive arbitrage spread
+        for c in COMMODITIES:
+            cheapest = min(STATIONS, key=lambda s: BASE_PRICES[s][c])
+            dearest = max(STATIONS, key=lambda s: BASE_PRICES[s][c])
+            self.assertNotEqual(cheapest, dearest, f"{c} cheapest and dearest must differ")
+            self.assertGreater(BASE_PRICES[dearest][c], BASE_PRICES[cheapest][c] * 1.4,
+                               f"{c} spread must offer viable arbitrage (>40%)")
+            total_price = sum(BASE_PRICES[s][c] for s in STATIONS)
+            self.assertGreater(total_price, 40.0, f"{c} aggregate price surface sanity lower bound")
+            self.assertLess(total_price, 120.0, f"{c} aggregate price surface sanity upper bound")
+
     def test_perishable_flag_and_decay_rates(self):
         """FOOD is perishable and decays in belt transit; ORE is durable."""
         self.assertIn('FOOD', PERISHABLE_COMMODITIES)
