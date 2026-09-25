@@ -128,6 +128,8 @@ class TerminalDiffEngine:
         self.last_book_hash: Dict[Tuple[str, str], str] = {}
         self.last_circuit_hash: Dict[Tuple[str, str], str] = {}
         self.last_equity_hash: str = ""
+        self.last_round: int = getattr(referee, 'current_round', 0)
+        self.last_floor: str = getattr(referee, 'floor', 'open')
 
     # ---------------------------------------------------------- fog helpers
 
@@ -216,6 +218,8 @@ class TerminalDiffEngine:
             json.dumps({"bands": bands, "halts": halts}, sort_keys=True).encode("utf-8")
         ).hexdigest()
         self.last_equity_hash = hashlib.md5(json.dumps(equity, sort_keys=True).encode("utf-8")).hexdigest()
+        self.last_round = getattr(self.referee, "current_round", 0)
+        self.last_floor = getattr(self.referee, "floor", "open")
 
         return {
             "type": "snapshot",
@@ -323,6 +327,20 @@ class TerminalDiffEngine:
                     "equity": equity,
                     "loans": loans
                 })
+
+        # 6. Round and floor progression diff (#63)
+        curr_round = getattr(self.referee, "current_round", 0)
+        curr_floor = getattr(self.referee, "floor", "open")
+        if curr_round != self.last_round or curr_floor != self.last_floor:
+            diffs.append({
+                "type": "round",
+                "seq": curr_seq,
+                "round": curr_round,
+                "floor": curr_floor,
+                "prev_round": self.last_round,
+            })
+            self.last_round = curr_round
+            self.last_floor = curr_floor
 
         return diffs
 
