@@ -109,31 +109,30 @@ class PriceHistoryEngine:
         stock_marks: Optional[Dict[str, Any]] = None
     ) -> None:
         """Called at step_round to initialize the candle for round_num."""
-        with self.conn:
-            for sp in spot_prices:
-                st = sp.station_id.lower().strip()
-                comm = sp.commodity.upper().strip()
-                p = round(float(sp.spot_price), 2)
+        for sp in spot_prices:
+            st = sp.station_id.lower().strip()
+            comm = sp.commodity.upper().strip()
+            p = round(float(sp.spot_price), 2)
+            self.conn.execute("""
+                INSERT OR REPLACE INTO price_history
+                    (station_id, instrument, round, open, high, low, close, volume)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+            """, (st, comm, round_num, p, p, p, p))
+
+        if stock_marks:
+            for sym, info in stock_marks.items():
+                sym_key = sym.upper().strip()
+                if isinstance(info, (int, float)):
+                    mark = round(float(info), 2)
+                elif isinstance(info, dict):
+                    mark = round(float(info.get('mark', info.get('nav', 20.0))), 2)
+                else:
+                    mark = 20.0
                 self.conn.execute("""
                     INSERT OR REPLACE INTO price_history
                         (station_id, instrument, round, open, high, low, close, volume)
                     VALUES (?, ?, ?, ?, ?, ?, ?, 0)
-                """, (st, comm, round_num, p, p, p, p))
-
-            if stock_marks:
-                for sym, info in stock_marks.items():
-                    sym_key = sym.upper().strip()
-                    if isinstance(info, (int, float)):
-                        mark = round(float(info), 2)
-                    elif isinstance(info, dict):
-                        mark = round(float(info.get('mark', info.get('nav', 20.0))), 2)
-                    else:
-                        mark = 20.0
-                    self.conn.execute("""
-                        INSERT OR REPLACE INTO price_history
-                            (station_id, instrument, round, open, high, low, close, volume)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, 0)
-                    """, (STOCK_EXCHANGE_STATION, sym_key, round_num, mark, mark, mark, mark))
+                """, (STOCK_EXCHANGE_STATION, sym_key, round_num, mark, mark, mark, mark))
 
     def record_trade(
         self,
@@ -148,30 +147,29 @@ class PriceHistoryEngine:
         inst = instrument.upper().strip()
         p = round(float(price), 2)
         q = int(qty)
-        with self.conn:
-            cur = self.conn.cursor()
-            cur.execute("""
-                SELECT open, high, low, close, volume
-                FROM price_history
+        cur = self.conn.cursor()
+        cur.execute("""
+            SELECT open, high, low, close, volume
+            FROM price_history
+            WHERE station_id = ? AND instrument = ? AND round = ?
+        """, (st, inst, round_num))
+        row = cur.fetchone()
+        if row:
+            new_high = max(float(row['high']), p)
+            new_low = min(float(row['low']), p)
+            new_close = p
+            new_vol = int(row['volume']) + q
+            self.conn.execute("""
+                UPDATE price_history
+                SET high = ?, low = ?, close = ?, volume = ?
                 WHERE station_id = ? AND instrument = ? AND round = ?
-            """, (st, inst, round_num))
-            row = cur.fetchone()
-            if row:
-                new_high = max(float(row['high']), p)
-                new_low = min(float(row['low']), p)
-                new_close = p
-                new_vol = int(row['volume']) + q
-                self.conn.execute("""
-                    UPDATE price_history
-                    SET high = ?, low = ?, close = ?, volume = ?
-                    WHERE station_id = ? AND instrument = ? AND round = ?
-                """, (new_high, new_low, new_close, new_vol, st, inst, round_num))
-            else:
-                self.conn.execute("""
-                    INSERT INTO price_history
-                        (station_id, instrument, round, open, high, low, close, volume)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (st, inst, round_num, p, p, p, p, q))
+            """, (new_high, new_low, new_close, new_vol, st, inst, round_num))
+        else:
+            self.conn.execute("""
+                INSERT INTO price_history
+                    (station_id, instrument, round, open, high, low, close, volume)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (st, inst, round_num, p, p, p, p, q))
 
     def get_history(
         self,
