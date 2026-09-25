@@ -636,6 +636,38 @@ class TestAgoraServer(unittest.TestCase):
                 self.assertIn('TIME DILATION &amp; SIMULATION', body)
                 self.assertIn('HELIOCENTRIC J2000', body)
 
+    def test_index_landing_and_unified_navigation(self):
+        """Verify /index, /index.html, /orrery-3d, /patch-notes, and unified navbar."""
+        for path in ('/index', '/index.html'):
+            url = f"{self.base_url}{path}"
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                self.assertEqual(resp.status, 200)
+                self.assertIn('text/html', resp.headers.get('Content-Type', ''))
+                body = resp.read().decode('utf-8')
+                self.assertIn('AGORA EXCHANGE', body)
+                self.assertIn('top-app-bar', body)
+                self.assertIn('nav-pills', body)
+                self.assertIn('/terminal', body)
+                self.assertIn('/orrery', body)
+                self.assertIn('COMMODITIES: FRAG', body)
+
+        for path in ('/orrery-3d', '/orrery-3d.html'):
+            url = f"{self.base_url}{path}"
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                self.assertEqual(resp.status, 200)
+                body = resp.read().decode('utf-8')
+                self.assertIn('SOL ASTRODYNAMICS 3D', body)
+
+        for path in ('/patch-notes', '/patch-notes.html'):
+            url = f"{self.base_url}{path}"
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                self.assertEqual(resp.status, 200)
+                body = resp.read().decode('utf-8')
+                self.assertIn('PATCH NOTES', body.upper())
+
     def test_18_equity_endpoints_and_borrow_flow(self):
         """Integration test for /equity/summary, /equity/loans, /equity/borrow, and /equity/return."""
         # 1. Verify summary endpoint
