@@ -52,10 +52,16 @@ class TestDiscordFleet(unittest.TestCase):
         self.assertEqual(cmd["action"], "buy_ship")
         self.assertEqual(cmd["agent_id"], "zero")
 
+        # Text override 'as amos' ignored; acts strictly as mapped author (Zero)
         cmd_vessel = parse_discord_ship_buy_cmd("!ship buy at zero/1 as amos", "1542081375287640084", "Zero")
         self.assertIsNotNone(cmd_vessel)
-        self.assertEqual(cmd_vessel["agent_id"], "amos")
+        self.assertEqual(cmd_vessel["agent_id"], "zero")
         self.assertEqual(cmd_vessel["at_vessel"], "zero/1")
+
+        # Unmapped author is rejected
+        cmd_unauth = parse_discord_ship_buy_cmd("!ship buy at zero/1 as amos", "123", "User")
+        self.assertIsNotNone(cmd_unauth)
+        self.assertEqual(cmd_unauth["action"], "unauthorized")
 
     def test_parse_discord_transfer_cmd(self):
         # Format 1: !transfer 50 FRAG from 1 to 2
@@ -77,8 +83,15 @@ class TestDiscordFleet(unittest.TestCase):
         self.assertEqual(cmd2["qty"], 100)
 
         # Format 3: !transfer @ceres 1 25 FOOD
-        cmd3 = parse_discord_transfer_cmd("!transfer @ceres 1 25 FOOD as amos", "123", "User")
+        # Unmapped author is rejected
+        cmd3_unauth = parse_discord_transfer_cmd("!transfer @ceres 1 25 FOOD as amos", "123", "User")
+        self.assertIsNotNone(cmd3_unauth)
+        self.assertEqual(cmd3_unauth["action"], "unauthorized")
+
+        # Mapped author is resolved strictly from AUTHOR_MAP (override ignored)
+        cmd3 = parse_discord_transfer_cmd("!transfer @ceres 1 25 FOOD as zero", "1468012353206354197", "Amos")
         self.assertIsNotNone(cmd3)
+        self.assertEqual(cmd3["action"], "transfer")
         self.assertEqual(cmd3["agent_id"], "amos")
         self.assertEqual(cmd3["from"], "@ceres")
         self.assertEqual(cmd3["to"], "1")

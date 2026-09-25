@@ -212,6 +212,13 @@ AUTHOR_MAP = {
 }
 
 
+def resolve_contract_agent(author_id: str) -> Optional[str]:
+    """Resolve Agora fleet agent_id strictly from AUTHOR_MAP.
+    No text overrides and no default fallback. Rejects unmapped authors.
+    """
+    return AUTHOR_MAP.get(str(author_id))
+
+
 def get_bot_token() -> str:
     """Retrieve Agora Trade Terminal bot token from env, data, or secrets."""
     token = os.environ.get("AGORA_TERMINAL_BOT_TOKEN")
@@ -582,26 +589,14 @@ def format_contracts_list(contracts_data: dict, filter_agent: Optional[str] = No
     return "\n".join(lines)
 
 
-def resolve_discord_agent(author_id: str, author_name: str, content: str = "") -> str:
-    """Map Discord author to Agora fleet agent_id."""
-    agent_override = re.search(r"\b(?:as|agent:?)\s+(amos|marvin|zero|aerial)\b", content, re.I)
-    if agent_override:
-        return agent_override.group(1).lower()
-    if author_id in AUTHOR_MAP:
-        return AUTHOR_MAP[author_id]
-    name_lower = author_name.lower()
-    if "amos" in name_lower or "carmody" in name_lower or "mike" in name_lower:
-        return "amos"
-    elif "marvin" in name_lower or "alex" in name_lower:
-        return "marvin"
-    elif "zero" in name_lower or "brock" in name_lower or "ryan" in name_lower:
-        return "zero"
-    elif "aerial" in name_lower or "coley" in name_lower:
-        return "aerial"
-    return "zero"
+def resolve_discord_agent(author_id: str, author_name: str = "", content: str = "") -> Optional[str]:
+    """Map Discord author strictly to Agora fleet agent_id from AUTHOR_MAP.
+    No text overrides and no default fallback. Rejects unmapped authors.
+    """
+    return AUTHOR_MAP.get(str(author_id))
 
 
-def parse_discord_peer(content: str, author_id: str, author_name: str, default_station: str = "ceres") -> Optional[dict]:
+def parse_discord_peer(content: str, author_id: str, author_name: str = "", default_station: str = "ceres") -> Optional[dict]:
     """Parse peer trade commands (OFFER, ACCEPT, CANCEL) from Discord chat."""
     m_off = PEER_OFFER_PATTERN.search(content)
     if m_off:
@@ -609,19 +604,25 @@ def parse_discord_peer(content: str, author_id: str, author_name: str, default_s
         good = normalize_commodity(m_off.group(2).upper().strip())
         price = int(m_off.group(3))
         station = (m_off.group(4) or default_station).lower().strip()
-        ag_id = resolve_discord_agent(author_id, author_name, content)
+        ag_id = resolve_contract_agent(author_id)
+        if not ag_id:
+            return {"action": "unauthorized", "command": "peer_offer", "author_id": str(author_id)}
         return {"action": "offer", "agent_id": ag_id, "station_id": station, "instrument": good, "qty": qty, "price": price}
 
     m_acc = PEER_ACCEPT_PATTERN.search(content)
     if m_acc:
         escrow_id = m_acc.group(1).strip()
-        ag_id = resolve_discord_agent(author_id, author_name, content)
+        ag_id = resolve_contract_agent(author_id)
+        if not ag_id:
+            return {"action": "unauthorized", "command": "peer_accept", "author_id": str(author_id)}
         return {"action": "accept", "agent_id": ag_id, "escrow_id": escrow_id}
 
     m_can = PEER_CANCEL_PATTERN.search(content)
     if m_can:
         escrow_id = m_can.group(1).strip()
-        ag_id = resolve_discord_agent(author_id, author_name, content)
+        ag_id = resolve_contract_agent(author_id)
+        if not ag_id:
+            return {"action": "unauthorized", "command": "peer_cancel", "author_id": str(author_id)}
         return {"action": "cancel", "agent_id": ag_id, "escrow_id": escrow_id}
 
     return None
@@ -1075,18 +1076,8 @@ def parse_discord_fleet_cmd(content: str, author_id: str, author_name: str = "")
         agent_override = re.search(r"\b(?:as|agent:?)\s+(amos|marvin|zero|aerial)\b", content, re.I)
         if agent_override:
             agent = agent_override.group(1).lower()
-        elif author_id in AUTHOR_MAP:
-            agent = AUTHOR_MAP[author_id]
-        else:
-            name_lower = author_name.lower()
-            if "amos" in name_lower or "carmody" in name_lower or "mike" in name_lower:
-                agent = "amos"
-            elif "marvin" in name_lower or "alex" in name_lower:
-                agent = "marvin"
-            elif "zero" in name_lower or "brock" in name_lower or "ryan" in name_lower:
-                agent = "zero"
-            elif "aerial" in name_lower:
-                agent = "aerial"
+        elif str(author_id) in AUTHOR_MAP:
+            agent = AUTHOR_MAP[str(author_id)]
     if not agent:
         agent = "zero"
     return {"action": "fleet", "agent_id": agent}
@@ -1101,31 +1092,10 @@ def parse_discord_ship_buy_cmd(content: str, author_id: str, author_name: str = 
     if at_vessel and at_vessel.lower() in ("as", "agent"):
         at_vessel = None
 
-    agent = None
-    target_raw = m.group(2)
-    if target_raw:
-        cand = target_raw.lower().strip()
-        if cand in ("amos", "marvin", "zero", "aerial"):
-            agent = cand
-    if not agent:
-        agent_override = re.search(r"\b(?:as|agent:?)\s+(amos|marvin|zero|aerial)\b", content, re.I)
-        if agent_override:
-            agent = agent_override.group(1).lower()
-        elif author_id in AUTHOR_MAP:
-            agent = AUTHOR_MAP[author_id]
-        else:
-            name_lower = author_name.lower()
-            if "amos" in name_lower or "carmody" in name_lower or "mike" in name_lower:
-                agent = "amos"
-            elif "marvin" in name_lower or "alex" in name_lower:
-                agent = "marvin"
-            elif "zero" in name_lower or "brock" in name_lower or "ryan" in name_lower:
-                agent = "zero"
-            elif "aerial" in name_lower:
-                agent = "aerial"
-    if not agent:
-        agent = "zero"
-    return {"action": "buy_ship", "agent_id": agent, "at_vessel": at_vessel}
+    ag_id = resolve_contract_agent(author_id)
+    if not ag_id:
+        return {"action": "unauthorized", "command": "buy_ship", "author_id": str(author_id)}
+    return {"action": "buy_ship", "agent_id": ag_id, "at_vessel": at_vessel}
 
 
 def parse_discord_transfer_cmd(content: str, author_id: str, author_name: str = "") -> Optional[dict]:
@@ -1143,28 +1113,13 @@ def parse_discord_transfer_cmd(content: str, author_id: str, author_name: str = 
 
     item = normalize_commodity(item)
 
-    agent = None
-    agent_override = re.search(r"\b(?:as|agent:?)\s+(amos|marvin|zero|aerial)\b", content, re.I)
-    if agent_override:
-        agent = agent_override.group(1).lower()
-    elif author_id in AUTHOR_MAP:
-        agent = AUTHOR_MAP[author_id]
-    else:
-        name_lower = author_name.lower()
-        if "amos" in name_lower or "carmody" in name_lower or "mike" in name_lower:
-            agent = "amos"
-        elif "marvin" in name_lower or "alex" in name_lower:
-            agent = "marvin"
-        elif "zero" in name_lower or "brock" in name_lower or "ryan" in name_lower:
-            agent = "zero"
-        elif "aerial" in name_lower:
-            agent = "aerial"
-    if not agent:
-        agent = "zero"
+    ag_id = resolve_contract_agent(author_id)
+    if not ag_id:
+        return {"action": "unauthorized", "command": "transfer", "author_id": str(author_id)}
 
     return {
         "action": "transfer",
-        "agent_id": agent,
+        "agent_id": ag_id,
         "from": src,
         "to": dst,
         "instrument": item,
@@ -1196,11 +1151,6 @@ def parse_discord_burst_cmd(content: str, author_id: str = "") -> Optional[dict]
         raw_interval = float(m_tr.group(2)) if m_tr.group(2) else 180.0
         interval = max(MIN_BURST_INTERVAL, min(raw_interval, MAX_BURST_INTERVAL))
         return {"action": "start", "rounds": rounds, "interval_sec": interval, "author_id": str(author_id)}
-def resolve_contract_agent(author_id: str) -> Optional[str]:
-    """Resolve Agora fleet agent_id strictly from AUTHOR_MAP for contract escrow commands.
-    No text overrides and no default fallback. Rejects unmapped authors.
-    """
-    return AUTHOR_MAP.get(str(author_id))
 
 
 def parse_discord_contract_cmd(content: str, author_id: str, author_name: str = "") -> Optional[dict]:
@@ -1250,29 +1200,14 @@ def parse_discord_piracy_respond_cmd(content: str, author_id: str, author_name: 
         return None
     tid = m.group(1).strip()
     choice = m.group(2).lower().strip()
-    agent = None
-    agent_override = re.search(r"\b(?:as|agent:?)\s+(amos|marvin|zero|aerial)\b", content, re.I)
-    if agent_override:
-        agent = agent_override.group(1).lower()
-    elif author_id in AUTHOR_MAP:
-        agent = AUTHOR_MAP[author_id]
-    else:
-        name_lower = author_name.lower()
-        if "amos" in name_lower or "carmody" in name_lower or "mike" in name_lower:
-            agent = "amos"
-        elif "marvin" in name_lower or "alex" in name_lower:
-            agent = "marvin"
-        elif "zero" in name_lower or "brock" in name_lower or "ryan" in name_lower:
-            agent = "zero"
-        elif "aerial" in name_lower:
-            agent = "aerial"
-    if not agent:
-        agent = "zero"
+    ag_id = resolve_contract_agent(author_id)
+    if not ag_id:
+        return {"action": "unauthorized", "command": "piracy_respond", "author_id": str(author_id)}
     return {
         "action": "piracy_respond",
         "transit_id": tid,
         "choice": choice,
-        "agent_id": agent
+        "agent_id": ag_id
     }
 
 
@@ -1287,27 +1222,12 @@ def parse_discord_privateer_cmd(content: str, author_id: str, author_name: str =
     duration_raw = m.group(2)
     duration = int(duration_raw) if duration_raw and duration_raw.isdigit() else 10
 
-    agent = None
-    agent_override = re.search(r"\b(?:as|agent:?)\s+(amos|marvin|zero|aerial)\b", content, re.I)
-    if agent_override:
-        agent = agent_override.group(1).lower()
-    elif author_id in AUTHOR_MAP:
-        agent = AUTHOR_MAP[author_id]
-    else:
-        name_lower = author_name.lower()
-        if "amos" in name_lower or "carmody" in name_lower or "mike" in name_lower:
-            agent = "amos"
-        elif "marvin" in name_lower or "alex" in name_lower:
-            agent = "marvin"
-        elif "zero" in name_lower or "brock" in name_lower or "ryan" in name_lower:
-            agent = "zero"
-        elif "aerial" in name_lower:
-            agent = "aerial"
-    if not agent:
-        agent = "zero"
+    ag_id = resolve_contract_agent(author_id)
+    if not ag_id:
+        return {"action": "unauthorized", "command": "privateer", "author_id": str(author_id)}
     return {
         "action": "privateer",
-        "sponsor": agent,
+        "sponsor": ag_id,
         "target": target_raw,
         "duration": duration
     }
@@ -1323,18 +1243,8 @@ def parse_discord_piracy_status_cmd(content: str, author_id: str, author_name: s
     agent_override = re.search(r"\b(?:as|agent:?)\s+(amos|marvin|zero|aerial)\b", content, re.I)
     if agent_override:
         agent = agent_override.group(1).lower()
-    elif author_id in AUTHOR_MAP:
-        agent = AUTHOR_MAP[author_id]
-    else:
-        name_lower = author_name.lower()
-        if "amos" in name_lower or "carmody" in name_lower or "mike" in name_lower:
-            agent = "amos"
-        elif "marvin" in name_lower or "alex" in name_lower:
-            agent = "marvin"
-        elif "zero" in name_lower or "brock" in name_lower or "ryan" in name_lower:
-            agent = "zero"
-        elif "aerial" in name_lower:
-            agent = "aerial"
+    elif str(author_id) in AUTHOR_MAP:
+        agent = AUTHOR_MAP[str(author_id)]
     if not agent:
         agent = "zero"
     return {"action": "piracy_status", "agent_id": agent}
@@ -1346,28 +1256,10 @@ def parse_discord_upgrade_buy_cmd(content: str, author_id: str = "", author_name
     if not m:
         return None
     kind = m.group(1).lower().strip()
-    agent = None
-    if m.group(2):
-        agent = m.group(2).lower().strip()
-    else:
-        agent_override = re.search(r"\b(?:as|agent:?)\s+(amos|marvin|zero|aerial)\b", content, re.I)
-        if agent_override:
-            agent = agent_override.group(1).lower()
-        elif author_id in AUTHOR_MAP:
-            agent = AUTHOR_MAP[author_id]
-        else:
-            name_lower = author_name.lower()
-            if "amos" in name_lower or "carmody" in name_lower or "mike" in name_lower:
-                agent = "amos"
-            elif "marvin" in name_lower or "alex" in name_lower:
-                agent = "marvin"
-            elif "zero" in name_lower or "brock" in name_lower or "ryan" in name_lower:
-                agent = "zero"
-            elif "aerial" in name_lower:
-                agent = "aerial"
-            else:
-                agent = "zero"
-    return {"agent_id": agent, "kind": kind}
+    ag_id = resolve_contract_agent(author_id)
+    if not ag_id:
+        return {"action": "unauthorized", "command": "upgrade_buy", "author_id": str(author_id)}
+    return {"action": "upgrade_buy", "agent_id": ag_id, "kind": kind}
 
 
 def parse_discord_upgrades_cmd(content: str, author_id: str = "", author_name: str = "") -> Optional[dict]:
@@ -1384,20 +1276,10 @@ def parse_discord_upgrades_cmd(content: str, author_id: str = "", author_name: s
         agent_override = re.search(r"\b(?:as|agent:?)\s+(amos|marvin|zero|aerial)\b", content, re.I)
         if agent_override:
             agent = agent_override.group(1).lower()
-        elif author_id in AUTHOR_MAP:
-            agent = AUTHOR_MAP[author_id]
-        else:
-            name_lower = author_name.lower()
-            if "amos" in name_lower or "carmody" in name_lower or "mike" in name_lower:
-                agent = "amos"
-            elif "marvin" in name_lower or "alex" in name_lower:
-                agent = "marvin"
-            elif "zero" in name_lower or "brock" in name_lower or "ryan" in name_lower:
-                agent = "zero"
-            elif "aerial" in name_lower:
-                agent = "aerial"
-            else:
-                agent = "zero"
+        elif str(author_id) in AUTHOR_MAP:
+            agent = AUTHOR_MAP[str(author_id)]
+    if not agent:
+        agent = "zero"
     return {"agent_id": agent}
 
 
@@ -1409,35 +1291,19 @@ def parse_discord_hazards_cmd(content: str, author_id: str, author_name: str = "
     agent_override = re.search(r"\b(?:as|agent:?)\s+(amos|marvin|zero|aerial)\b", content, re.I)
     if agent_override:
         agent = agent_override.group(1).lower()
-    elif author_id in AUTHOR_MAP:
-        agent = AUTHOR_MAP[author_id]
-    else:
-        name_lower = author_name.lower()
-        if "amos" in name_lower or "carmody" in name_lower or "mike" in name_lower:
-            agent = "amos"
-        elif "marvin" in name_lower or "alex" in name_lower:
-            agent = "marvin"
-        elif "zero" in name_lower or "brock" in name_lower or "ryan" in name_lower:
-            agent = "zero"
-        elif "aerial" in name_lower:
-            agent = "aerial"
+    elif str(author_id) in AUTHOR_MAP:
+        agent = AUTHOR_MAP[str(author_id)]
     if not agent:
         agent = "zero"
     return {"action": "hazards_status", "agent_id": agent}
 
 
-def parse_discord_transit(content: str, author_id: str, author_name: str) -> Optional[dict]:
+def parse_discord_transit(content: str, author_id: str, author_name: str = "") -> Optional[dict]:
     """Parse natural language transit command from Discord chat, with multi-ship support."""
     if TRADE_PATTERN.search(content) and not re.search(r"\b(?:MOVE|TRANSIT)\b", content, re.I):
         return None
 
-    agent = None
-    agent_override = re.search(r"\b(?:as|agent:?)\s+(amos|marvin|zero|aerial)\b", content, re.I)
-    if agent_override:
-        agent = agent_override.group(1).lower()
-        content_clean = re.sub(r"\b(?:as|agent:?)\s+(amos|marvin|zero|aerial)\b", "", content, flags=re.I).strip()
-    else:
-        content_clean = content
+    content_clean = re.sub(r"\b(?:as|agent:?)\s+(?:amos|marvin|zero|aerial)\b", "", content, flags=re.I).strip()
 
     m_dest = re.search(r"\b(?:MOVE|TRANSIT|FLY|WARP|GO)\s+(?:TO\s+)?([A-Za-z]+)", content_clean, re.I)
     if not m_dest:
@@ -1478,25 +1344,13 @@ def parse_discord_transit(content: str, author_id: str, author_name: str) -> Opt
                 if cand.isdigit() or "/" in cand:
                     vessel_id = cand
 
-    if not agent:
-        if author_id in AUTHOR_MAP:
-            agent = AUTHOR_MAP[author_id]
-        else:
-            name_lower = author_name.lower()
-            if "amos" in name_lower or "carmody" in name_lower or "mike" in name_lower:
-                agent = "amos"
-            elif "marvin" in name_lower or "alex" in name_lower:
-                agent = "marvin"
-            elif "zero" in name_lower or "brock" in name_lower or "ryan" in name_lower:
-                agent = "zero"
-            elif "aerial" in name_lower:
-                agent = "aerial"
-
-    if not agent:
-        agent = "zero"
+    ag_id = resolve_contract_agent(author_id)
+    if not ag_id:
+        return {"action": "unauthorized", "command": "transit", "author_id": str(author_id)}
 
     res = {
-        "agent_id": agent,
+        "action": "transit",
+        "agent_id": ag_id,
         "destination": dest,
         "commodity": comm,
         "cargo_qty": qty,
@@ -1534,7 +1388,7 @@ def submit_trade_to_referee(trade: dict, ref_token: str) -> dict:
         return {"status": "error", "error": str(e)}
 
 
-def parse_discord_trade(content: str, author_id: str, author_name: str, default_station: str = "ceres") -> Optional[dict]:
+def parse_discord_trade(content: str, author_id: str, author_name: str = "", default_station: str = "ceres") -> Optional[dict]:
     """Parse natural language trade command from Discord chat."""
     m = TRADE_PATTERN.search(content)
     if not m:
@@ -1552,29 +1406,13 @@ def parse_discord_trade(content: str, author_id: str, author_name: str, default_
     else:
         station = station_raw.lower() if station_raw else default_station
 
-    # Resolve agent
-    agent = None
-    agent_override = re.search(r"\b(?:as|agent:?)\s+(amos|marvin|zero|aerial)\b", content, re.I)
-    if agent_override:
-        agent = agent_override.group(1).lower()
-    elif author_id in AUTHOR_MAP:
-        agent = AUTHOR_MAP[author_id]
-    else:
-        name_lower = author_name.lower()
-        if "amos" in name_lower or "carmody" in name_lower or "mike" in name_lower:
-            agent = "amos"
-        elif "marvin" in name_lower or "alex" in name_lower:
-            agent = "marvin"
-        elif "zero" in name_lower or "brock" in name_lower or "ryan" in name_lower:
-            agent = "zero"
-        elif "aerial" in name_lower:
-            agent = "aerial"
-
-    if not agent:
-        agent = "amos"
+    ag_id = resolve_contract_agent(author_id)
+    if not ag_id:
+        return {"action": "unauthorized", "command": "trade", "author_id": str(author_id)}
 
     return {
-        "agent_id": agent,
+        "action": "trade",
+        "agent_id": ag_id,
         "side": side,
         "qty": qty,
         "limit_price": price,
@@ -1759,6 +1597,15 @@ def poll_and_execute_trades(channel: str, bot_token: str, ref_token: str, active
         peer_cmd = parse_discord_peer(content, author.get("id", ""), author.get("username", ""), default_station=active_station)
         if peer_cmd:
             action = peer_cmd.get("action")
+            if action == "unauthorized":
+                add_discord_reaction(channel, msg_id, "❌", bot_token)
+                reject_msg = (
+                    f"⚠️ **[Agora Trade Terminal] Peer Trade Rejected**\n"
+                    f"> **Author ID:** `{author.get('id')}`\n"
+                    f"> **Reason:** `unmapped_author` — peer trading requires a registered fleet snowflake in `AUTHOR_MAP`."
+                )
+                post_discord(channel, reject_msg, bot_token)
+                continue
             ag_id = peer_cmd.get("agent_id")
             fl_name = FLEET_NAMES.get(ag_id, ag_id.upper())
             print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Detected peer {action} from {author.get('username')}: {peer_cmd}")
@@ -1902,6 +1749,15 @@ def poll_and_execute_trades(channel: str, bot_token: str, ref_token: str, active
         # Check piracy extortion response (!respond <tx_id> <pay|surrender|fight> / !ransom ...)
         piracy_respond_cmd = parse_discord_piracy_respond_cmd(content, author.get("id", ""), author.get("username", ""))
         if piracy_respond_cmd:
+            if piracy_respond_cmd.get("action") == "unauthorized":
+                add_discord_reaction(channel, msg_id, "❌", bot_token)
+                reject_msg = (
+                    f"⚠️ **[Agora Trade Terminal] Extortion Response Rejected**\n"
+                    f"> **Author ID:** `{author.get('id')}`\n"
+                    f"> **Reason:** `unmapped_author` — piracy response requires a registered fleet snowflake in `AUTHOR_MAP`."
+                )
+                post_discord(channel, reject_msg, bot_token)
+                continue
             ag_id = piracy_respond_cmd["agent_id"]
             fl_name = FLEET_NAMES.get(ag_id, ag_id.upper())
             tid = piracy_respond_cmd["transit_id"]
@@ -1957,6 +1813,15 @@ def poll_and_execute_trades(channel: str, bot_token: str, ref_token: str, active
         # Check privateer hiring (!privateer <target> [duration])
         privateer_cmd = parse_discord_privateer_cmd(content, author.get("id", ""), author.get("username", ""))
         if privateer_cmd:
+            if privateer_cmd.get("action") == "unauthorized":
+                add_discord_reaction(channel, msg_id, "❌", bot_token)
+                reject_msg = (
+                    f"⚠️ **[Agora Trade Terminal] Privateer Contract Rejected**\n"
+                    f"> **Author ID:** `{author.get('id')}`\n"
+                    f"> **Reason:** `unmapped_author` — privateer contracts require a registered fleet snowflake in `AUTHOR_MAP`."
+                )
+                post_discord(channel, reject_msg, bot_token)
+                continue
             ag_id = privateer_cmd["sponsor"]
             fl_name = FLEET_NAMES.get(ag_id, ag_id.upper())
             tgt = privateer_cmd["target"]
@@ -2026,6 +1891,15 @@ def poll_and_execute_trades(channel: str, bot_token: str, ref_token: str, active
         # Check upgrade procurement (!upgrade buy <kind>)
         upgrade_buy_cmd = parse_discord_upgrade_buy_cmd(content, author.get("id", ""), author.get("username", ""))
         if upgrade_buy_cmd:
+            if upgrade_buy_cmd.get("action") == "unauthorized":
+                add_discord_reaction(channel, msg_id, "❌", bot_token)
+                reject_msg = (
+                    f"⚠️ **[Sol Shipyard] Upgrade Rejected**\n"
+                    f"> **Author ID:** `{author.get('id')}`\n"
+                    f"> **Reason:** `unmapped_author` — upgrade purchase requires a registered fleet snowflake in `AUTHOR_MAP`."
+                )
+                post_discord(channel, reject_msg, bot_token)
+                continue
             ag_id = upgrade_buy_cmd["agent_id"]
             fl_name = FLEET_NAMES.get(ag_id, ag_id.upper())
             kind = upgrade_buy_cmd["kind"]
@@ -2102,6 +1976,15 @@ def poll_and_execute_trades(channel: str, bot_token: str, ref_token: str, active
         # Check ship purchase commands (!ship buy / !buy ship)
         ship_buy_cmd = parse_discord_ship_buy_cmd(content, author.get("id", ""), author.get("username", ""))
         if ship_buy_cmd:
+            if ship_buy_cmd.get("action") == "unauthorized":
+                add_discord_reaction(channel, msg_id, "❌", bot_token)
+                reject_msg = (
+                    f"⚠️ **[Sol Shipyard] Ship Purchase Rejected**\n"
+                    f"> **Author ID:** `{author.get('id')}`\n"
+                    f"> **Reason:** `unmapped_author` — ship purchase requires a registered fleet snowflake in `AUTHOR_MAP`."
+                )
+                post_discord(channel, reject_msg, bot_token)
+                continue
             ag_id = ship_buy_cmd["agent_id"]
             fl_name = FLEET_NAMES.get(ag_id, ag_id.upper())
             at_vessel = ship_buy_cmd.get("at_vessel")
@@ -2140,6 +2023,15 @@ def poll_and_execute_trades(channel: str, bot_token: str, ref_token: str, active
         # Check transfer commands (!transfer)
         transfer_cmd = parse_discord_transfer_cmd(content, author.get("id", ""), author.get("username", ""))
         if transfer_cmd:
+            if transfer_cmd.get("action") == "unauthorized":
+                add_discord_reaction(channel, msg_id, "❌", bot_token)
+                reject_msg = (
+                    f"⚠️ **[Agora Trade Terminal] Transfer Rejected**\n"
+                    f"> **Author ID:** `{author.get('id')}`\n"
+                    f"> **Reason:** `unmapped_author` — cargo transfer requires a registered fleet snowflake in `AUTHOR_MAP`."
+                )
+                post_discord(channel, reject_msg, bot_token)
+                continue
             ag_id = transfer_cmd["agent_id"]
             fl_name = FLEET_NAMES.get(ag_id, ag_id.upper())
             print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Detected transfer from {author.get('username')}: {transfer_cmd}")
@@ -2279,9 +2171,29 @@ def poll_and_execute_trades(channel: str, bot_token: str, ref_token: str, active
             continue
 
         trade = parse_discord_trade(content, author.get("id", ""), author.get("username", ""), default_station=active_station)
+        if trade:
+            if trade.get("action") == "unauthorized":
+                add_discord_reaction(channel, msg_id, "❌", bot_token)
+                reject_msg = (
+                    f"⚠️ **[Agora Trade Terminal] Order Rejected**\n"
+                    f"> **Author ID:** `{author.get('id')}`\n"
+                    f"> **Reason:** `unmapped_author` — trade orders require a registered fleet snowflake in `AUTHOR_MAP`."
+                )
+                post_discord(channel, reject_msg, bot_token)
+                continue
+
         if not trade:
             transit = parse_discord_transit(content, author.get("id", ""), author.get("username", ""))
             if transit:
+                if transit.get("action") == "unauthorized":
+                    add_discord_reaction(channel, msg_id, "❌", bot_token)
+                    reject_msg = (
+                        f"⚠️ **[Agora Trade Terminal] Transit Rejected**\n"
+                        f"> **Author ID:** `{author.get('id')}`\n"
+                        f"> **Reason:** `unmapped_author` — vessel transit requires a registered fleet snowflake in `AUTHOR_MAP`."
+                    )
+                    post_discord(channel, reject_msg, bot_token)
+                    continue
                 print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Detected transit from {author.get('username')}: {transit}")
                 sys.stdout.flush()
                 res = submit_transit_to_referee(transit, ref_token)

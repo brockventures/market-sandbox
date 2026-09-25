@@ -47,12 +47,17 @@ class TestDiscordHazardsPiracy(unittest.TestCase):
         self.assertEqual(cmd1["choice"], "pay")
         self.assertEqual(cmd1["agent_id"], "zero")
 
-        # Surrender with ransom alias and agent override
-        cmd2 = parse_discord_piracy_respond_cmd("!ransom tx-xyz-999 surrender as amos", "123", "User")
+        # Surrender with ransom alias: unmapped author rejected
+        cmd2_unauth = parse_discord_piracy_respond_cmd("!ransom tx-xyz-999 surrender as amos", "123", "User")
+        self.assertIsNotNone(cmd2_unauth)
+        self.assertEqual(cmd2_unauth["action"], "unauthorized")
+
+        # Surrender with ransom alias: mapped author resolves strictly from AUTHOR_MAP
+        cmd2 = parse_discord_piracy_respond_cmd("!ransom tx-xyz-999 surrender as amos", "1542081375287640084", "Zero")
         self.assertIsNotNone(cmd2)
         self.assertEqual(cmd2["transit_id"], "tx-xyz-999")
         self.assertEqual(cmd2["choice"], "surrender")
-        self.assertEqual(cmd2["agent_id"], "amos")
+        self.assertEqual(cmd2["agent_id"], "zero")
 
         # Fight
         cmd3 = parse_discord_piracy_respond_cmd("!respond tx-battle fight", "1542035925603713086", "Aerial")
@@ -69,10 +74,15 @@ class TestDiscordHazardsPiracy(unittest.TestCase):
         self.assertEqual(cmd1["target"], "amos")
         self.assertEqual(cmd1["duration"], 10)
 
-        # Custom duration and sponsor override
-        cmd2 = parse_discord_privateer_cmd("!privateers marvin 20 as aerial", "123", "User")
+        # Custom duration: unmapped author rejected
+        cmd2_unauth = parse_discord_privateer_cmd("!privateers marvin 20 as aerial", "123", "User")
+        self.assertIsNotNone(cmd2_unauth)
+        self.assertEqual(cmd2_unauth["action"], "unauthorized")
+
+        # Custom duration: mapped author resolves strictly from AUTHOR_MAP
+        cmd2 = parse_discord_privateer_cmd("!privateers marvin 20 as aerial", "1542081375287640084", "Zero")
         self.assertIsNotNone(cmd2)
-        self.assertEqual(cmd2["sponsor"], "aerial")
+        self.assertEqual(cmd2["sponsor"], "zero")
         self.assertEqual(cmd2["target"], "marvin")
         self.assertEqual(cmd2["duration"], 20)
 
