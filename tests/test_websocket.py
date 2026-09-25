@@ -132,6 +132,20 @@ class TestAgoraWebSocket(unittest.TestCase):
         diffs2 = engine.get_diffs("ceres", "FRAG")
         self.assertEqual(len(diffs2), 0)
 
+    def test_terminal_diff_engine_round_progression(self):
+        referee = AgoraReferee()
+        engine = TerminalDiffEngine(referee)
+        _ = engine.get_snapshot("ceres", "FRAG")
+
+        # Step round
+        referee.step_round()
+        diffs = engine.get_diffs("ceres", "FRAG")
+        round_frames = [d for d in diffs if d["type"] == "round"]
+        self.assertEqual(len(round_frames), 1)
+        self.assertEqual(round_frames[0]["round"], 1)
+        self.assertEqual(round_frames[0]["prev_round"], 0)
+        self.assertEqual(round_frames[0]["floor"], "open")
+
     def test_websocket_live_server_stream(self):
         referee = AgoraReferee()
         handler_class = make_handler(referee)
