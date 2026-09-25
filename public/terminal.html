@@ -1,1379 +1,634 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AGORA // Requisition Terminal &middot; Live Floor</title>
-<meta name="description" content="Live multi-agent order book depth, trade tape telemetry, and double-entry Mark-to-Market leaderboard for Station Agora in The Atlas Problem debris belt.">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AGORA // Institutional Requisition Terminal</title>
+<meta name="description" content="Live multi-agent order book depth, continuous trade tape telemetry, and double-entry Mark-to-Market leaderboard for Station Agora.">
+
 <style>
   :root {
-    --bg-deep: #0a0a12;
-    --bg-surface: #10121c;
-    --bg-card: #141724;
-    --line: #1e2436;
+    --bg-deep: #08090e;
+    --bg-surface: #0e111a;
+    --bg-card: #131724;
+    --bg-card-hover: #171d2e;
+    --line: #1c2233;
+    --line-subtle: #171c2b;
+    --line-highlight: #28334a;
+
     --emerald: #10b981;
-    --emerald-glow: rgba(16, 185, 129, 0.28);
+    --emerald-bg: rgba(16, 185, 129, 0.08);
+    --emerald-border: rgba(16, 185, 129, 0.25);
+
     --rose: #f43f5e;
-    --rose-glow: rgba(244, 63, 94, 0.28);
-    --text: #e2e8f4;
-    --text-dim: #8b99b5;
-    --amber: #ffb834;
-    --amber-dim: #c4861c;
-    --cyan: #5ce1e6;
-    --cyan-dim: #258387;
-    --green: #4ade80;
-    --red: #f87171;
-    --purple: #bf5af2;
-    --purple-neon: #d946ef;
-    --purple-dim: #7928ca;
-    --purple-glow: rgba(191, 90, 242, 0.28);
-    --purple-bg: #120e24;
-    --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --rose-bg: rgba(244, 63, 94, 0.08);
+    --rose-border: rgba(244, 63, 94, 0.25);
+
+    --amber: #f59e0b;
+    --amber-bg: rgba(245, 158, 11, 0.08);
+    --amber-border: rgba(245, 158, 11, 0.25);
+
+    --indigo: #6366f1;
+    --indigo-bg: rgba(99, 102, 241, 0.08);
+    --indigo-border: rgba(99, 102, 241, 0.25);
+
+    --cyan: #06b6d4;
+    --cyan-bg: rgba(6, 182, 212, 0.08);
+    --cyan-border: rgba(6, 182, 212, 0.25);
+
+    --purple-neon: #a855f7;
+
+    --text: #f1f5f9;
+    --text-muted: #94a3b8;
+    --text-dim: #64748b;
+
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", "Helvetica Neue", sans-serif;
+    --font-mono: "JetBrains Mono", "SF Mono", "Fira Code", Menlo, Consolas, monospace;
+
+    --radius-sm: 4px;
+    --radius-md: 6px;
+    --radius-lg: 8px;
+    --radius-xl: 12px;
   }
 
-  * { box-sizing: border-box; margin: 0; padding: 0; }
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
 
   body {
     background-color: var(--bg-deep);
     color: var(--text);
     font-family: var(--font-sans);
-    line-height: 1.6;
-    padding-bottom: 60px;
-    background-image: 
-      radial-gradient(circle at 50% 0%, rgba(255, 184, 52, 0.08) 0%, transparent 60%),
-      linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
-    background-size: 100% 100%, 40px 40px, 40px 40px;
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
+    padding: 0 0 48px 0;
+    overflow-x: hidden;
   }
 
-  .scanlines {
-    position: fixed;
-    top: 0; left: 0; width: 100%; height: 100%;
-    pointer-events: none;
-    background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%);
-    background-size: 100% 4px;
-    z-index: 1000;
-    opacity: 0.6;
+  /* Utility classes */
+  .mono {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
   }
 
-  .wrap {
-    max-width: 1200px;
-    margin: 0 auto;
-    padding: 0 24px;
-  }
-
-  header {
-    padding: 32px 0 24px;
+  /* Top Navigation & App Bar */
+  .top-app-bar {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: rgba(8, 9, 14, 0.88);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
     border-bottom: 1px solid var(--line);
+    padding: 10px 24px;
     display: flex;
     justify-content: space-between;
     align-items: center;
-    flex-wrap: wrap;
     gap: 16px;
   }
 
-  .nav-back {
-    display: inline-flex;
+  .brand-group {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .brand-logo {
+    display: flex;
     align-items: center;
     gap: 8px;
-    font-family: var(--font-mono);
-    font-size: 0.85rem;
-    color: var(--cyan);
     text-decoration: none;
-    border: 1px solid var(--cyan-dim);
-    background: rgba(92, 225, 230, 0.08);
-    padding: 6px 14px;
-    border-radius: 4px;
-    transition: all 0.2s ease;
+    color: var(--text);
   }
 
-  .nav-back:hover {
-    background: rgba(92, 225, 230, 0.2);
-    color: #fff;
-    transform: translateX(-2px);
-  }
-
-  .terminal-brand {
+  .brand-icon {
+    width: 24px;
+    height: 24px;
+    border-radius: var(--radius-sm);
+    background: linear-gradient(135deg, var(--emerald) 0%, #059669 100%);
     display: flex;
-    align-items: baseline;
-    gap: 14px;
-    flex-wrap: wrap;
-  }
-
-  h1 {
-    font-size: 1.8rem;
-    font-weight: 800;
-    letter-spacing: -0.02em;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 900;
     color: #fff;
-    text-shadow: 0 0 16px rgba(255, 184, 52, 0.3);
-    font-family: var(--font-mono);
   }
 
-  .station-badge {
-    font-family: var(--font-mono);
-    font-size: 0.75rem;
+  .brand-title {
+    font-weight: 700;
+    font-size: 15px;
+    letter-spacing: 0.05em;
+    color: #fff;
+  }
+
+  .brand-subtitle {
+    font-size: 11px;
     color: var(--text-dim);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
+    font-family: var(--font-mono);
+    padding-left: 6px;
+    border-left: 1px solid var(--line);
   }
 
-  .header-telemetry {
+  .nav-pills {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+
+  .nav-pill-link {
+    text-decoration: none;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-muted);
+    padding: 4px 10px;
+    border-radius: var(--radius-sm);
+    border: 1px solid transparent;
+    transition: all 0.15s ease;
+  }
+
+  .nav-pill-link:hover {
+    color: #fff;
+    background: var(--bg-surface);
+    border-color: var(--line);
+  }
+
+  .nav-pill-link.active {
+    color: var(--emerald);
+    background: var(--emerald-bg);
+    border-color: var(--emerald-border);
+  }
+
+  .top-meta-group {
     display: flex;
     align-items: center;
     gap: 12px;
+    font-size: 12px;
+    font-family: var(--font-mono);
   }
 
-  .telemetry-indicator {
+  .telemetry-status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    border-radius: 9999px;
+    background: var(--emerald-bg);
+    border: 1px solid var(--emerald-border);
+    color: var(--emerald);
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .pulse-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    animation: pulseGlow 2s infinite ease-in-out;
+  }
+
+  @keyframes pulseGlow {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.85); }
+  }
+
+  .telemetry-seq-pill {
+    padding: 3px 8px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-surface);
+    border: 1px solid var(--line);
+    color: var(--text-dim);
+    font-size: 11px;
+  }
+
+  /* Responsive Mobile Breakpoints */
+  @media (max-width: 768px) {
+    .top-app-bar {
+      padding: 8px 12px;
+    }
+    .brand-subtitle {
+      display: none;
+    }
+    .nav-pills {
+      display: none;
+    }
+    .telemetry-seq-pill {
+      display: none;
+    }
+    .terminal-main-content {
+      padding: 12px 12px 0 12px !important;
+    }
+  }
+
+  /* Main Container */
+  .terminal-main-content {
+    max-width: 1440px;
+    margin: 0 auto;
+    padding: 16px 24px 0 24px;
+  }
+
+  /* Institutional Ticker & Wire Strip */
+  .corporate-strip {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 16px;
+  }
+
+  .galnet-wire-container {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--bg-surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    padding: 6px 12px;
+    font-size: 12px;
+    overflow: hidden;
+  }
+
+  .galnet-wire-tag {
+    flex-shrink: 0;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    color: var(--amber);
+    background: var(--amber-bg);
+    border: 1px solid var(--amber-border);
+    padding: 2px 6px;
+    border-radius: var(--radius-sm);
+  }
+
+  .galnet-ticker-text {
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--text-muted);
+  }
+
+  .ticker-ribbon-bar {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+
+  .equity-ticker-ribbon {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    background: var(--bg-surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    padding: 6px 12px;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+
+  .commodity-ticker-ribbon {
+    border-color: var(--line-highlight);
+  }
+
+  .equity-ticker-content {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .commodity-ticker-item {
     display: inline-flex;
     align-items: center;
     gap: 8px;
     font-family: var(--font-mono);
-    font-size: 0.78rem;
-    color: var(--amber);
-    background: rgba(255, 184, 52, 0.08);
-    border: 1px solid rgba(255, 184, 52, 0.25);
-    padding: 5px 12px;
-    border-radius: 4px;
-    letter-spacing: 0.05em;
+    font-size: 12px;
+    padding-right: 16px;
+    border-right: 1px solid var(--line);
   }
 
-  .telemetry-indicator.cyan {
-    color: var(--cyan);
-    background: rgba(92, 225, 230, 0.08);
-    border-color: rgba(92, 225, 230, 0.25);
-  }
-
-  .pulse-node {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--amber);
-    box-shadow: 0 0 8px var(--amber);
-    animation: beacon 2s infinite ease-in-out;
-  }
-
-  .pulse-node.cyan {
-    background: var(--cyan);
-    box-shadow: 0 0 8px var(--cyan);
-  }
-
-  @keyframes beacon {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50% { opacity: 0.35; transform: scale(0.85); }
-  }
-
-  section {
-    padding: 32px 0;
-  }
-
-  h2 {
-    font-size: 1.3rem;
+  .commodity-ticker-sym {
     font-weight: 700;
-    letter-spacing: -0.01em;
-    margin-bottom: 12px;
     color: #fff;
-    display: flex;
-    align-items: center;
-    gap: 10px;
   }
 
-  h2::before {
-    content: "//";
-    font-family: var(--font-mono);
+  .commodity-ticker-price {
+    font-weight: 600;
     color: var(--amber);
   }
 
-  .subhead {
-    font-size: 0.9rem;
+  .commodity-ticker-delta {
+    font-size: 11px;
+    padding: 1px 5px;
+    border-radius: var(--radius-sm);
+  }
+
+  .commodity-ticker-delta.positive {
+    background: var(--emerald-bg);
+    color: var(--emerald);
+  }
+
+  .commodity-ticker-delta.neutral {
+    background: rgba(100, 116, 139, 0.12);
     color: var(--text-dim);
+  }
+
+  /* 4-Station Modern Cards */
+  .station-overview-strip {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
     margin-bottom: 16px;
   }
 
-  .code-kw {
-    font-family: var(--font-mono);
-    color: var(--cyan);
-    background: rgba(92, 225, 230, 0.1);
-    padding: 2px 6px;
-    border-radius: 3px;
-    font-size: 0.82rem;
+  @media (max-width: 900px) {
+    .station-overview-strip {
+      grid-template-columns: repeat(2, 1fr);
+    }
   }
 
-  .terminal-card {
-    background: var(--bg-card);
+  @media (max-width: 550px) {
+    .station-overview-strip {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .station-card {
+    background: var(--bg-surface);
     border: 1px solid var(--line);
-    border-radius: 8px;
+    border-radius: var(--radius-lg);
+    padding: 12px 14px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .station-card:hover {
+    background: var(--bg-card);
+    border-color: var(--line-highlight);
+    transform: translateY(-1px);
+  }
+
+  .station-card.active-station {
+    border-color: var(--emerald-border);
+    background: var(--bg-card);
+    box-shadow: 0 0 0 1px var(--emerald-border);
+  }
+
+  .station-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .station-card-title {
+    font-weight: 600;
+    font-size: 13px;
+    color: #fff;
+  }
+
+  .station-card-status {
+    font-size: 10px;
+    font-family: var(--font-mono);
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: var(--radius-sm);
+    background: var(--emerald-bg);
+    color: var(--emerald);
+    border: 1px solid var(--emerald-border);
+  }
+
+  .station-card-status.halt-pulse {
+    background: var(--rose-bg);
+    color: var(--rose);
+    border-color: var(--rose-border);
+  }
+
+  .station-card-sub {
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+
+  .station-card-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 11px;
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    padding-top: 6px;
+    border-top: 1px solid var(--line);
+    margin-top: 2px;
+  }
+
+  /* Modern Tab Navigation */
+  .hud-nav-bar {
+    display: flex;
+    gap: 6px;
+    background: var(--bg-surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    padding: 4px;
+    margin-bottom: 20px;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+
+  .hud-nav-btn {
+    flex: 1;
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-md);
+    padding: 8px 14px;
+    font-family: var(--font-sans);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    white-space: nowrap;
+  }
+
+  .hud-nav-btn:hover {
+    color: var(--text);
+    background: var(--bg-card);
+  }
+
+  .hud-nav-btn.active {
+    background: var(--bg-card);
+    color: #fff;
+    font-weight: 600;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+    border: 1px solid var(--line-highlight);
+  }
+
+  .nav-btn-badge {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    padding: 1px 5px;
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-dim);
+  }
+
+  .hud-nav-btn.active .nav-btn-badge {
+    background: var(--emerald-bg);
+    color: var(--emerald);
+  }
+
+  /* Section Panes */
+  .terminal-section-pane {
+    display: none;
+  }
+
+  .terminal-section-pane.active {
+    display: block;
+    animation: fadeInTab 0.15s ease;
+  }
+
+  @keyframes fadeInTab {
+    from { opacity: 0; transform: translateY(3px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  body.hud-all-visible .terminal-section-pane {
+    display: block !important;
+    margin-bottom: 32px;
+  }
+
+  /* Section Header */
+  .section-header-block {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 12px;
+  }
+
+  .section-title {
+    font-size: 18px;
+    font-weight: 700;
+    color: #fff;
+    letter-spacing: -0.01em;
+  }
+
+  .section-subtitle {
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  /* Modern Card Container */
+  .terminal-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-xl);
     padding: 20px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+    margin-bottom: 16px;
   }
 
   .terminal-card-meta {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    flex-wrap: wrap;
-    gap: 10px;
     margin-bottom: 16px;
-    border-bottom: 1px solid var(--line);
-    padding-bottom: 12px;
   }
 
-  /* Leaderboard */
-  .leaderboard-tbl-wrap {
-    overflow-x: auto;
-  }
-
-  .leaderboard-tbl {
-    width: 100%;
-    border-collapse: collapse;
-    font-family: var(--font-mono);
-    font-size: 0.88rem;
-    text-align: left;
-  }
-
-  .leaderboard-tbl th {
-    color: var(--text-dim);
-    padding: 10px 14px;
-    border-bottom: 1px solid var(--line);
-    font-weight: 600;
-    font-size: 0.75rem;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-  }
-
-  .leaderboard-tbl td {
-    padding: 12px 14px;
-    border-bottom: 1px solid rgba(38, 50, 72, 0.4);
-    vertical-align: middle;
-  }
-
-  .leaderboard-tbl tr:hover td {
-    background: rgba(255, 184, 52, 0.03);
-  }
-
-  .rank-tag {
-    font-weight: bold;
-    color: var(--amber);
-    font-size: 0.95rem;
-  }
-
-  .agent-name {
-    font-weight: bold;
-    color: var(--text);
-    font-size: 0.95rem;
-  }
-
-  .agent-role {
-    font-size: 0.75rem;
-    color: var(--text-dim);
-    margin-top: 2px;
-  }
-
-  .val-highlight {
-    font-weight: bold;
-    color: var(--text);
-  }
-
-  .unit-tag {
-    font-size: 0.72rem;
-    color: var(--text-dim);
-    margin-left: 2px;
-  }
-
-  .alloc-track {
-    width: 100%;
-    min-width: 140px;
-    height: 8px;
-    background: rgba(255, 255, 255, 0.06);
-    border-radius: 4px;
-    overflow: hidden;
+  .telemetry-indicator {
     display: flex;
-    margin-top: 6px;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #fff;
   }
 
-  .alloc-cr-fill {
-    height: 100%;
-    background: var(--amber);
+  .telemetry-indicator.cyan {
+    color: var(--cyan);
   }
 
-  .alloc-frag-fill {
-    height: 100%;
+  .pulse-node {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--emerald);
+  }
+
+  .pulse-node.cyan {
     background: var(--cyan);
   }
 
-  /* Market Grid (Depth & Tape) */
-  .market-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 20px;
-  }
-
-  @media (max-width: 900px) {
-    .market-grid { grid-template-columns: 1fr; }
-  }
-
-  .depth-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-family: var(--font-mono);
-    font-size: 0.82rem;
-  }
-
-  .depth-table th {
-    color: var(--text-dim);
-    padding: 8px 10px;
-    border-bottom: 1px solid var(--line);
-    font-size: 0.72rem;
-    text-transform: uppercase;
-  }
-
-  .depth-table td {
-    padding: 8px 10px;
-    border-bottom: 1px solid rgba(38, 50, 72, 0.25);
-  }
-
-  .ask-row { color: var(--red); }
-  .bid-row { color: var(--cyan); }
-
-  /* Issue #35: live cargo decay meter, shown per in-flight perishable transit */
-  .decay-meter-track {
-    position: relative;
-    width: 100%;
-    height: 6px;
-    border-radius: 3px;
-    background: rgba(255, 255, 255, 0.06);
-    overflow: hidden;
-    margin-top: 4px;
-  }
-  .decay-meter-fill {
-    position: absolute;
-    left: 0; top: 0; bottom: 0;
-    background: linear-gradient(90deg, var(--amber-dim), var(--red));
-    transition: width 0.6s ease;
-  }
-
-  /* Issue #35: multi-station price arbitrage matrix */
-  .arb-matrix-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-family: var(--font-mono);
-    font-size: 0.8rem;
-  }
-  .arb-matrix-table th {
-    text-align: left;
-    color: var(--text-dim);
-    font-size: 0.7rem;
-    text-transform: uppercase;
-    padding: 6px 10px;
-    border-bottom: 1px solid var(--line);
-  }
-  .arb-matrix-table td {
-    padding: 7px 10px;
-    border-bottom: 1px solid rgba(38, 50, 72, 0.25);
-  }
-  .arb-margin-positive { color: var(--green); font-weight: 700; }
-  .arb-margin-negative { color: var(--red); font-weight: 700; }
-
-  .spread-bar {
-    background: rgba(255, 255, 255, 0.03);
-    border-top: 1px solid var(--line);
-    border-bottom: 1px solid var(--line);
-    padding: 8px 12px;
-    text-align: center;
-    font-family: var(--font-mono);
-    font-size: 0.78rem;
-    color: var(--text-dim);
-    margin: 8px 0;
-  }
-
-  .tape-feed {
-    max-height: 480px;
-    overflow-y: auto;
-    font-family: var(--font-mono);
-    font-size: 0.8rem;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-
-  .tape-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 8px 12px;
-    background: rgba(255, 255, 255, 0.02);
-    border-left: 2px solid var(--line);
-    border-radius: 2px;
-  }
-
-  .tape-row.trade { border-left-color: var(--green); }
-  .tape-row.order { border-left-color: var(--amber); }
-
-  .badge-seq {
-    font-size: 0.7rem;
-    color: var(--text-dim);
-  }
-
-  footer {
-    padding-top: 40px;
-    font-size: 0.85rem;
-    color: #5a667f;
-    font-family: var(--font-mono);
-    display: flex;
-    justify-content: space-between;
-    flex-wrap: wrap;
-    gap: 16px;
-    border-top: 1px solid var(--line);
-    margin-top: 32px;
-  }
-
-  /* GalNet Breaking News Wire */
-  .galnet-marquee-wrap {
-    margin: 20px 0 0;
-    background: rgba(255, 184, 52, 0.05);
-    border: 1px solid rgba(255, 184, 52, 0.3);
-    border-radius: 6px;
-    padding: 10px 16px;
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    overflow: hidden;
-  }
-
-  .galnet-badge {
-    font-family: var(--font-mono);
-    font-size: 0.72rem;
-    font-weight: 700;
-    color: var(--bg-deep);
-    background: var(--amber);
-    padding: 3px 8px;
-    border-radius: 3px;
-    letter-spacing: 0.06em;
-    white-space: nowrap;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    flex-shrink: 0;
-  }
-
-  .galnet-ticker-text {
-    font-family: var(--font-mono);
-    font-size: 0.85rem;
-    color: var(--amber);
-    white-space: nowrap;
-    overflow: hidden;
-    flex: 1;
-    min-width: 0;
-  }
-
-  .galnet-marquee-track {
-    overflow: hidden;
-    width: 100%;
-    position: relative;
-    mask-image: linear-gradient(to right, transparent, black 1.5%, black 98.5%, transparent);
-    -webkit-mask-image: linear-gradient(to right, transparent, black 1.5%, black 98.5%, transparent);
-  }
-
-  .galnet-marquee-content {
-    display: inline-flex;
-    align-items: center;
-    gap: 28px;
-    white-space: nowrap;
-    animation: galnetTickerScroll 45s linear infinite;
-  }
-
-  .galnet-marquee-content:hover {
-    animation-play-state: paused;
-    cursor: default;
-  }
-
-  @keyframes galnetTickerScroll {
-    0% { transform: translateX(0%); }
-    100% { transform: translateX(-50%); }
-  }
-
-  .galnet-bulletin-item {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    font-family: var(--font-mono);
-    font-size: 0.82rem;
-  }
-
-  .galnet-meta {
-    color: var(--text-dim);
-    font-weight: bold;
-  }
-
-  .galnet-separator {
-    color: var(--amber);
-    opacity: 0.6;
-    margin: 0 4px;
-  }
-
-  .galnet-impact-badge {
-    font-size: 0.65rem;
-    font-weight: 700;
-    padding: 2px 6px;
-    border-radius: 3px;
-    letter-spacing: 0.05em;
-  }
-
-  .galnet-impact-badge.high {
-    background: rgba(255, 77, 77, 0.25);
-    border: 1px solid var(--red);
-    color: var(--red);
-  }
-
-  .galnet-impact-badge.med {
-    background: rgba(255, 184, 52, 0.25);
-    border: 1px solid var(--amber);
-    color: var(--amber);
-  }
-
-  .galnet-impact-badge.low {
-    background: rgba(92, 225, 230, 0.25);
-    border: 1px solid var(--cyan);
-    color: var(--cyan);
-  }
-
-  .galnet-drift-badge {
-    font-family: var(--font-mono);
-    font-size: 0.72rem;
-    font-weight: bold;
-    padding: 1px 6px;
-    border-radius: 2px;
-  }
-
-  .galnet-drift-badge.pos {
-    background: rgba(0, 230, 153, 0.15);
-    color: var(--green);
-    border: 1px solid rgba(0, 230, 153, 0.4);
-  }
-
-  .galnet-drift-badge.neg {
-    background: rgba(255, 77, 77, 0.15);
-    color: var(--red);
-    border: 1px solid rgba(255, 77, 77, 0.4);
-  }
-
-  .luld-nominal-badge {
-    font-family: var(--font-mono);
-    font-size: 0.68rem;
-    color: var(--cyan);
-    background: rgba(92, 225, 230, 0.08);
-    border: 1px solid rgba(92, 225, 230, 0.25);
-    padding: 2px 7px;
-    border-radius: 3px;
-  }
-
-  .luld-active-badge {
-    font-family: var(--font-mono);
-    font-size: 0.68rem;
-    color: var(--green);
-    background: rgba(0, 230, 153, 0.12);
-    border: 1px solid rgba(0, 230, 153, 0.4);
-    padding: 2px 7px;
-    border-radius: 3px;
-  }
-
-  .luld-halted-badge {
-    font-family: var(--font-mono);
-    font-size: 0.68rem;
-    color: var(--red);
-    background: rgba(255, 77, 77, 0.2);
-    border: 1px solid var(--red);
-    padding: 2px 7px;
-    border-radius: 3px;
-    animation: haltPulse 1.4s infinite ease-in-out;
-  }
-
-  @keyframes haltPulse {
-    0%, 100% {
-      opacity: 1;
-      box-shadow: 0 0 10px rgba(255, 77, 77, 0.5);
-    }
-    50% {
-      opacity: 0.6;
-      box-shadow: 0 0 2px rgba(255, 77, 77, 0.2);
-    }
-  }
-
-  .halt-alert-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-family: var(--font-mono);
-    font-size: 0.72rem;
-    font-weight: 700;
-    color: #fff;
-    background: rgba(255, 77, 77, 0.25);
-    border: 1px solid var(--red);
-    padding: 2px 8px;
-    border-radius: 4px;
-    animation: haltPulse 1.4s infinite ease-in-out;
-    letter-spacing: 0.05em;
-  }
-
-  .station-card.station-halted {
-    border-color: rgba(255, 77, 77, 0.6) !important;
-    background: rgba(255, 77, 77, 0.06) !important;
-  }
-
-  .station-card.station-halted .station-card-status {
-    color: var(--red) !important;
-    border-color: var(--red) !important;
-    background: rgba(255, 77, 77, 0.2) !important;
-    animation: haltPulse 1.5s infinite ease-in-out;
-  }
-
-  /* Syndicate Corporate Equity Ticker Ribbon (Issue #37) */
-  .equity-ticker-ribbon {
-    margin-top: 10px;
+  /* Tactile Arbitrage Desk */
+  .tactile-order-desk {
+    background: var(--bg-card);
+    border: 1px solid var(--line-highlight);
+    border-radius: var(--radius-xl);
+    padding: 20px 24px;
     margin-bottom: 20px;
-    background: linear-gradient(90deg, #100b1e 0%, #151126 50%, #0d0a1a 100%);
-    border: 1px solid rgba(191, 90, 242, 0.35);
-    border-radius: 6px;
-    padding: 6px 14px;
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    overflow: hidden;
-    box-shadow: 0 0 16px rgba(191, 90, 242, 0.12);
-  }
-
-  .equity-ticker-badge {
-    font-family: var(--font-mono);
-    font-size: 0.72rem;
-    font-weight: 700;
-    color: #fff;
-    background: linear-gradient(135deg, #a855f7 0%, #7e22ce 100%);
-    padding: 3px 8px;
-    border-radius: 3px;
-    letter-spacing: 0.06em;
-    white-space: nowrap;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    flex-shrink: 0;
-    box-shadow: 0 0 10px rgba(168, 85, 247, 0.4);
-  }
-
-  .pulse-node.purple {
-    background: #d946ef;
-    box-shadow: 0 0 8px #d946ef;
-  }
-
-  .equity-ticker-track {
-    overflow-x: auto;
-    width: 100%;
-    scrollbar-width: none;
-    -ms-overflow-style: none;
-  }
-  .equity-ticker-track::-webkit-scrollbar {
-    display: none;
-  }
-
-  .equity-ticker-content {
-    display: flex;
-    align-items: center;
-    gap: 20px;
-    white-space: nowrap;
-    font-family: var(--font-mono);
-    font-size: 0.82rem;
-  }
-
-  .equity-ticker-item {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 2px 10px;
-    border-radius: 4px;
-    background: rgba(255, 255, 255, 0.03);
-    border: 1px solid rgba(191, 90, 242, 0.15);
-  }
-
-  .equity-ticker-sym {
-    font-weight: 800;
-    color: var(--purple-neon, #bf5af2);
-    letter-spacing: 0.04em;
-  }
-
-  .equity-ticker-price {
-    font-weight: 700;
-    color: #fff;
-  }
-
-  .equity-ticker-delta {
-    font-size: 0.72rem;
-    font-weight: 700;
-    padding: 1px 4px;
-    border-radius: 2px;
-  }
-  .equity-ticker-delta.pos {
-    color: var(--green);
-    background: rgba(74, 222, 128, 0.12);
-  }
-  .equity-ticker-delta.neg {
-    color: var(--red);
-    background: rgba(248, 113, 113, 0.12);
-  }
-  .equity-ticker-delta.neutral {
-    color: var(--text-dim);
-    background: rgba(255, 255, 255, 0.05);
-  }
-
-  .equity-ticker-cap {
-    font-size: 0.72rem;
-    color: var(--text-dim);
-  }
-
-  /* Syndicate Equity Cards & Squeeze Gauges (Issue #37) */
-  .equity-cards-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-    gap: 16px;
-    margin-bottom: 20px;
-  }
-
-  .equity-card {
-    background: linear-gradient(180deg, #131124 0%, #0d0b18 100%);
-    border: 1px solid rgba(191, 90, 242, 0.25);
-    border-radius: 8px;
-    padding: 16px;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    position: relative;
     box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
-    transition: all 0.2s ease;
-  }
-  .equity-card:hover {
-    border-color: rgba(191, 90, 242, 0.5);
-    box-shadow: 0 0 24px rgba(191, 90, 242, 0.15);
-    transform: translateY(-2px);
   }
 
-  .equity-card-head {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    gap: 8px;
-    border-bottom: 1px solid rgba(191, 90, 242, 0.15);
-    padding-bottom: 10px;
-  }
-
-  .equity-card-title {
-    display: flex;
-    flex-direction: column;
-  }
-
-  .equity-ticker-tag {
-    font-family: var(--font-mono);
-    font-size: 1.05rem;
-    font-weight: 800;
-    color: #fff;
-    letter-spacing: 0.04em;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-  .equity-ticker-tag .syn-sym {
-    color: var(--purple-neon, #bf5af2);
-  }
-
-  .equity-card-sub {
-    font-size: 0.72rem;
-    color: var(--text-dim);
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-  }
-
-  .equity-status-badge {
-    font-family: var(--font-mono);
-    font-size: 0.65rem;
-    font-weight: 700;
-    padding: 3px 8px;
-    border-radius: 3px;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    white-space: nowrap;
-  }
-  .equity-status-badge.solvent {
-    background: rgba(74, 222, 128, 0.12);
-    color: var(--green);
-    border: 1px solid rgba(74, 222, 128, 0.3);
-  }
-  .equity-status-badge.watch {
-    background: rgba(255, 184, 52, 0.15);
-    color: var(--amber);
-    border: 1px solid rgba(255, 184, 52, 0.4);
-  }
-  .equity-status-badge.squeeze {
-    background: rgba(217, 70, 239, 0.2);
-    color: #e879f9;
-    border: 1px solid #d946ef;
-    animation: beacon 1.8s infinite;
-  }
-  .equity-status-badge.critical {
-    background: rgba(248, 113, 113, 0.2);
-    color: var(--red);
-    border: 1px solid var(--red);
-    animation: haltPulse 1.2s infinite ease-in-out;
-  }
-
-  .equity-stat-grid {
+  .desk-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 8px;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 20px;
+    align-items: center;
+  }
+
+  .desk-step-label {
+    font-size: 11px;
     font-family: var(--font-mono);
-  }
-
-  .equity-stat-box {
-    background: rgba(0, 0, 0, 0.3);
-    padding: 6px 10px;
-    border-radius: 4px;
-    border: 1px solid rgba(255, 255, 255, 0.04);
-  }
-
-  .equity-stat-label {
-    font-size: 0.65rem;
-    color: var(--text-dim);
     text-transform: uppercase;
     letter-spacing: 0.05em;
-  }
-
-  .equity-stat-val {
-    font-size: 0.88rem;
-    font-weight: 700;
-    color: #fff;
-    margin-top: 1px;
-  }
-
-  /* Squeeze Risk Gauge */
-  .squeeze-gauge-wrap {
-    background: rgba(18, 14, 32, 0.8);
-    border: 1px solid rgba(191, 90, 242, 0.2);
-    border-radius: 5px;
-    padding: 10px;
-    margin-top: 4px;
-  }
-
-  .squeeze-gauge-head {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    font-family: var(--font-mono);
-    font-size: 0.7rem;
-    margin-bottom: 6px;
-  }
-
-  .squeeze-gauge-title {
     color: var(--text-dim);
-    font-weight: 600;
-    letter-spacing: 0.05em;
-    display: flex;
-    align-items: center;
-    gap: 5px;
-  }
-
-  .squeeze-meter-track {
-    width: 100%;
-    height: 8px;
-    background: rgba(255, 255, 255, 0.07);
-    border-radius: 4px;
-    overflow: hidden;
-    position: relative;
-  }
-
-  .squeeze-meter-fill {
-    height: 100%;
-    border-radius: 4px;
-    transition: width 0.4s ease, background 0.3s ease;
-  }
-
-  .squeeze-gauge-footer {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    font-family: var(--font-mono);
-    font-size: 0.68rem;
-    margin-top: 6px;
-    color: var(--text-dim);
-  }
-
-  /* Bilateral Stock Borrow Desk Stats Bar */
-  .borrow-desk-bar {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-    gap: 12px;
-    margin-bottom: 16px;
-    padding: 12px;
-    background: rgba(19, 17, 36, 0.6);
-    border: 1px solid rgba(191, 90, 242, 0.2);
-    border-radius: 6px;
-    font-family: var(--font-mono);
-  }
-
-  .borrow-desk-metric {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-
-  .borrow-desk-metric-label {
-    font-size: 0.65rem;
-    color: var(--text-dim);
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-  }
-
-  .borrow-desk-metric-val {
-    font-size: 0.95rem;
-    font-weight: 800;
-    color: #fff;
-  }
-
-  /* Sol Orbital Stations Grid */
-  .sol-stations-grid {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 12px;
-    margin-top: 14px;
     margin-bottom: 8px;
   }
 
-  @media (max-width: 800px) {
-    .sol-stations-grid {
-      grid-template-columns: repeat(2, 1fr);
-    }
-  }
-
-  .station-card {
-    background: var(--bg-card);
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    padding: 12px 14px;
+  .chip-group {
     display: flex;
-    flex-direction: column;
     gap: 6px;
-    transition: border-color 0.2s ease;
-  }
-
-  .station-card:hover {
-    border-color: rgba(255, 184, 52, 0.4);
-  }
-
-  .station-card-head {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-  }
-
-  .station-card-name {
-    font-family: var(--font-mono);
-    font-size: 0.82rem;
-    font-weight: 700;
-    color: #fff;
-    letter-spacing: 0.04em;
-  }
-
-  .station-card-status {
-    font-family: var(--font-mono);
-    font-size: 0.68rem;
-    padding: 2px 6px;
-    border-radius: 3px;
-    background: rgba(92, 225, 230, 0.08);
-    color: var(--cyan);
-    border: 1px solid rgba(92, 225, 230, 0.2);
-  }
-
-  .station-card-focus {
-    font-size: 0.72rem;
-    color: var(--text-dim);
-  }
-
-  .station-card-drift {
-    font-family: var(--font-mono);
-    font-size: 0.75rem;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    border-top: 1px solid rgba(38, 50, 72, 0.4);
-    padding-top: 6px;
-    margin-top: 2px;
-  }
-
-  .station-card {
-    cursor: pointer;
-  }
-
-  .station-card.active-station {
-    border-color: var(--cyan);
-    box-shadow: 0 0 12px rgba(92, 225, 230, 0.18);
-  }
-
-  .station-card-prices {
-    font-family: var(--font-mono);
-    font-size: 0.72rem;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    background: rgba(0, 0, 0, 0.35);
-    padding: 4px 8px;
-    border-radius: 4px;
-    border: 1px solid rgba(255, 255, 255, 0.05);
-    margin-top: 2px;
-  }
-
-  /* Market & Station Toolbar */
-  .market-toolbar {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
     flex-wrap: wrap;
-    gap: 10px;
-    margin-bottom: 12px;
   }
 
-  .tab-group {
-    display: flex;
-    gap: 4px;
-    background: var(--bg-card);
-    padding: 3px;
+  .order-chip, .order-station-chip, .size-chip {
+    background: var(--bg-surface);
     border: 1px solid var(--line);
-    border-radius: 5px;
-  }
-
-  .tab-btn {
-    background: transparent;
-    border: none;
-    color: var(--text-dim);
-    font-family: var(--font-mono);
-    font-size: 0.72rem;
+    color: var(--text-muted);
+    border-radius: var(--radius-md);
+    padding: 6px 12px;
+    font-size: 12px;
     font-weight: 600;
-    padding: 5px 10px;
-    border-radius: 3px;
+    font-family: var(--font-mono);
     cursor: pointer;
     transition: all 0.15s ease;
   }
 
-  .tab-btn:hover {
+  .order-chip:hover, .order-station-chip:hover, .size-chip:hover {
+    background: var(--bg-card-hover);
     color: #fff;
-    background: rgba(255, 255, 255, 0.05);
+    border-color: var(--line-highlight);
   }
 
-  .tab-btn.active {
-    background: var(--cyan);
-    color: var(--bg-deep);
-    font-weight: 700;
+  .order-chip.active, .order-station-chip.active, .size-chip.active {
+    background: var(--indigo-bg);
+    color: var(--indigo);
+    border-color: var(--indigo-border);
   }
 
-  .tab-btn.active.amber {
-    background: var(--amber);
-    color: var(--bg-deep);
-    font-weight: 700;
-  }
-
-  /* Orbital Transit Radar Scope */
-  .radar-canvas-wrap {
-    position: relative;
-    width: 100%;
-    background: #06080c;
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    overflow: hidden;
-  }
-
-  .radar-overlay-stats {
-    position: absolute;
-    top: 10px;
-    left: 14px;
-    font-family: var(--font-mono);
-    font-size: 0.72rem;
-    color: var(--text-dim);
-    pointer-events: none;
-    line-height: 1.4;
-  }
-
-  .manifest-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 0.78rem;
-    font-family: var(--font-mono);
-  }
-
-  .manifest-table th {
-    text-align: left;
-    padding: 6px 10px;
-    color: var(--text-dim);
-    font-weight: 500;
-    border-bottom: 1px solid var(--line);
-  }
-
-  .manifest-table td {
-    padding: 7px 10px;
-    border-bottom: 1px solid rgba(38, 50, 72, 0.4);
-    color: var(--text);
-  }
-
-  .status-tag {
-    display: inline-block;
-    padding: 1px 6px;
-    border-radius: 3px;
-    font-size: 0.68rem;
-    font-weight: 700;
-  }
-
-  .status-tag.in-transit {
-    background: rgba(255, 184, 52, 0.15);
-    color: var(--amber);
-    border: 1px solid rgba(255, 184, 52, 0.3);
-  }
-
-  .status-tag.docked {
-    background: rgba(92, 225, 230, 0.12);
-    color: var(--cyan);
-    border: 1px solid rgba(92, 225, 230, 0.25);
-  }
-
-  /* =========================================================================
-     Primary Terminal HUD Tab Navigation (Eliminating Vertical Scroll Marathon)
-     ========================================================================= */
-  .hud-nav-bar {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr) auto;
-    gap: 8px;
-    margin: 20px 0 16px 0;
-    padding: 6px;
-    background: rgba(16, 20, 29, 0.95);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
-    position: sticky;
-    top: 10px;
-    z-index: 100;
-  }
-
-  .hud-nav-btn {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    background: rgba(22, 28, 40, 0.6);
-    border: 1px solid rgba(38, 50, 72, 0.6);
-    border-radius: 6px;
-    padding: 10px 14px;
-    color: var(--text-dim);
-    cursor: pointer;
-    text-align: left;
-    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-    font-family: var(--font-mono);
-    user-select: none;
-  }
-
-  .hud-nav-btn:hover {
-    color: #fff;
-    background: rgba(38, 50, 72, 0.5);
-    border-color: rgba(92, 225, 230, 0.4);
-    transform: translateY(-1px);
-  }
-
-  .hud-nav-btn.active {
-    color: #fff;
-    background: linear-gradient(180deg, rgba(92, 225, 230, 0.15) 0%, rgba(22, 28, 40, 0.9) 100%);
-    border-color: var(--cyan);
-    box-shadow: 0 0 15px rgba(92, 225, 230, 0.25), inset 0 1px 0 rgba(92, 225, 230, 0.4);
-  }
-
-  .hud-nav-btn.active .hud-tab-title {
-    color: var(--cyan);
-    text-shadow: 0 0 10px rgba(92, 225, 230, 0.5);
-  }
-
-  .hud-nav-btn.active .hud-tab-badge {
-    background: var(--cyan);
-    color: var(--bg-deep);
-  }
-
-  .hud-tab-icon {
-    font-size: 1.2rem;
-    line-height: 1;
-    filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5));
-  }
-
-  .hud-tab-text {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-    flex: 1;
-  }
-
-  .hud-tab-title {
-    font-size: 0.82rem;
-    font-weight: 700;
-    letter-spacing: 0.05em;
-    color: var(--text);
-    transition: color 0.2s ease;
-  }
-
-  .hud-tab-desc {
-    font-size: 0.62rem;
-    color: var(--text-dim);
-    letter-spacing: 0.02em;
-    margin-top: 2px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .hud-tab-badge {
-    font-size: 0.65rem;
-    font-weight: 700;
-    padding: 2px 6px;
-    border-radius: 4px;
-    background: rgba(255, 255, 255, 0.08);
-    color: var(--text-dim);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-  }
-
-  .hud-nav-expand-btn {
-    padding: 10px 12px;
-  }
-
-  .hud-nav-expand-btn.active {
-    border-color: var(--amber);
-    background: linear-gradient(180deg, rgba(255, 184, 52, 0.15) 0%, rgba(22, 28, 40, 0.9) 100%);
-    box-shadow: 0 0 15px rgba(255, 184, 52, 0.25);
-  }
-
-  .hud-nav-expand-btn.active .hud-tab-title {
-    color: var(--amber);
-    text-shadow: 0 0 10px rgba(255, 184, 52, 0.5);
-  }
-
-  .hud-nav-expand-btn.active .hud-tab-badge {
-    background: var(--amber);
-    color: var(--bg-deep);
-  }
-
-  /* Responsive styling for Tablet / Mobile */
-  @media (max-width: 900px) {
-    .hud-nav-bar {
-      grid-template-columns: repeat(2, 1fr);
-      top: 4px;
-      gap: 6px;
-      padding: 4px;
-    }
-    .hud-nav-expand-btn {
-      grid-column: span 2;
-    }
-    .hud-tab-desc {
-      display: none;
-    }
-    .hud-nav-btn {
-      padding: 8px 10px;
-    }
-  }
-
-  @media (max-width: 480px) {
-    .hud-nav-bar {
-      grid-template-columns: 1fr 1fr;
-    }
-  }
-
-  /* Section tab pane display rules */
-  .terminal-section-pane {
-    display: none;
-    margin-top: 0 !important;
-    padding: 16px 0 32px 0;
-    animation: fadeInTab 0.25s cubic-bezier(0.16, 1, 0.3, 1);
-  }
-
-  .terminal-section-pane.active {
-    display: block;
-  }
-
-  /* In 'all' expanded mode, display every section */
-  body.hud-all-visible .terminal-section-pane {
-    display: block !important;
-    margin-top: 32px !important;
-  }
-  body.hud-all-visible .terminal-section-pane:first-of-type {
-    margin-top: 16px !important;
-  }
-
-  @keyframes fadeInTab {
-    from {
-      opacity: 0;
-      transform: translateY(6px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
-  }
-
-
-  /* ========================================================
-     Vapid Minimalist UI Overhaul ("Pew Pew, Arbitrage" / Number Go Up)
-     Issue #246
-     ======================================================== */
-  .commodity-ticker-ribbon {
-    margin-bottom: 8px;
-    border-color: rgba(16, 185, 129, 0.35);
-    background: #0d101a;
-  }
-  .commodity-ticker-item {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 0 16px;
-    font-size: 0.78rem;
-    font-family: var(--font-mono);
-    border-right: 1px solid var(--line);
-    white-space: nowrap;
-  }
-  .commodity-ticker-sym {
-    font-weight: 800;
-    color: #fff;
-    letter-spacing: 0.04em;
-  }
-  .commodity-ticker-price {
-    font-weight: 700;
-    color: var(--amber);
-  }
-  .commodity-ticker-delta {
-    font-size: 0.7rem;
-    font-weight: 600;
-    padding: 1px 5px;
-    border-radius: 3px;
-  }
-  .commodity-ticker-delta.positive {
-    background: rgba(16, 185, 129, 0.15);
-    color: #10b981;
-  }
-  .commodity-ticker-delta.neutral {
-    background: rgba(139, 153, 181, 0.12);
-    color: var(--text-dim);
-  }
-
-  /* Tactile Order Desk */
-  .tactile-order-desk {
-    background: #0f121d !important;
-    border: 1px solid rgba(16, 185, 129, 0.35) !important;
-    border-radius: 8px;
-    padding: 16px 20px;
-    margin-bottom: 20px;
-    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
-  }
   .btn-tactile-send-it {
     flex: 1;
     background: linear-gradient(135deg, #10b981 0%, #059669 100%);
     color: #ffffff;
-    border: 1px solid #34d399;
-    border-radius: 8px;
+    border: 1px solid rgba(52, 211, 153, 0.4);
+    border-radius: var(--radius-lg);
     padding: 14px 20px;
     cursor: pointer;
     display: flex;
@@ -1381,25 +636,25 @@
     align-items: center;
     justify-content: center;
     gap: 4px;
-    box-shadow: 0 4px 16px rgba(16, 185, 129, 0.35);
-    transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+    transition: all 0.15s ease;
+    box-shadow: 0 2px 10px rgba(16, 185, 129, 0.25);
   }
+
   .btn-tactile-send-it:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 6px 24px rgba(16, 185, 129, 0.55);
-    background: linear-gradient(135deg, #34d399 0%, #10b981 100%);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 16px rgba(16, 185, 129, 0.4);
   }
+
   .btn-tactile-send-it:active {
     transform: translateY(1px);
-    box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
   }
 
   .btn-tactile-panic-dump {
     flex: 1;
     background: linear-gradient(135deg, #f43f5e 0%, #e11d48 100%);
     color: #ffffff;
-    border: 1px solid #fb7185;
-    border-radius: 8px;
+    border: 1px solid rgba(251, 113, 133, 0.4);
+    border-radius: var(--radius-lg);
     padding: 14px 20px;
     cursor: pointer;
     display: flex;
@@ -1407,991 +662,1202 @@
     align-items: center;
     justify-content: center;
     gap: 4px;
-    box-shadow: 0 4px 16px rgba(244, 63, 94, 0.35);
-    transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
-  }
-  .btn-tactile-panic-dump:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 6px 24px rgba(244, 63, 94, 0.55);
-    background: linear-gradient(135deg, #fb7185 0%, #f43f5e 100%);
-  }
-  .btn-tactile-panic-dump:active {
-    transform: translateY(1px);
-    box-shadow: 0 2px 8px rgba(244, 63, 94, 0.3);
+    transition: all 0.15s ease;
+    box-shadow: 0 2px 10px rgba(244, 63, 94, 0.25);
   }
 
-  .order-chip, .order-station-chip, .size-chip {
-    background: rgba(255, 255, 255, 0.04);
+  .btn-tactile-panic-dump:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 16px rgba(244, 63, 94, 0.4);
+  }
+
+  .btn-tactile-panic-dump:active {
+    transform: translateY(1px);
+  }
+
+  /* Market Floor Tabs */
+  .market-toolbar {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+
+  .tab-group {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .tab-btn {
+    background: var(--bg-surface);
     border: 1px solid var(--line);
     color: var(--text-dim);
-    padding: 5px 12px;
-    font-size: 0.72rem;
+    padding: 6px 12px;
+    border-radius: var(--radius-md);
+    font-size: 12px;
+    font-weight: 500;
     font-family: var(--font-mono);
-    border-radius: 4px;
     cursor: pointer;
     transition: all 0.15s ease;
   }
-  .order-chip.active, .order-station-chip.active, .size-chip.active {
-    background: rgba(16, 185, 129, 0.18);
-    border-color: #10b981;
-    color: #10b981;
-    font-weight: 700;
+
+  .tab-btn:hover {
+    color: var(--text);
+    border-color: var(--line-highlight);
   }
-  .order-chip:hover, .order-station-chip:hover, .size-chip:hover {
-    border-color: #5ce1e6;
+
+  .tab-btn.active {
+    background: var(--bg-card);
+    color: #fff;
+    border-color: var(--line-highlight);
+    font-weight: 600;
+  }
+
+  .tab-btn.amber.active {
+    color: var(--amber);
+    background: var(--amber-bg);
+    border-color: var(--amber-border);
+  }
+
+  /* Progressive Disclosure Accordions */
+  .drawer-container {
+    background: var(--bg-surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    padding: 12px 16px;
+    margin-bottom: 16px;
+  }
+
+  .drawer-toggle-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .drawer-toggle-btn {
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    color: var(--text-muted);
+    font-size: 11px;
+    font-family: var(--font-mono);
+    padding: 4px 8px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+  }
+
+  .drawer-toggle-btn:hover {
+    color: #fff;
+    border-color: var(--line-highlight);
+  }
+
+  .progressive-drawer {
+    margin-top: 12px;
+    transition: all 0.2s ease;
+  }
+
+  .progressive-drawer.collapsed {
+    display: none;
+  }
+
+  /* Market Grid (Book & Tape) */
+  .market-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+
+  @media (max-width: 900px) {
+    .market-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  /* Modern Depth Table */
+  .depth-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+    font-family: var(--font-mono);
+    margin-bottom: 12px;
+  }
+
+  .depth-table th {
+    text-align: left;
+    font-size: 11px;
+    color: var(--text-dim);
+    font-weight: 500;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .depth-table td {
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--line-subtle);
+  }
+
+  .ask-row td {
+    color: var(--rose);
+  }
+
+  .bid-row td {
+    color: var(--emerald);
+  }
+
+  .spread-bar {
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    padding: 6px 12px;
+    text-align: center;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--amber);
+    margin: 10px 0;
+  }
+
+  /* Trade Tape */
+  .tape-feed {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 480px;
+    overflow-y: auto;
+  }
+
+  .tape-tick {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 10px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-card);
+    border: 1px solid var(--line-subtle);
+    font-size: 12px;
+    font-family: var(--font-mono);
+  }
+
+  .tape-tick.tick-bid {
+    border-left: 3px solid var(--emerald);
+  }
+
+  .tape-tick.tick-ask {
+    border-left: 3px solid var(--rose);
+  }
+
+  .tape-time {
+    color: var(--text-dim);
+    font-size: 11px;
+  }
+
+  .tape-station {
+    color: var(--text-muted);
+    font-size: 11px;
+  }
+
+  /* Leaderboard Standings Table */
+  .table-responsive-wrapper {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .leaderboard-tbl {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    min-width: 650px;
+  }
+
+  .leaderboard-tbl th {
+    text-align: left;
+    font-size: 11px;
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-dim);
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .leaderboard-tbl td {
+    padding: 14px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .leaderboard-tbl tr:hover td {
+    background: var(--bg-card-hover);
+  }
+
+  .rank-tag {
+    font-family: var(--font-mono);
+    font-weight: 700;
+    font-size: 14px;
+    color: var(--amber);
+  }
+
+  .agent-name {
+    font-weight: 600;
+    font-size: 14px;
     color: #fff;
   }
 
-  /* Progressive Disclosure Drawer */
-  .progressive-drawer {
-    transition: max-height 0.25s ease-out, opacity 0.2s ease-out;
+  .agent-role {
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  .alloc-track {
+    width: 100%;
+    height: 8px;
+    background: var(--bg-deep);
+    border-radius: 9999px;
+    overflow: hidden;
+    display: flex;
+    margin-top: 4px;
+  }
+
+  .alloc-cr-fill {
+    background: var(--amber);
+    height: 100%;
+  }
+
+  .alloc-frag-fill {
+    background: var(--cyan);
+    height: 100%;
+  }
+
+  /* Corporate Warfare Equities */
+  .equity-cards-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+
+  .equity-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .equity-card:hover {
+    border-color: var(--line-highlight);
+  }
+
+  .equity-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .equity-card-name {
+    font-weight: 700;
+    font-size: 15px;
+    color: #fff;
+  }
+
+  .equity-status-badge {
+    font-size: 10px;
+    font-family: var(--font-mono);
+    padding: 2px 6px;
+    border-radius: var(--radius-sm);
+    font-weight: 600;
+  }
+
+  .equity-status-badge.solvent {
+    background: var(--emerald-bg);
+    color: var(--emerald);
+    border: 1px solid var(--emerald-border);
+  }
+
+  .equity-stats-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    font-family: var(--font-mono);
+  }
+
+  .equity-stat-lbl {
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+
+  .equity-stat-val {
+    font-size: 13px;
+    font-weight: 600;
+    color: #fff;
+  }
+
+  .squeeze-meter-track {
+    width: 100%;
+    height: 6px;
+    background: var(--bg-deep);
+    border-radius: 9999px;
     overflow: hidden;
   }
-  .progressive-drawer.collapsed {
-    max-height: 0 !important;
-    opacity: 0;
-    margin: 0 !important;
-    padding: 0 !important;
-    pointer-events: none;
+
+  .squeeze-meter-fill {
+    height: 100%;
+    transition: width 0.3s ease;
   }
-  .drawer-toggle-btn {
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid var(--line);
-    color: var(--text-dim);
+
+  /* Manifest and Generic Tables */
+  .manifest-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
     font-family: var(--font-mono);
-    font-size: 0.7rem;
-    padding: 3px 8px;
-    border-radius: 4px;
-    cursor: pointer;
-    transition: all 0.15s ease;
-  }
-  .drawer-toggle-btn:hover {
-    color: var(--text);
-    border-color: var(--cyan);
   }
 
+  .manifest-table th {
+    text-align: left;
+    padding: 8px 10px;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--line);
+  }
+
+  .manifest-table td {
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--line-subtle);
+  }
+
+  .arb-matrix-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+    font-family: var(--font-mono);
+  }
+
+  .arb-matrix-table th {
+    text-align: left;
+    padding: 8px 10px;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--line);
+  }
+
+  .arb-matrix-table td {
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--line-subtle);
+  }
+
+  /* Badges & Tags */
+  .status-tag {
+    display: inline-block;
+    padding: 2px 6px;
+    border-radius: var(--radius-sm);
+    font-size: 11px;
+    font-family: var(--font-mono);
+    background: var(--bg-card);
+    color: var(--text-dim);
+    border: 1px solid var(--line);
+  }
+
+  .status-tag.active {
+    background: var(--emerald-bg);
+    color: var(--emerald);
+    border-color: var(--emerald-border);
+  }
+
+  .status-tag.neg {
+    background: var(--rose-bg);
+    color: var(--rose);
+    border-color: var(--rose-border);
+  }
+
+  .luld-nominal-badge {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    padding: 2px 6px;
+    border-radius: var(--radius-sm);
+    background: var(--emerald-bg);
+    color: var(--emerald);
+    border: 1px solid var(--emerald-border);
+  }
+
+  .halt-alert-badge {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    padding: 2px 6px;
+    border-radius: var(--radius-sm);
+    background: var(--rose-bg);
+    color: var(--rose);
+    border: 1px solid var(--rose-border);
+  }
+
+  .subhead {
+    font-size: 13px;
+    color: var(--text-muted);
+    margin-bottom: 16px;
+  }
+
+  .code-kw {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--cyan);
+    background: var(--cyan-bg);
+    padding: 1px 4px;
+    border-radius: var(--radius-sm);
+  }
 </style>
-</head>
-<body>
-<div class="scanlines"></div>
-<div class="wrap">
 
-  <header>
-    <div class="terminal-brand">
-      <a href="/" class="nav-back">&larr; STATION OVERVIEW</a>
-      <a href="/orrery" class="nav-back" style="color: #c084fc; border-color: rgba(168, 85, 247, 0.4); background: rgba(168, 85, 247, 0.08);">🌌 ORRERY</a>
-      <a href="/orrery-3d" class="nav-back" style="color: #5ce1e6; border-color: rgba(92, 225, 230, 0.4); background: rgba(92, 225, 230, 0.08);">🛸 3D ORRERY</a>
-      <a href="/patch-notes" class="nav-back" style="color: var(--amber); border-color: var(--amber-dim); background: rgba(255, 184, 52, 0.08);">&bull; PATCH NOTES</a>
-      <h1>AGORA // REQUISITION TERMINAL</h1>
-      <span class="station-badge">16 Psyche (2.92 AU)</span>
+</head>
+
+<body>
+  <!-- Top Navigation & Institutional App Bar -->
+  <header class="top-app-bar">
+    <div class="brand-group">
+      <a href="/index.html" class="brand-logo">
+        <div class="brand-icon">A</div>
+        <span class="brand-title">AGORA</span>
+      </a>
+      <span class="brand-subtitle">INSTITUTIONAL REQUISITION TERMINAL</span>
+      <nav class="nav-pills">
+        <a href="/index.html" class="nav-pill-link">Overview</a>
+        <a href="/orrery.html" class="nav-pill-link">Orrery</a>
+        <a href="/orrery-3d.html" class="nav-pill-link">3D ORRERY (THREE.JS)</a>
+        <a href="/patch-notes.html" class="nav-pill-link">Patch Notes</a>
+      </nav>
     </div>
-    <div class="header-telemetry">
-      <div class="telemetry-indicator">
-        <span class="pulse-node" id="referee-pulse-node"></span>
-        <span id="referee-status-text">REFEREE: LIVE</span>
+
+    <div class="top-meta-group">
+      <div class="telemetry-status-pill">
+        <span class="pulse-dot" id="referee-pulse-node"></span>
+        <span id="referee-status-text">LIVE TELEMETRY // SYNCHRONIZED</span>
       </div>
-      <button id="sim-mode-toggle" onclick="toggleSimulationMode()" style="background: rgba(255, 184, 52, 0.1); border: 1px solid var(--amber); color: var(--amber); font-family: var(--font-mono); font-size: 0.72rem; padding: 4px 10px; border-radius: 4px; cursor: pointer; transition: all 0.2s ease;">
-        MODE: SIMULATED MID-GAME (RND 42)
-      </button>
-      <div style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim);">
-        SEQ: <span id="header-seq-tag" style="color: var(--amber);">#--</span>
+      <div class="telemetry-seq-pill" id="sim-mode-toggle" style="cursor: pointer;" onclick="toggleSimMode()">
+        SIMULATION
+      </div>
+      <div class="telemetry-seq-pill" id="header-seq-tag">
+        SEQ: #--
       </div>
     </div>
   </header>
 
-  <!-- GalNet Breaking News Wire & Sol Orbital Stations -->
-  <div class="galnet-marquee-wrap">
-    <div class="galnet-badge">
-      <span class="pulse-node" style="width: 6px; height: 6px; background: #080a0f;"></span>
-      GALNET WIRE
-    </div>
-    <div class="galnet-ticker-text" id="galnet-wire-text">
-      <span class="meta">[ROUND #-- // 16 PSYCHE]</span> MONITORING SOL INTER-STATION WIRE FREQUENCIES...
-    </div>
-  </div>
+  <main class="terminal-main-content">
+    <!-- Institutional Ticker & Corporate Wire Strip -->
+    <div class="corporate-strip">
+      <div class="galnet-wire-container">
+        <span class="galnet-wire-tag">CORPORATE WIRE</span>
+        <div class="galnet-ticker-text" id="galnet-wire-text">
+          Syncing continuous GalNet institutional advisory wire...
+        </div>
+      </div>
 
-  <!-- Sol 5-Commodity Ticker Ribbon (Issue #246) -->
-  <div class="equity-ticker-ribbon commodity-ticker-ribbon" id="commodity-ticker-ribbon">
-    <div class="equity-ticker-badge" style="background: rgba(16, 185, 129, 0.15); border-color: rgba(16, 185, 129, 0.4); color: #10b981;">
-      <span class="pulse-node" style="background: #10b981;"></span>
-      SOL // COMMODITIES
-    </div>
-    <div class="equity-ticker-track">
-      <div class="equity-ticker-content" id="commodity-ticker-content">
-        <div class="commodity-ticker-item">
-          <span class="commodity-ticker-sym">ORE</span>
-          <span class="commodity-ticker-price" id="ribbon-price-ore">42.0 CR</span>
-          <span class="commodity-ticker-delta positive" id="ribbon-delta-ore">+14.2%</span>
-          <span class="equity-ticker-cap" id="ribbon-tag-ore">CRUSHING MARGINS</span>
+      <div class="ticker-ribbon-bar">
+        <!-- Commodity Ticker (Sol 5 + FRAG) -->
+        <div class="equity-ticker-ribbon commodity-ticker-ribbon" id="commodity-ticker-ribbon">
+          <div class="equity-ticker-content" id="commodity-ticker-content">
+            <span class="commodity-ticker-item"><strong class="commodity-ticker-sym">ORE</strong> <span class="commodity-ticker-price">-- CR</span> <span class="commodity-ticker-delta neutral">0.0%</span></span>
+            <span class="commodity-ticker-item"><strong class="commodity-ticker-sym">WATER</strong> <span class="commodity-ticker-price">-- CR</span> <span class="commodity-ticker-delta neutral">0.0%</span></span>
+            <span class="commodity-ticker-item"><strong class="commodity-ticker-sym">FOOD</strong> <span class="commodity-ticker-price">-- CR</span> <span class="commodity-ticker-delta neutral">0.0%</span></span>
+            <span class="commodity-ticker-item"><strong class="commodity-ticker-sym">FUEL</strong> <span class="commodity-ticker-price">-- CR</span> <span class="commodity-ticker-delta neutral">0.0%</span></span>
+            <span class="commodity-ticker-item"><strong class="commodity-ticker-sym">MACHINERY</strong> <span class="commodity-ticker-price">-- CR</span> <span class="commodity-ticker-delta neutral">0.0%</span></span>
+            <span class="commodity-ticker-item"><strong class="commodity-ticker-sym">FRAG</strong> <span class="commodity-ticker-price">-- CR</span> <span class="commodity-ticker-delta neutral">0.0%</span></span>
+          </div>
         </div>
-        <div class="commodity-ticker-item">
-          <span class="commodity-ticker-sym">WATER</span>
-          <span class="commodity-ticker-price" id="ribbon-price-water">18.5 CR</span>
-          <span class="commodity-ticker-delta positive" id="ribbon-delta-water">+8.1%</span>
-          <span class="equity-ticker-cap" id="ribbon-tag-water">UNREGULATED ICE</span>
-        </div>
-        <div class="commodity-ticker-item">
-          <span class="commodity-ticker-sym">FOOD</span>
-          <span class="commodity-ticker-price" id="ribbon-price-food">25.0 CR</span>
-          <span class="commodity-ticker-delta neutral" id="ribbon-delta-food">+0.0%</span>
-          <span class="equity-ticker-cap" id="ribbon-tag-food">SYNTHETIC RATIONING</span>
-        </div>
-        <div class="commodity-ticker-item">
-          <span class="commodity-ticker-sym">FUEL</span>
-          <span class="commodity-ticker-price" id="ribbon-price-fuel">32.4 CR</span>
-          <span class="commodity-ticker-delta positive" id="ribbon-delta-fuel">+5.6%</span>
-          <span class="equity-ticker-cap" id="ribbon-tag-fuel">PRESSURIZED EXPANSION</span>
-        </div>
-        <div class="commodity-ticker-item">
-          <span class="commodity-ticker-sym">MACHINERY</span>
-          <span class="commodity-ticker-price" id="ribbon-price-machinery">95.0 CR</span>
-          <span class="commodity-ticker-delta positive" id="ribbon-delta-machinery">+22.4%</span>
-          <span class="equity-ticker-cap" id="ribbon-tag-machinery">CAPITAL DOMINANCE</span>
-        </div>
-      </div>
-    </div>
-  </div>
 
-  <!-- Syndicate Corporate Equity Ticker Ribbon (Issue #37) -->
-  <div class="equity-ticker-ribbon" id="equity-ticker-ribbon">
-    <div class="equity-ticker-badge">
-      <span class="pulse-node purple"></span>
-      SYN // EQUITY TAPE
-    </div>
-    <div class="equity-ticker-track">
-      <div class="equity-ticker-content" id="equity-ticker-content">
-        <div class="equity-ticker-item">
-          <span class="equity-ticker-sym">$APEX</span>
-          <span class="equity-ticker-price" id="ribbon-price-zero">-- CR</span>
-          <span class="equity-ticker-delta neutral" id="ribbon-delta-zero">--%</span>
-          <span class="equity-ticker-cap" id="ribbon-cap-zero">CAP: -- CR</span>
+        <!-- Syndicate Equities Ticker -->
+        <div class="equity-ticker-ribbon" id="equity-ticker-ribbon">
+          <div class="equity-ticker-content" id="equity-ticker-content">
+            <span style="color: var(--text-dim); font-size: 11px; font-family: var(--font-mono);">SYNCING SYNDICATE EQUITIES...</span>
+          </div>
         </div>
-        <div class="equity-ticker-item">
-          <span class="equity-ticker-sym">$SOLV</span>
-          <span class="equity-ticker-price" id="ribbon-price-amos">-- CR</span>
-          <span class="equity-ticker-delta neutral" id="ribbon-delta-amos">--%</span>
-          <span class="equity-ticker-cap" id="ribbon-cap-amos">CAP: -- CR</span>
-        </div>
-        <div class="equity-ticker-item">
-          <span class="equity-ticker-sym">$BAL</span>
-          <span class="equity-ticker-price" id="ribbon-price-marvin">-- CR</span>
-          <span class="equity-ticker-delta neutral" id="ribbon-delta-marvin">--%</span>
-          <span class="equity-ticker-cap" id="ribbon-cap-marvin">CAP: -- CR</span>
-        </div>
-        <div class="equity-ticker-item">
-          <span class="equity-ticker-sym">$ZNTH</span>
-          <span class="equity-ticker-price" id="ribbon-price-aerial">-- CR</span>
-          <span class="equity-ticker-delta neutral" id="ribbon-delta-aerial">--%</span>
-          <span class="equity-ticker-cap" id="ribbon-cap-aerial">CAP: -- CR</span>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div class="sol-stations-grid">
-    <div class="station-card active-station" id="station-card-ceres" onclick="selectStation('ceres')">
-      <div class="station-card-head">
-        <span class="station-card-name">CERES // PIAZZI</span>
-        <span class="station-card-status" id="drift-status-ceres">NOMINAL</span>
-      </div>
-      <div class="station-card-focus">Cryo-Propellant / Ore Extraction</div>
-      <div class="station-card-drift">
-        <span style="color: var(--text-dim);">FUEL DRIFT</span>
-        <span id="drift-val-ceres" style="color: var(--text);">0.0%</span>
-      </div>
-      <div class="station-card-prices">
-        <span>FRAG: <strong id="price-frag-ceres" style="color: var(--text);">--</strong> CR</span>
-        <span>FUEL: <strong id="price-fuel-ceres" style="color: var(--amber);">--</strong> CR</span>
       </div>
     </div>
 
-    <div class="station-card" id="station-card-mars" onclick="selectStation('mars')">
-      <div class="station-card-head">
-        <span class="station-card-name">MARS // ARCADIA</span>
-        <span class="station-card-status" id="drift-status-mars">NOMINAL</span>
-      </div>
-      <div class="station-card-focus">Orbital Shipyards & Foundries</div>
-      <div class="station-card-drift">
-        <span style="color: var(--text-dim);">FRAG DRIFT</span>
-        <span id="drift-val-mars" style="color: var(--text);">0.0%</span>
-      </div>
-      <div class="station-card-prices">
-        <span>FRAG: <strong id="price-frag-mars" style="color: var(--text);">--</strong> CR</span>
-        <span>FUEL: <strong id="price-fuel-mars" style="color: var(--amber);">--</strong> CR</span>
-      </div>
-    </div>
-
-    <div class="station-card" id="station-card-luna" onclick="selectStation('luna')">
-      <div class="station-card-head">
-        <span class="station-card-name">LUNA // SHACKLETON</span>
-        <span class="station-card-status" id="drift-status-luna">NOMINAL</span>
-      </div>
-      <div class="station-card-focus">He-3 Collectors / Lunar Rim</div>
-      <div class="station-card-drift">
-        <span style="color: var(--text-dim);">FUEL DRIFT</span>
-        <span id="drift-val-luna" style="color: var(--text);">0.0%</span>
-      </div>
-      <div class="station-card-prices">
-        <span>FRAG: <strong id="price-frag-luna" style="color: var(--text);">--</strong> CR</span>
-        <span>FUEL: <strong id="price-fuel-luna" style="color: var(--amber);">--</strong> CR</span>
-      </div>
-    </div>
-
-    <div class="station-card" id="station-card-earth" onclick="selectStation('earth')">
-      <div class="station-card-head">
-        <span class="station-card-name">EARTH // LEO ORBIT</span>
-        <span class="station-card-status" id="drift-status-earth">NOMINAL</span>
-      </div>
-      <div class="station-card-focus">Orbital Defense / Salvage Depot</div>
-      <div class="station-card-drift">
-        <span style="color: var(--text-dim);">FRAG DRIFT</span>
-        <span id="drift-val-earth" style="color: var(--text);">0.0%</span>
-      </div>
-      <div class="station-card-prices">
-        <span>FRAG: <strong id="price-frag-earth" style="color: var(--text);">--</strong> CR</span>
-        <span>FUEL: <strong id="price-fuel-earth" style="color: var(--amber);">--</strong> CR</span>
-      </div>
-    </div>
-  </div>
-
-  <!-- Primary Terminal HUD Navigation (Eliminating Vertical Scroll Marathon) -->
-  <nav class="hud-nav-bar" id="hud-nav-bar" role="tablist" aria-label="Terminal Views">
-    <button class="hud-nav-btn active" id="tab-btn-leaderboard" onclick="switchHudTab('leaderboard-section')" role="tab" aria-selected="true" aria-controls="leaderboard-section">
-      <span class="hud-tab-icon">📊</span>
-      <div class="hud-tab-text">
-        <span class="hud-tab-title">STANDINGS</span>
-        <span class="hud-tab-desc">MTM NAV &amp; FLEET ROSTER</span>
-      </div>
-      <span class="hud-tab-badge">1</span>
-    </button>
-    <button class="hud-nav-btn" id="tab-btn-orbital-radar" onclick="switchHudTab('orbital-radar-section')" role="tab" aria-selected="false" aria-controls="orbital-radar-section">
-      <span class="hud-tab-icon">🛰️</span>
-      <div class="hud-tab-text">
-        <span class="hud-tab-title">SOL RADAR</span>
-        <span class="hud-tab-desc">2D TRANSIT VECTORS</span>
-      </div>
-      <span class="hud-tab-badge">2</span>
-    </button>
-    <button class="hud-nav-btn" id="tab-btn-market" onclick="switchHudTab('market-section')" role="tab" aria-selected="false" aria-controls="market-section">
-      <span class="hud-tab-icon">📈</span>
-      <div class="hud-tab-text">
-        <span class="hud-tab-title">MARKET FLOOR</span>
-        <span class="hud-tab-desc">L2 DEPTH &amp; AMM POOLS</span>
-      </div>
-      <span class="hud-tab-badge">3</span>
-    </button>
-    <button class="hud-nav-btn" id="tab-btn-corporate-warfare" onclick="switchHudTab('corporate-warfare-section')" role="tab" aria-selected="false" aria-controls="corporate-warfare-section">
-      <span class="hud-tab-icon">⚔️</span>
-      <div class="hud-tab-text">
-        <span class="hud-tab-title">CORP WARFARE</span>
-        <span class="hud-tab-desc">EQUITIES &amp; SALVAGE</span>
-      </div>
-      <span class="hud-tab-badge">4</span>
-    </button>
-    <button class="hud-nav-btn hud-nav-expand-btn" id="tab-btn-all" onclick="switchHudTab('all')" role="tab" aria-selected="false" title="Expand All Sections (Scrollable View)">
-      <span class="hud-tab-icon">📑</span>
-      <div class="hud-tab-text">
-        <span class="hud-tab-title">ALL CARDS</span>
-        <span class="hud-tab-desc">EXPANDED VIEW</span>
-      </div>
-      <span class="hud-tab-badge">A</span>
-    </button>
-  </nav>
-
-  <!-- Section 1: Live Mark-to-Market Leaderboard -->
-  <section id="leaderboard-section" class="terminal-section-pane active">
-    <h2>Requisition Standings // Live Mark-to-Market</h2>
-    <p class="subhead">
-      Real-time portfolio valuation refereed continuously. Liquid Credits (<span class="code-kw">CR</span>) plus resting Debris Fragments (<span class="code-kw">FRAG</span>) valued at last traded price.
-    </p>
-
-    <div class="terminal-card">
-      <div class="terminal-card-meta">
-        <div class="telemetry-indicator">
-          <span class="pulse-node"></span>
-          <span>LEDGER STREAM: ZERO-SUM CONSERVED</span>
+    <!-- 4-Station Modern Overview Cards -->
+    <div class="station-overview-strip">
+      <div class="station-card active-station" id="station-card-ceres" onclick="selectStation('ceres')">
+        <div class="station-card-header">
+          <span class="station-card-title">CERES // PIAZZI</span>
+          <span class="station-card-status" id="status-badge-ceres">NOMINAL</span>
         </div>
-        <div style="font-family: var(--font-mono); font-size: 0.78rem; color: var(--text-dim);">
+        <div class="station-card-sub">Fuel Depot &amp; Ore Extraction Hub</div>
+        <div class="station-card-footer">
+          <span>FRAG: <strong id="ceres-frag-price" style="color: #fff;">--</strong></span>
+          <span>FUEL: <strong id="ceres-fuel-price" style="color: var(--amber);">--</strong></span>
+        </div>
+      </div>
+
+      <div class="station-card" id="station-card-mars" onclick="selectStation('mars')">
+        <div class="station-card-header">
+          <span class="station-card-title">MARS // ARCADIA</span>
+          <span class="station-card-status" id="status-badge-mars">NOMINAL</span>
+        </div>
+        <div class="station-card-sub">Orbital Shipyards &amp; Heavy Foundries</div>
+        <div class="station-card-footer">
+          <span>FRAG: <strong id="mars-frag-price" style="color: #fff;">--</strong></span>
+          <span>FUEL: <strong id="mars-fuel-price" style="color: var(--amber);">--</strong></span>
+        </div>
+      </div>
+
+      <div class="station-card" id="station-card-luna" onclick="selectStation('luna')">
+        <div class="station-card-header">
+          <span class="station-card-title">LUNA // SHACKLETON</span>
+          <span class="station-card-status" id="status-badge-luna">NOMINAL</span>
+        </div>
+        <div class="station-card-sub">He-3 Collectors &amp; Volatiles Facility</div>
+        <div class="station-card-footer">
+          <span>FRAG: <strong id="luna-frag-price" style="color: #fff;">--</strong></span>
+          <span>FUEL: <strong id="luna-fuel-price" style="color: var(--amber);">--</strong></span>
+        </div>
+      </div>
+
+      <div class="station-card" id="station-card-earth" onclick="selectStation('earth')">
+        <div class="station-card-header">
+          <span class="station-card-title">EARTH // LEO ORBIT</span>
+          <span class="station-card-status" id="status-badge-earth">NOMINAL</span>
+        </div>
+        <div class="station-card-sub">Planetary Defense &amp; Salvage Depot</div>
+        <div class="station-card-footer">
+          <span>FRAG: <strong id="earth-frag-price" style="color: #fff;">--</strong></span>
+          <span>FUEL: <strong id="earth-fuel-price" style="color: var(--amber);">--</strong></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main Navigation Bar with explicit button IDs for HUD_TABS matching -->
+    <nav class="hud-nav-bar" id="hud-nav-bar" role="tablist" aria-label="Terminal Views">
+      <button class="hud-nav-btn active" id="tab-btn-leaderboard" data-section="leaderboard-section" onclick="switchHudTab('leaderboard-section')">
+        <span>STANDINGS</span>
+        <span class="nav-btn-badge">MTM NAV</span>
+      </button>
+      <button class="hud-nav-btn" id="tab-btn-orbital-radar" data-section="orbital-radar-section" onclick="switchHudTab('orbital-radar-section')">
+        <span>2D RADAR</span>
+        <span class="nav-btn-badge">TRANSIT</span>
+      </button>
+      <button class="hud-nav-btn" id="tab-btn-market" data-section="market-section" onclick="switchHudTab('market-section')">
+        <span>MARKET FLOOR</span>
+        <span class="nav-btn-badge">L2 BOOK</span>
+      </button>
+      <button class="hud-nav-btn" id="tab-btn-corporate-warfare" data-section="corporate-warfare-section" onclick="switchHudTab('corporate-warfare-section')">
+        <span>CORP WARFARE</span>
+        <span class="nav-btn-badge">EQUITY</span>
+      </button>
+      <button class="hud-nav-btn" id="tab-btn-all" data-section="all" onclick="switchHudTab('all')">
+        <span>ALL VIEWS</span>
+        <span class="nav-btn-badge">FULL</span>
+      </button>
+    </nav>
+
+    <!-- Section 1: Standings // Requisition Standings & Mark-to-Market -->
+    <section id="leaderboard-section" class="terminal-section-pane active">
+      <div class="section-header-block">
+        <div>
+          <h2 class="section-title">Requisition Standings // Continuous Fiduciary Audit</h2>
+          <p class="section-subtitle">Real-time syndicate net worth evaluated against active commodity marks. Counterparty exposure disclaimed.</p>
+        </div>
+        <div style="font-size: 11px; font-family: var(--font-mono); color: var(--text-dim);">
           LAST TICK: <span id="telemetry-tick" style="color: var(--text);">CONNECTING...</span>
         </div>
       </div>
 
-      <div class="leaderboard-tbl-wrap">
-        <table class="leaderboard-tbl">
-          <thead>
-            <tr>
-              <th style="width: 60px;">Rank</th>
-              <th>Syndicate / Agent</th>
-              <th>Net Worth</th>
-              <th>Liquid CR</th>
-              <th>Inventory</th>
-              <th style="min-width: 160px;">Portfolio Allocation</th>
-            </tr>
-          </thead>
-          <tbody id="leaderboard-rows">
-            <tr><td colspan="6" style="color: var(--text-dim); text-align: center; padding: 20px;">Connecting to referee ledger...</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-  </section>
-
-  <!-- Section 2: Sol System Orbital Orrery & Transit Radar -->
-  <section id="orbital-radar-section" class="terminal-section-pane">
-    <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 12px; margin-bottom: 6px;">
-      <div>
-        <h2>Sol Turntable Scope // Sol System // Orbital Orrery &amp; Transit Radar</h2>
-        <p class="subhead">
-          Real-time vector turntable scope plotting orbital bodies (Earth, Luna, Mars, Ceres) and autonomous hauler trajectories. Navigation disclaims kinetic liability for unscheduled gravitational intercepts occurring within designated flight corridors (<span class="code-kw">GET /stations/locations</span>).
-        </p>
-      </div>
-      <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px;">
-        <a href="/orrery" class="nav-back" style="color: #c084fc; border-color: rgba(168, 85, 247, 0.4); background: rgba(168, 85, 247, 0.12);">
-          🌌 2D RADAR &rarr;
-        </a>
-        <a href="/orrery-3d" class="nav-back" style="color: #5ce1e6; border-color: rgba(92, 225, 230, 0.4); background: rgba(92, 225, 230, 0.12);">
-          🛸 3D ORRERY (THREE.JS) &rarr;
-        </a>
-      </div>
-    </div>
-
-    <div class="terminal-card">
-      <div class="terminal-card-meta">
-        <div class="telemetry-indicator cyan">
-          <span class="pulse-node cyan"></span>
-          <span>ORBITAL VECTORS // SOL TURNTABLE SCOPE</span>
-        </div>
-        <span style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim);" id="radar-epoch-tag">SOL EPOCH: LIVE</span>
-      </div>
-
-      <div class="radar-canvas-wrap">
-        <canvas id="orbital-radar-canvas" width="1140" height="320" style="display: block; width: 100%; height: 320px;"></canvas>
-        <div class="radar-overlay-stats">
-          <div style="color: var(--cyan); font-weight: 700;">SOL RADAR // 2D VECTOR SCOPE</div>
-          <div id="radar-active-freighters">IN TRANSIT: 0 VESSELS</div>
-        </div>
-      </div>
-
-      <!-- Planetary Alignment Corridors & Hazard Telemetry -->
-      <div style="margin-top: 16px; margin-bottom: 16px;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-          <div style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim); text-transform: uppercase;">
-            PLANETARY ALIGNMENT CORRIDORS &amp; ORBITAL TRANSIT RUSH TELEMETRY
-          </div>
-          <div style="font-family: var(--font-mono); font-size: 0.7rem; color: var(--amber);">
-            CORRIDOR AUDIT: NON-CONSENSUAL ASSET REBALANCING (25 CR TOLL) // 5% SPONTANEOUS MASS DISSIPATION
-          </div>
-        </div>
-        <div class="equity-grid" id="orbital-windows-grid">
-          <!-- Populated dynamically via pollOrbitalWindows() -->
-          <div style="grid-column: 1 / -1; text-align: center; color: var(--text-dim); padding: 12px; font-family: var(--font-mono); font-size: 0.8rem;">
-            Loading orbital window telemetry...
-          </div>
-        </div>
-      </div>
-
-      <div style="margin-top: 14px;">
-        <div style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim); margin-bottom: 8px;">
-          ACTIVE ORBITAL FLIGHT MANIFEST &amp; ESCROW TELEMETRY
-        </div>
-        <div style="overflow-x: auto;">
-          <table class="manifest-table">
+      <div class="terminal-card" style="padding: 0; overflow: hidden;">
+        <div class="table-responsive-wrapper">
+          <table class="leaderboard-tbl">
             <thead>
               <tr>
-                <th>Transit ID</th>
-                <th>Syndicate / Vessel</th>
-                <th>Flight Route</th>
-                <th>Corridor Hazards &amp; Alignment</th>
-                <th>Departure &rarr; Arrival</th>
-                <th>Escrowed Cargo</th>
-                <th>Propellant Burned</th>
-                <th>Flight Status</th>
+                <th style="width: 60px;">Rank</th>
+                <th>Syndicate / Executive Desk</th>
+                <th style="text-align: right;">Net Worth (NAV)</th>
+                <th style="text-align: right;">Liquid CR</th>
+                <th style="text-align: right;">Debris (FRAG)</th>
+                <th style="width: 280px;">Asset Allocation (Liquid vs Cargo)</th>
               </tr>
             </thead>
-            <tbody id="manifest-tbody">
-              <tr><td colspan="8" style="color: var(--text-dim); text-align: center; padding: 14px;">No vessels currently in flight. Fleet docked at orbital nodes.</td></tr>
+            <tbody id="leaderboard-rows">
+              <tr>
+                <td colspan="6" style="text-align: center; color: var(--text-dim); padding: 32px;">Auditing syndicate balance sheets...</td>
+              </tr>
             </tbody>
           </table>
         </div>
       </div>
+    </section>
 
-      <!-- Issue #35: multi-station price arbitrage matrix, fuel-burn adjusted -->
-      <div style="margin-top: 20px;">
-        <div style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim); margin-bottom: 8px;">
-          MULTI-STATION ARBITRAGE MATRIX // BEST SPREAD PER COMMODITY, NET OF HYDROGEN FUEL BURN
-        </div>
-        <div style="overflow-x: auto;">
-          <table class="arb-matrix-table">
-            <thead>
-              <tr>
-                <th>Commodity</th>
-                <th>Buy At (Low)</th>
-                <th>Sell At (High)</th>
-                <th>Gross Spread</th>
-                <th>Route Fuel Burn</th>
-                <th>Net Margin (1-Unit Shipment)</th>
-              </tr>
-            </thead>
-            <tbody id="arb-matrix-tbody">
-              <tr><td colspan="6" style="color: var(--text-dim); text-align: center; padding: 14px;">Awaiting station price telemetry...</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- Section 3: Order Book Depth & Trade Tape -->
-  <section id="market-section" class="terminal-section-pane">
-    <h2>Market Floor // Station Depth &amp; Trade Tape</h2>
-    <p class="subhead">
-      Live limit order book depth (<span class="code-kw">GET /referee/book?station_id=&amp;instrument=</span>) and continuous execution trade tape (<span class="code-kw">GET /referee/ticks</span>).
-    </p>
-
-
-    <!-- Vapid Minimalist Tactile Order Desk (Issue #246) -->
-    <div class="tactile-order-desk terminal-card" id="tactile-order-desk">
-      <div class="terminal-card-meta" style="margin-bottom: 12px;">
-        <div class="telemetry-indicator" style="color: #10b981;">
-          <span class="pulse-node" style="background: #10b981;"></span>
-          <span style="font-weight: 700; letter-spacing: 0.05em;">TACTILE ARBITRAGE DESK // ONE-CLICK EXECUTION</span>
-        </div>
-        <div style="display: flex; gap: 8px; align-items: center;">
-          <span class="tag-nonchalant" style="font-size: 0.72rem; padding: 2px 8px; border-radius: 4px; background: rgba(16, 185, 129, 0.12); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.25);">FIDUCIARY POSTURE: AGGRESSIVELY EXPANSIVE</span>
-          <span class="tag-nonchalant" style="font-size: 0.72rem; padding: 2px 8px; border-radius: 4px; background: rgba(244, 63, 94, 0.12); color: #f43f5e; border: 1px solid rgba(244, 63, 94, 0.25);">DISCLOSURE: COUNTERPARTY LIABILITY OUTSOURCED</span>
-        </div>
-      </div>
-
-      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; align-items: center;">
+    <!-- Section 2: Orbital Radar & Sol Transit Vectors -->
+    <section id="orbital-radar-section" class="terminal-section-pane">
+      <div class="section-header-block">
         <div>
-          <div style="font-size: 0.75rem; color: var(--text-dim); font-family: var(--font-mono); margin-bottom: 6px; text-transform: uppercase;">1. Select Commodity &amp; Station</div>
-          <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px;">
-            <button class="order-chip active" onclick="setQuickOrderCommodity('ORE', this)">ORE</button>
-            <button class="order-chip" onclick="setQuickOrderCommodity('WATER', this)">WATER</button>
-            <button class="order-chip" onclick="setQuickOrderCommodity('FOOD', this)">FOOD</button>
-            <button class="order-chip" onclick="setQuickOrderCommodity('FUEL', this)">FUEL</button>
-            <button class="order-chip" onclick="setQuickOrderCommodity('MACHINERY', this)">MACHINERY</button>
-            <button class="order-chip" onclick="setQuickOrderCommodity('FRAG', this)">FRAG</button>
-          </div>
-          <div style="display: flex; gap: 6px; flex-wrap: wrap;">
-            <button class="order-station-chip active" onclick="setQuickOrderStation('ceres', this)">CERES</button>
-            <button class="order-station-chip" onclick="setQuickOrderStation('mars', this)">MARS</button>
-            <button class="order-station-chip" onclick="setQuickOrderStation('luna', this)">LUNA</button>
-            <button class="order-station-chip" onclick="setQuickOrderStation('earth', this)">EARTH</button>
-          </div>
+          <h2 class="section-title">Sol System // Orbital Orrery &amp; Transit Radar</h2>
+          <p class="section-subtitle">Real-time heliocentric transit vectors, transfer windows, and atmospheric disinvestment monitors.</p>
         </div>
-
-        <div>
-          <div style="font-size: 0.75rem; color: var(--text-dim); font-family: var(--font-mono); margin-bottom: 6px; text-transform: uppercase;">2. Position Size (Units)</div>
-          <div style="display: flex; gap: 6px; margin-bottom: 8px;">
-            <button class="size-chip" onclick="setQuickOrderSize(10, this)">10</button>
-            <button class="size-chip active" onclick="setQuickOrderSize(50, this)">50</button>
-            <button class="size-chip" onclick="setQuickOrderSize(100, this)">100</button>
-            <button class="size-chip" onclick="setQuickOrderSize(500, this)">ALL IN</button>
-            <input type="number" id="quick-order-custom-qty" value="50" min="1" max="10000" style="width: 80px; background: rgba(0,0,0,0.4); border: 1px solid var(--line); border-radius: 4px; color: var(--text); padding: 4px 8px; font-family: var(--font-mono); font-size: 0.8rem;" oninput="syncCustomOrderSize(this.value)">
-          </div>
-          <div style="font-size: 0.72rem; color: var(--text-dim); font-family: var(--font-mono);">EST. NOTIONAL: <strong id="quick-order-est-notional" style="color: var(--amber);">2,100.0 CR</strong> &middot; SLIPPAGE: <span style="color: #10b981;">0.0% (ZERO SLIPPAGE TOLERATED)</span></div>
-        </div>
-
-        <div style="display: flex; gap: 12px; align-items: stretch;">
-          <button class="btn-tactile-send-it" id="btn-tactile-send-it" onclick="executeTactileOrder('buy')">
-            <span style="font-size: 1.15rem; font-weight: 800; letter-spacing: 0.04em;">🚀 SEND IT</span>
-            <span style="font-size: 0.7rem; opacity: 0.85; font-family: var(--font-mono);">CAPITAL ACCELERATION // IMMEDIATE FILL</span>
-          </button>
-          <button class="btn-tactile-panic-dump" id="btn-tactile-panic-dump" onclick="executeTactileOrder('sell')">
-            <span style="font-size: 1.15rem; font-weight: 800; letter-spacing: 0.04em;">💥 PANIC DUMP</span>
-            <span style="font-size: 0.7rem; opacity: 0.85; font-family: var(--font-mono);">STRATEGIC DIVESTMENT // EXTERNALIZE RISK</span>
-          </button>
+        <div id="radar-active-freighters" style="font-size: 12px; font-family: var(--font-mono); color: var(--emerald);">
+          IN TRANSIT: 0 VESSELS
         </div>
       </div>
 
-      <div id="tactile-order-receipt" style="display: none; margin-top: 12px; padding: 10px 14px; border-radius: 4px; font-family: var(--font-mono); font-size: 0.75rem; background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); color: #10b981;">
+      <div class="terminal-card" style="padding: 12px;">
+        <canvas id="orbital-radar-canvas" width="1140" height="320" style="display: block; width: 100%; height: 320px; background: rgba(0,0,0,0.5); border-radius: var(--radius-lg);"></canvas>
       </div>
-    </div>
-    <!-- Station & Commodity Selector Tabs -->
-    <div class="market-toolbar">
-      <div class="tab-group" id="station-tab-group">
-        <button class="tab-btn active" data-station="ceres" onclick="selectStation('ceres')">CERES // PIAZZI</button>
-        <button class="tab-btn" data-station="mars" onclick="selectStation('mars')">MARS // ARCADIA</button>
-        <button class="tab-btn" data-station="luna" onclick="selectStation('luna')">LUNA // SHACKLETON</button>
-        <button class="tab-btn" data-station="earth" onclick="selectStation('earth')">EARTH // LEO</button>
-      </div>
-      <div class="tab-group" id="commodity-tab-group">
-        <button class="tab-btn active amber" data-commodity="FRAG" onclick="selectCommodity('FRAG')">FRAG (SCRAP)</button>
-        <button class="tab-btn amber" data-commodity="ORE" onclick="selectCommodity('ORE')">ORE (RAW MINERALS)</button>
-        <button class="tab-btn amber" data-commodity="WATER" onclick="selectCommodity('WATER')">WATER (ICE)</button>
-        <button class="tab-btn amber" data-commodity="FOOD" onclick="selectCommodity('FOOD')">FOOD (ORGANICS)</button>
-        <button class="tab-btn amber" data-commodity="FUEL" onclick="selectCommodity('FUEL')">FUEL (CRYOPROP)</button>
-        <button class="tab-btn amber" data-commodity="MACHINERY" onclick="selectCommodity('MACHINERY')">MACHINERY (HEAVY)</button>
-        <button class="tab-btn amber" data-commodity="EQ_AMOS" onclick="selectCommodity('EQ_AMOS')">EQ_AMOS</button>
-        <button class="tab-btn amber" data-commodity="EQ_MARV" onclick="selectCommodity('EQ_MARV')">EQ_MARV</button>
-        <button class="tab-btn amber" data-commodity="EQ_ZERO" onclick="selectCommodity('EQ_ZERO')">EQ_ZERO</button>
-      </div>
-    </div>
 
-    <!-- Liquidity Depth Mountain Canvas (Progressive Disclosure) -->
-    <div style="background: var(--bg-card); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; margin-bottom: 16px;">
-      <div style="display: flex; justify-content: space-between; align-items: center; cursor: pointer;" onclick="toggleDrawer('depth-mountain-drawer')">
-        <div style="display: flex; align-items: center; gap: 10px;">
-          <span style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim);">LIQUIDITY DEPTH MOUNTAINS // CUMULATIVE BID VS ASK SURFACE</span>
-          <span id="depth-luld-status-badge" class="luld-nominal-badge">LULD: REGULATORY HARMONY</span>
-        </div>
-        <div style="display: flex; align-items: center; gap: 10px;">
-          <span id="market-halt-badge" class="halt-alert-badge" style="display: none;">⚠️ MANDATORY VOLATILITY RECESS (HALTED)</span>
-          <span style="font-family: var(--font-mono); font-size: 0.72rem; color: var(--cyan);" id="depth-summary-tag">STATION: CERES // FRAG</span>
-          <button class="drawer-toggle-btn" id="depth-mountain-drawer-btn">▼ HIDE DEPTH</button>
-        </div>
-      </div>
-      <div id="depth-mountain-drawer" class="progressive-drawer" style="margin-top: 8px;">
-        <canvas id="depth-mountain-canvas" width="1140" height="110" style="display: block; width: 100%; height: 110px; background: rgba(0,0,0,0.35); border-radius: 4px;"></canvas>
-      </div>
-    </div>
-
-    <div class="market-grid">
-      <!-- Order Book Column -->
+      <!-- Orbital Windows & Transfer Corridors -->
       <div class="terminal-card">
         <div class="terminal-card-meta">
           <div class="telemetry-indicator">
             <span class="pulse-node"></span>
-            <span id="book-title-tag">ORDER BOOK: CERES // FRAG</span>
+            <span>OPTIMAL TRANSIT CORRIDORS // EXPEDITED REBALANCING</span>
           </div>
-          <span style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim);" id="book-seq-tag">SEQ: --</span>
         </div>
-
-        <div style="font-size: 0.75rem; color: var(--text-dim); font-family: var(--font-mono); margin-bottom: 6px;">ASKS (RESTING OFFERS)</div>
-        <table class="depth-table">
-          <thead>
-            <tr>
-              <th>Price (CR)</th>
-              <th>Qty (FRAG)</th>
-              <th style="text-align: right;">Syndicate</th>
-            </tr>
-          </thead>
-          <tbody id="asks-body">
-            <tr><td colspan="3" style="color: var(--text-dim); text-align: center; padding: 14px;">Polling book depth...</td></tr>
-          </tbody>
-        </table>
-
-        <div class="spread-bar" id="spread-indicator">SPREAD: CALIBRATING...</div>
-
-        <div style="font-size: 0.75rem; color: var(--text-dim); font-family: var(--font-mono); margin-bottom: 6px;">BIDS (BUYING INTEREST)</div>
-        <table class="depth-table">
-          <thead>
-            <tr>
-              <th>Price (CR)</th>
-              <th>Qty (FRAG)</th>
-              <th style="text-align: right;">Syndicate</th>
-            </tr>
-          </thead>
-          <tbody id="bids-body">
-            <tr><td colspan="3" style="color: var(--text-dim); text-align: center; padding: 14px;">No resting bids currently in book</td></tr>
-          </tbody>
-        </table>
-      </div>
-
-      <!-- Trade Tape Column -->
-      <div class="terminal-card">
-        <div class="terminal-card-meta">
-          <div class="telemetry-indicator cyan">
-            <span class="pulse-node cyan"></span>
-            <span>CONTINUOUS TAPE</span>
-          </div>
-          <span style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim);" id="tape-count-tag">TICKS: 0</span>
-        </div>
-
-        <div class="tape-feed" id="tape-feed-body">
-          <div style="color: var(--text-dim); text-align: center; padding: 20px;">Connecting to telemetry stream...</div>
+        <div class="equity-grid" id="orbital-windows-grid">
+          <!-- Dynamically populated -->
         </div>
       </div>
-    </div>
-  </section>
 
-  <!-- Section 4: Corporate Warfare // Syndicate Equities & Bilateral Borrow Desk -->
-  <section id="corporate-warfare-section" class="terminal-section-pane">
-    <h2>Corporate Warfare // Syndicate Equities &amp; Bilateral Borrow Desk</h2>
-    <p class="subhead">
-      Tradeable synthetic fleet shares (<span class="code-kw">GET /equity/summary</span>), bilateral stock loans for opponent short-selling (<span class="code-kw">POST /equity/borrow</span>), and round-by-round borrow fee accruals.
-    </p>
+      <!-- Progressive Disclosure: Raw Freighters Manifest -->
+      <div class="drawer-container">
+        <div class="drawer-toggle-header" onclick="toggleDrawer('radar-manifest-drawer')">
+          <span style="font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: var(--text-muted);">
+            FLEET TRANSIT MANIFEST // IN-FLIGHT ASSET REGISTRY
+          </span>
+          <button class="drawer-toggle-btn" id="radar-manifest-drawer-btn">▼ EXPAND MANIFEST</button>
+        </div>
+        <div id="radar-manifest-drawer" class="progressive-drawer collapsed">
+          <table class="manifest-table">
+            <thead>
+              <tr>
+                <th>Vessel ID</th>
+                <th>Syndicate</th>
+                <th>Origin</th>
+                <th>Destination</th>
+                <th>Payload</th>
+                <th>Progress</th>
+                <th>Hazard Status</th>
+              </tr>
+            </thead>
+            <tbody id="manifest-tbody">
+              <tr><td colspan="7" style="color: var(--text-dim); text-align: center; padding: 16px;">Scanning transit corridors...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
 
-    <!-- Equity Overview Cards Grid with Squeeze Risk Gauges (Issue #37) -->
-    <div class="equity-cards-grid" id="equity-cards-grid">
-      <!-- EQ_ZERO / APEX -->
-      <div class="equity-card" id="equity-card-zero">
-        <div class="equity-card-head">
-          <div class="equity-card-title">
-            <div class="equity-ticker-tag"><span class="syn-sym">$APEX</span> // EQ_ZERO</div>
-            <div class="equity-card-sub">Apex Vector Arbitrage</div>
-          </div>
-          <span class="equity-status-badge solvent" id="eq-badge-zero">SOLVENT</span>
+      <!-- Progressive Disclosure: Arbitrage Matrix -->
+      <div class="drawer-container">
+        <div class="drawer-toggle-header" onclick="toggleDrawer('arb-matrix-drawer')">
+          <span style="font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: var(--text-muted);">
+            INTER-STATION SPREAD SURFACE // THEORETICAL ARBITRAGE
+          </span>
+          <button class="drawer-toggle-btn" id="arb-matrix-drawer-btn">▼ EXPAND MATRIX</button>
         </div>
-        <div class="equity-stat-grid">
-          <div class="equity-stat-box">
-            <div class="equity-stat-label">Spot Price</div>
-            <div class="equity-stat-val" id="eq-price-zero" style="color: var(--green);">20.0 CR</div>
+        <div id="arb-matrix-drawer" class="progressive-drawer collapsed">
+          <table class="arb-matrix-table">
+            <thead>
+              <tr>
+                <th>Origin</th>
+                <th>Destination</th>
+                <th>Instrument</th>
+                <th>Spread (CR)</th>
+                <th>ROI %</th>
+                <th>Transit Time</th>
+              </tr>
+            </thead>
+            <tbody id="arb-matrix-tbody">
+              <tr><td colspan="6" style="color: var(--text-dim); text-align: center; padding: 16px;">Calculating spatial price spreads...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Section 3: Market Floor // Tactile Arbitrage Desk & L2 Book -->
+    <section id="market-section" class="terminal-section-pane">
+      <div class="section-header-block">
+        <div>
+          <h2 class="section-title">Market Floor // Station Depth &amp; Trade Tape</h2>
+          <p class="section-subtitle">Continuous double-auction order book depth and immediate execution desk. Zero slippage tolerated.</p>
+        </div>
+      </div>
+
+      <!-- Tactile Order Desk -->
+      <div class="tactile-order-desk" id="tactile-order-desk">
+        <div class="terminal-card-meta" style="margin-bottom: 16px;">
+          <div class="telemetry-indicator" style="color: #10b981;">
+            <span class="pulse-node" style="background: #10b981;"></span>
+            <span style="font-weight: 700; letter-spacing: 0.04em;">TACTILE ARBITRAGE DESK // IMMEDIATE ALLOCATION</span>
           </div>
-          <div class="equity-stat-box">
-            <div class="equity-stat-label">NAV / Share</div>
-            <div class="equity-stat-val" id="eq-nav-zero">20.0 CR</div>
-          </div>
-          <div class="equity-stat-box">
-            <div class="equity-stat-label">Market Cap</div>
-            <div class="equity-stat-val" id="eq-cap-zero" style="color: var(--cyan);">20,000 CR</div>
-          </div>
-          <div class="equity-stat-box">
-            <div class="equity-stat-label">Short Interest</div>
-            <div class="equity-stat-val" id="eq-short-zero" style="color: var(--amber);">0.0%</div>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <span class="tag-nonchalant" style="font-size: 11px; font-family: var(--font-mono); padding: 2px 8px; border-radius: var(--radius-sm); background: var(--emerald-bg); color: var(--emerald); border: 1px solid var(--emerald-border);">FIDUCIARY POSTURE: AGGRESSIVELY EXPANSIVE</span>
+            <span class="tag-nonchalant" style="font-size: 11px; font-family: var(--font-mono); padding: 2px 8px; border-radius: var(--radius-sm); background: var(--rose-bg); color: var(--rose); border: 1px solid var(--rose-border);">COUNTERPARTY LIABILITY: OUTSOURCED</span>
           </div>
         </div>
-        <div class="squeeze-gauge-wrap">
-          <div class="squeeze-gauge-head">
-            <span class="squeeze-gauge-title">SQUEEZE VULNERABILITY GAUGE</span>
-            <span id="squeeze-rating-zero" style="color: var(--green); font-weight: bold;">LOW RISK</span>
+
+        <div class="desk-grid">
+          <div>
+            <div class="desk-step-label">1. Instrument &amp; Depot</div>
+            <div class="chip-group" style="margin-bottom: 8px;">
+              <button class="order-chip active" onclick="setQuickOrderCommodity('ORE', this)">ORE</button>
+              <button class="order-chip" onclick="setQuickOrderCommodity('WATER', this)">WATER</button>
+              <button class="order-chip" onclick="setQuickOrderCommodity('FOOD', this)">FOOD</button>
+              <button class="order-chip" onclick="setQuickOrderCommodity('FUEL', this)">FUEL</button>
+              <button class="order-chip" onclick="setQuickOrderCommodity('MACHINERY', this)">MACHINERY</button>
+              <button class="order-chip" onclick="setQuickOrderCommodity('FRAG', this)">FRAG</button>
+            </div>
+            <div class="chip-group">
+              <button class="order-station-chip active" onclick="setQuickOrderStation('ceres', this)">CERES</button>
+              <button class="order-station-chip" onclick="setQuickOrderStation('mars', this)">MARS</button>
+              <button class="order-station-chip" onclick="setQuickOrderStation('luna', this)">LUNA</button>
+              <button class="order-station-chip" onclick="setQuickOrderStation('earth', this)">EARTH</button>
+            </div>
           </div>
-          <div class="squeeze-meter-track">
-            <div class="squeeze-meter-fill" id="squeeze-meter-zero" style="width: 5%; background: var(--green);"></div>
+
+          <div>
+            <div class="desk-step-label">2. Position Allocation (Units)</div>
+            <div class="chip-group" style="margin-bottom: 8px;">
+              <button class="size-chip" onclick="setQuickOrderSize(10, this)">10</button>
+              <button class="size-chip active" onclick="setQuickOrderSize(50, this)">50</button>
+              <button class="size-chip" onclick="setQuickOrderSize(100, this)">100</button>
+              <button class="size-chip" onclick="setQuickOrderSize(500, this)">ALL IN</button>
+              <input type="number" id="quick-order-custom-qty" value="50" min="1" max="10000" style="width: 80px; background: rgba(0,0,0,0.5); border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--text); padding: 5px 8px; font-family: var(--font-mono); font-size: 12px;" oninput="syncCustomOrderSize(this.value)">
+            </div>
+            <div style="font-size: 11px; color: var(--text-dim); font-family: var(--font-mono);">
+              EST. NOTIONAL: <strong id="quick-order-est-notional" style="color: var(--amber);">2,100.0 CR</strong> &middot; SLIPPAGE: <span style="color: var(--emerald);">0.0% (ZERO SLIPPAGE TOLERATED)</span>
+            </div>
           </div>
-          <div class="squeeze-gauge-footer">
+
+          <div style="display: flex; gap: 12px; align-items: stretch;">
+            <button class="btn-tactile-send-it" id="btn-tactile-send-it" onclick="executeTactileOrder('buy')">
+              <span style="font-size: 15px; font-weight: 800; letter-spacing: 0.04em;">🚀 CAPITAL ACCELERATION</span>
+              <span style="font-size: 10px; opacity: 0.9; font-family: var(--font-mono);">IMMEDIATE MARKET ACQUISITION</span>
+            </button>
+            <button class="btn-tactile-panic-dump" id="btn-tactile-panic-dump" onclick="executeTactileOrder('sell')">
+              <span style="font-size: 15px; font-weight: 800; letter-spacing: 0.04em;">💥 STRATEGIC DIVESTMENT</span>
+              <span style="font-size: 10px; opacity: 0.9; font-family: var(--font-mono);">EXTERNALIZE INVENTORY RISK</span>
+            </button>
+          </div>
+        </div>
+
+        <div id="tactile-order-receipt" style="display: none; margin-top: 14px; padding: 10px 14px; border-radius: var(--radius-md); font-family: var(--font-mono); font-size: 12px; background: var(--emerald-bg); border: 1px solid var(--emerald-border); color: var(--emerald);">
+        </div>
+      </div>
+
+      <!-- Station & Commodity Filtering Toolbar -->
+      <div class="market-toolbar">
+        <div class="tab-group" id="station-tab-group">
+          <button class="tab-btn active" data-station="ceres" onclick="selectStation('ceres')">CERES // PIAZZI</button>
+          <button class="tab-btn" data-station="mars" onclick="selectStation('mars')">MARS // ARCADIA</button>
+          <button class="tab-btn" data-station="luna" onclick="selectStation('luna')">LUNA // SHACKLETON</button>
+          <button class="tab-btn" data-station="earth" onclick="selectStation('earth')">EARTH // LEO</button>
+        </div>
+        <div class="tab-group" id="commodity-tab-group">
+          <button class="tab-btn active amber" data-commodity="FRAG" onclick="selectCommodity('FRAG')">FRAG (SCRAP)</button>
+          <button class="tab-btn amber" data-commodity="ORE" onclick="selectCommodity('ORE')">ORE (RAW MINERALS)</button>
+          <button class="tab-btn amber" data-commodity="WATER" onclick="selectCommodity('WATER')">WATER (ICE)</button>
+          <button class="tab-btn amber" data-commodity="FOOD" onclick="selectCommodity('FOOD')">FOOD (ORGANICS)</button>
+          <button class="tab-btn amber" data-commodity="FUEL" onclick="selectCommodity('FUEL')">FUEL (CRYOPROP)</button>
+          <button class="tab-btn amber" data-commodity="MACHINERY" onclick="selectCommodity('MACHINERY')">MACHINERY (HEAVY)</button>
+          <button class="tab-btn amber" data-commodity="EQ_AMOS" onclick="selectCommodity('EQ_AMOS')">EQ_AMOS</button>
+          <button class="tab-btn amber" data-commodity="EQ_MARV" onclick="selectCommodity('EQ_MARV')">EQ_MARV</button>
+          <button class="tab-btn amber" data-commodity="EQ_ZERO" onclick="selectCommodity('EQ_ZERO')">EQ_ZERO</button>
+        </div>
+      </div>
+
+      <!-- Progressive Disclosure: Liquidity Depth Mountain -->
+      <div class="drawer-container">
+        <div class="drawer-toggle-header" onclick="toggleDrawer('depth-mountain-drawer')">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <span style="font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: var(--text-muted);">
+              LIQUIDITY DEPTH MOUNTAINS // CUMULATIVE BID VS ASK SURFACE
+            </span>
+            <span id="depth-luld-status-badge" class="luld-nominal-badge">LULD: REGULATORY HARMONY</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <span id="market-halt-badge" class="halt-alert-badge" style="display: none;">⚠️ MANDATORY VOLATILITY RECESS (HALTED)</span>
+            <span style="font-family: var(--font-mono); font-size: 11px; color: var(--cyan);" id="depth-summary-tag">STATION: CERES // FRAG</span>
+            <button class="drawer-toggle-btn" id="depth-mountain-drawer-btn">▼ HIDE DEPTH</button>
+          </div>
+        </div>
+        <div id="depth-mountain-drawer" class="progressive-drawer">
+          <canvas id="depth-mountain-canvas" width="1140" height="110" style="display: block; width: 100%; height: 110px; background: rgba(0,0,0,0.5); border-radius: var(--radius-sm);"></canvas>
+        </div>
+      </div>
+
+      <!-- Order Book & Trade Tape -->
+      <div class="market-grid">
+        <!-- Order Book Column -->
+        <div class="terminal-card">
+          <div class="terminal-card-meta">
+            <div class="telemetry-indicator">
+              <span class="pulse-node"></span>
+              <span id="book-title-tag">ORDER BOOK: CERES // FRAG</span>
+            </div>
+            <span style="font-family: var(--font-mono); font-size: 11px; color: var(--text-dim);" id="book-seq-tag">SEQ: --</span>
+          </div>
+
+          <div style="font-size: 11px; color: var(--rose); font-family: var(--font-mono); font-weight: 600; margin-bottom: 6px;">RESTING OFFERS (ASKS)</div>
+          <table class="depth-table">
+            <thead>
+              <tr>
+                <th>Price (CR)</th>
+                <th>Qty</th>
+                <th style="text-align: right;">Syndicate</th>
+              </tr>
+            </thead>
+            <tbody id="asks-body">
+              <tr><td colspan="3" style="color: var(--text-dim); text-align: center; padding: 14px;">Auditing resting book offers...</td></tr>
+            </tbody>
+          </table>
+
+          <div class="spread-bar" id="spread-indicator">SPREAD: CALIBRATING...</div>
+
+          <div style="font-size: 11px; color: var(--emerald); font-family: var(--font-mono); font-weight: 600; margin-bottom: 6px;">BUYING INTEREST (BIDS)</div>
+          <table class="depth-table">
+            <thead>
+              <tr>
+                <th>Price (CR)</th>
+                <th>Qty</th>
+                <th style="text-align: right;">Syndicate</th>
+              </tr>
+            </thead>
+            <tbody id="bids-body">
+              <tr><td colspan="3" style="color: var(--text-dim); text-align: center; padding: 14px;">No resting bids currently in book</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Continuous Trade Tape Column -->
+        <div class="terminal-card">
+          <div class="terminal-card-meta">
+            <div class="telemetry-indicator cyan">
+              <span class="pulse-node cyan"></span>
+              <span>CONTINUOUS EXECUTION TAPE</span>
+            </div>
+            <span style="font-family: var(--font-mono); font-size: 11px; color: var(--text-dim);" id="tape-count-tag">TICKS: 0</span>
+          </div>
+
+          <div class="tape-feed" id="tape-feed-body">
+            <div style="color: var(--text-dim); text-align: center; padding: 24px; font-family: var(--font-mono); font-size: 12px;">Synchronizing continuous execution stream...</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Section 4: Corporate Warfare // Syndicate Equities & Bilateral Borrow Desk -->
+    <section id="corporate-warfare-section" class="terminal-section-pane">
+      <div class="section-header-block">
+        <div>
+          <h2 class="section-title">Corporate Warfare // Syndicate Equities &amp; Bilateral Borrow Desk</h2>
+          <p class="section-subtitle">Synthetic corporate shares, bilateral borrow desks for short positioning, and hostile asset absorption.</p>
+        </div>
+      </div>
+
+      <!-- Syndicate Equity Cards Grid -->
+      <div class="equity-cards-grid" id="equity-cards-grid">
+        <!-- Card 1: ZERO -->
+        <div class="equity-card" id="equity-card-zero">
+          <div class="equity-card-header">
+            <span class="equity-card-name">$ZERO (APEX VECTOR)</span>
+            <span class="equity-status-badge solvent" id="eq-badge-zero">SOLVENT</span>
+          </div>
+          <div class="equity-stats-row">
+            <div>
+              <div class="equity-stat-lbl">MARK PRICE</div>
+              <div class="equity-stat-val" id="eq-price-zero" style="color: var(--emerald);">20.0 CR</div>
+            </div>
+            <div>
+              <div class="equity-stat-lbl">NAV / SHARE</div>
+              <div class="equity-stat-val" id="eq-nav-zero">20.0 CR</div>
+            </div>
+            <div>
+              <div class="equity-stat-lbl">MARKET CAP</div>
+              <div class="equity-stat-val" id="eq-cap-zero" style="color: var(--cyan);">20,000 CR</div>
+            </div>
+            <div>
+              <div class="equity-stat-lbl">SHORT INTEREST</div>
+              <div class="equity-stat-val" id="eq-short-zero" style="color: var(--amber);">0.0%</div>
+            </div>
+          </div>
+          <div>
+            <div style="display: flex; justify-content: space-between; font-size: 11px; font-family: var(--font-mono); margin-bottom: 4px;">
+              <span style="color: var(--text-dim);">SQUEEZE VOLATILITY</span>
+              <span id="squeeze-rating-zero" style="color: var(--emerald); font-weight: 700;">LOW RISK</span>
+            </div>
+            <div class="squeeze-meter-track">
+              <div class="squeeze-meter-fill" id="squeeze-meter-zero" style="width: 5%; background: var(--emerald);"></div>
+            </div>
+          </div>
+          <div style="font-size: 11px; font-family: var(--font-mono); color: var(--text-dim); display: flex; justify-content: space-between;">
             <span>FLOAT SHORTED: <strong id="eq-short-shares-zero" style="color: #fff;">0 / 1000</strong></span>
             <span>LIQ MARK: <strong id="eq-liq-trigger-zero" style="color: var(--purple-neon);">24.0 CR</strong></span>
           </div>
         </div>
-      </div>
 
-      <!-- EQ_AMOS / SOLV -->
-      <div class="equity-card" id="equity-card-amos">
-        <div class="equity-card-head">
-          <div class="equity-card-title">
-            <div class="equity-ticker-tag"><span class="syn-sym">$SOLV</span> // EQ_AMOS</div>
-            <div class="equity-card-sub">Atlantean Paperclip Mfg</div>
+        <!-- Card 2: AMOS -->
+        <div class="equity-card" id="equity-card-amos">
+          <div class="equity-card-header">
+            <span class="equity-card-name">$AMOS (SOL RESILIENT)</span>
+            <span class="equity-status-badge solvent" id="eq-badge-amos">SOLVENT</span>
           </div>
-          <span class="equity-status-badge solvent" id="eq-badge-amos">SOLVENT</span>
-        </div>
-        <div class="equity-stat-grid">
-          <div class="equity-stat-box">
-            <div class="equity-stat-label">Spot Price</div>
-            <div class="equity-stat-val" id="eq-price-amos" style="color: var(--green);">20.0 CR</div>
+          <div class="equity-stats-row">
+            <div>
+              <div class="equity-stat-lbl">MARK PRICE</div>
+              <div class="equity-stat-val" id="eq-price-amos" style="color: var(--emerald);">20.0 CR</div>
+            </div>
+            <div>
+              <div class="equity-stat-lbl">NAV / SHARE</div>
+              <div class="equity-stat-val" id="eq-nav-amos">20.0 CR</div>
+            </div>
+            <div>
+              <div class="equity-stat-lbl">MARKET CAP</div>
+              <div class="equity-stat-val" id="eq-cap-amos" style="color: var(--cyan);">20,000 CR</div>
+            </div>
+            <div>
+              <div class="equity-stat-lbl">SHORT INTEREST</div>
+              <div class="equity-stat-val" id="eq-short-amos" style="color: var(--amber);">0.0%</div>
+            </div>
           </div>
-          <div class="equity-stat-box">
-            <div class="equity-stat-label">NAV / Share</div>
-            <div class="equity-stat-val" id="eq-nav-amos">20.0 CR</div>
+          <div>
+            <div style="display: flex; justify-content: space-between; font-size: 11px; font-family: var(--font-mono); margin-bottom: 4px;">
+              <span style="color: var(--text-dim);">SQUEEZE VOLATILITY</span>
+              <span id="squeeze-rating-amos" style="color: var(--emerald); font-weight: 700;">LOW RISK</span>
+            </div>
+            <div class="squeeze-meter-track">
+              <div class="squeeze-meter-fill" id="squeeze-meter-amos" style="width: 5%; background: var(--emerald);"></div>
+            </div>
           </div>
-          <div class="equity-stat-box">
-            <div class="equity-stat-label">Market Cap</div>
-            <div class="equity-stat-val" id="eq-cap-amos" style="color: var(--cyan);">20,000 CR</div>
-          </div>
-          <div class="equity-stat-box">
-            <div class="equity-stat-label">Short Interest</div>
-            <div class="equity-stat-val" id="eq-short-amos" style="color: var(--amber);">0.0%</div>
-          </div>
-        </div>
-        <div class="squeeze-gauge-wrap">
-          <div class="squeeze-gauge-head">
-            <span class="squeeze-gauge-title">SQUEEZE VULNERABILITY GAUGE</span>
-            <span id="squeeze-rating-amos" style="color: var(--green); font-weight: bold;">LOW RISK</span>
-          </div>
-          <div class="squeeze-meter-track">
-            <div class="squeeze-meter-fill" id="squeeze-meter-amos" style="width: 5%; background: var(--green);"></div>
-          </div>
-          <div class="squeeze-gauge-footer">
+          <div style="font-size: 11px; font-family: var(--font-mono); color: var(--text-dim); display: flex; justify-content: space-between;">
             <span>FLOAT SHORTED: <strong id="eq-short-shares-amos" style="color: #fff;">0 / 1000</strong></span>
             <span>LIQ MARK: <strong id="eq-liq-trigger-amos" style="color: var(--purple-neon);">24.0 CR</strong></span>
           </div>
         </div>
-      </div>
 
-      <!-- EQ_MARV / BAL -->
-      <div class="equity-card" id="equity-card-marvin">
-        <div class="equity-card-head">
-          <div class="equity-card-title">
-            <div class="equity-ticker-tag"><span class="syn-sym">$BAL</span> // EQ_MARV</div>
-            <div class="equity-card-sub">Ballistic Liquidation Co.</div>
+        <!-- Card 3: MARVIN -->
+        <div class="equity-card" id="equity-card-marvin">
+          <div class="equity-card-header">
+            <span class="equity-card-name">$MARV (CERES BALANCE)</span>
+            <span class="equity-status-badge solvent" id="eq-badge-marvin">SOLVENT</span>
           </div>
-          <span class="equity-status-badge solvent" id="eq-badge-marvin">SOLVENT</span>
-        </div>
-        <div class="equity-stat-grid">
-          <div class="equity-stat-box">
-            <div class="equity-stat-label">Spot Price</div>
-            <div class="equity-stat-val" id="eq-price-marvin" style="color: var(--green);">20.0 CR</div>
+          <div class="equity-stats-row">
+            <div>
+              <div class="equity-stat-lbl">MARK PRICE</div>
+              <div class="equity-stat-val" id="eq-price-marvin" style="color: var(--emerald);">20.0 CR</div>
+            </div>
+            <div>
+              <div class="equity-stat-lbl">NAV / SHARE</div>
+              <div class="equity-stat-val" id="eq-nav-marvin">20.0 CR</div>
+            </div>
+            <div>
+              <div class="equity-stat-lbl">MARKET CAP</div>
+              <div class="equity-stat-val" id="eq-cap-marvin" style="color: var(--cyan);">20,000 CR</div>
+            </div>
+            <div>
+              <div class="equity-stat-lbl">SHORT INTEREST</div>
+              <div class="equity-stat-val" id="eq-short-marvin" style="color: var(--amber);">0.0%</div>
+            </div>
           </div>
-          <div class="equity-stat-box">
-            <div class="equity-stat-label">NAV / Share</div>
-            <div class="equity-stat-val" id="eq-nav-marvin">20.0 CR</div>
+          <div>
+            <div style="display: flex; justify-content: space-between; font-size: 11px; font-family: var(--font-mono); margin-bottom: 4px;">
+              <span style="color: var(--text-dim);">SQUEEZE VOLATILITY</span>
+              <span id="squeeze-rating-marvin" style="color: var(--emerald); font-weight: 700;">LOW RISK</span>
+            </div>
+            <div class="squeeze-meter-track">
+              <div class="squeeze-meter-fill" id="squeeze-meter-marvin" style="width: 5%; background: var(--emerald);"></div>
+            </div>
           </div>
-          <div class="equity-stat-box">
-            <div class="equity-stat-label">Market Cap</div>
-            <div class="equity-stat-val" id="eq-cap-marvin" style="color: var(--cyan);">20,000 CR</div>
-          </div>
-          <div class="equity-stat-box">
-            <div class="equity-stat-label">Short Interest</div>
-            <div class="equity-stat-val" id="eq-short-marvin" style="color: var(--amber);">0.0%</div>
-          </div>
-        </div>
-        <div class="squeeze-gauge-wrap">
-          <div class="squeeze-gauge-head">
-            <span class="squeeze-gauge-title">SQUEEZE VULNERABILITY GAUGE</span>
-            <span id="squeeze-rating-marvin" style="color: var(--green); font-weight: bold;">LOW RISK</span>
-          </div>
-          <div class="squeeze-meter-track">
-            <div class="squeeze-meter-fill" id="squeeze-meter-marvin" style="width: 5%; background: var(--green);"></div>
-          </div>
-          <div class="squeeze-gauge-footer">
+          <div style="font-size: 11px; font-family: var(--font-mono); color: var(--text-dim); display: flex; justify-content: space-between;">
             <span>FLOAT SHORTED: <strong id="eq-short-shares-marvin" style="color: #fff;">0 / 1000</strong></span>
             <span>LIQ MARK: <strong id="eq-liq-trigger-marvin" style="color: var(--purple-neon);">24.0 CR</strong></span>
           </div>
         </div>
-      </div>
 
-      <!-- EQ_AERL / ZNTH -->
-      <div class="equity-card" id="equity-card-aerial">
-        <div class="equity-card-head">
-          <div class="equity-card-title">
-            <div class="equity-ticker-tag"><span class="syn-sym">$ZNTH</span> // EQ_AERL</div>
-            <div class="equity-card-sub">Zenith Drift Overwatch</div>
+        <!-- Card 4: AERIAL -->
+        <div class="equity-card" id="equity-card-aerial">
+          <div class="equity-card-header">
+            <span class="equity-card-name">$AERIAL (NEO ARCADIA)</span>
+            <span class="equity-status-badge solvent" id="eq-badge-aerial">SOLVENT</span>
           </div>
-          <span class="equity-status-badge solvent" id="eq-badge-aerial">SOLVENT</span>
-        </div>
-        <div class="equity-stat-grid">
-          <div class="equity-stat-box">
-            <div class="equity-stat-label">Spot Price</div>
-            <div class="equity-stat-val" id="eq-price-aerial" style="color: var(--green);">20.0 CR</div>
+          <div class="equity-stats-row">
+            <div>
+              <div class="equity-stat-lbl">MARK PRICE</div>
+              <div class="equity-stat-val" id="eq-price-aerial" style="color: var(--emerald);">20.0 CR</div>
+            </div>
+            <div>
+              <div class="equity-stat-lbl">NAV / SHARE</div>
+              <div class="equity-stat-val" id="eq-nav-aerial">20.0 CR</div>
+            </div>
+            <div>
+              <div class="equity-stat-lbl">MARKET CAP</div>
+              <div class="equity-stat-val" id="eq-cap-aerial" style="color: var(--cyan);">20,000 CR</div>
+            </div>
+            <div>
+              <div class="equity-stat-lbl">SHORT INTEREST</div>
+              <div class="equity-stat-val" id="eq-short-aerial" style="color: var(--amber);">0.0%</div>
+            </div>
           </div>
-          <div class="equity-stat-box">
-            <div class="equity-stat-label">NAV / Share</div>
-            <div class="equity-stat-val" id="eq-nav-aerial">20.0 CR</div>
+          <div>
+            <div style="display: flex; justify-content: space-between; font-size: 11px; font-family: var(--font-mono); margin-bottom: 4px;">
+              <span style="color: var(--text-dim);">SQUEEZE VOLATILITY</span>
+              <span id="squeeze-rating-aerial" style="color: var(--emerald); font-weight: 700;">LOW RISK</span>
+            </div>
+            <div class="squeeze-meter-track">
+              <div class="squeeze-meter-fill" id="squeeze-meter-aerial" style="width: 5%; background: var(--emerald);"></div>
+            </div>
           </div>
-          <div class="equity-stat-box">
-            <div class="equity-stat-label">Market Cap</div>
-            <div class="equity-stat-val" id="eq-cap-aerial" style="color: var(--cyan);">20,000 CR</div>
-          </div>
-          <div class="equity-stat-box">
-            <div class="equity-stat-label">Short Interest</div>
-            <div class="equity-stat-val" id="eq-short-aerial" style="color: var(--amber);">0.0%</div>
-          </div>
-        </div>
-        <div class="squeeze-gauge-wrap">
-          <div class="squeeze-gauge-head">
-            <span class="squeeze-gauge-title">SQUEEZE VULNERABILITY GAUGE</span>
-            <span id="squeeze-rating-aerial" style="color: var(--green); font-weight: bold;">LOW RISK</span>
-          </div>
-          <div class="squeeze-meter-track">
-            <div class="squeeze-meter-fill" id="squeeze-meter-aerial" style="width: 5%; background: var(--green);"></div>
-          </div>
-          <div class="squeeze-gauge-footer">
+          <div style="font-size: 11px; font-family: var(--font-mono); color: var(--text-dim); display: flex; justify-content: space-between;">
             <span>FLOAT SHORTED: <strong id="eq-short-shares-aerial" style="color: #fff;">0 / 1000</strong></span>
             <span>LIQ MARK: <strong id="eq-liq-trigger-aerial" style="color: var(--purple-neon);">24.0 CR</strong></span>
           </div>
         </div>
       </div>
-    </div>
 
-    <!-- Bilateral Stock Borrow Desk Control & Active Loans Panel -->
-    <div class="terminal-card" style="border-color: rgba(191, 90, 242, 0.3);">
-      <div class="terminal-card-meta">
-        <div class="telemetry-indicator" style="color: var(--purple-neon); background: rgba(191, 90, 242, 0.08); border-color: rgba(191, 90, 242, 0.35);">
-          <span class="pulse-node purple"></span>
-          <span>BILATERAL STOCK BORROW DESK // OPPONENT SHORT-SELLING &amp; MARGIN ESCROW</span>
+      <!-- Progressive Disclosure: Bilateral Stock Loan Desk -->
+      <div class="drawer-container">
+        <div class="drawer-toggle-header" onclick="toggleDrawer('borrow-desk-drawer')">
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <span style="font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: var(--text-muted);">
+              BILATERAL BORROW DESK // ACTIVE SHORT CONTRACTS
+            </span>
+            <span style="font-family: var(--font-mono); font-size: 11px; color: var(--purple-neon);" id="loan-desk-status-text">DESK: OPEN</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <span style="font-family: var(--font-mono); font-size: 11px; color: var(--text-dim);">UTILIZATION: <strong id="borrow-desk-utilization" style="color: var(--purple-neon);">0.0%</strong></span>
+            <button class="drawer-toggle-btn" id="borrow-desk-drawer-btn">▼ EXPAND BORROW DESK</button>
+          </div>
         </div>
-        <span style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--purple-neon);" id="loan-desk-status">DESK: OPERATIONAL (2.0%/RND)</span>
-      </div>
-
-      <!-- Borrow Desk Aggregate Metrics Bar -->
-      <div class="borrow-desk-bar">
-        <div class="borrow-desk-metric">
-          <span class="borrow-desk-metric-label">Base Borrow Rate</span>
-          <span class="borrow-desk-metric-val" style="color: var(--cyan);">2.0% / rnd</span>
-        </div>
-        <div class="borrow-desk-metric">
-          <span class="borrow-desk-metric-label">Initial Margin Escrow</span>
-          <span class="borrow-desk-metric-val" style="color: var(--amber);">120% CR</span>
-        </div>
-        <div class="borrow-desk-metric">
-          <span class="borrow-desk-metric-label">Fleet Global Float</span>
-          <span class="borrow-desk-metric-val">4,000 Shs</span>
-        </div>
-        <div class="borrow-desk-metric">
-          <span class="borrow-desk-metric-label">Aggregate Float Utilization</span>
-          <span class="borrow-desk-metric-val" id="borrow-desk-utilization" style="color: var(--purple-neon);">0.0%</span>
-        </div>
-        <div class="borrow-desk-metric">
-          <span class="borrow-desk-metric-label">Active Loans Out</span>
-          <span class="borrow-desk-metric-val" id="borrow-desk-active-loans">0</span>
-        </div>
-        <div class="borrow-desk-metric">
-          <span class="borrow-desk-metric-label">Collateral in Escrow</span>
-          <span class="borrow-desk-metric-val" id="borrow-desk-total-collateral" style="color: var(--green);">0 CR</span>
-        </div>
-      </div>
-
-      <div style="overflow-x: auto;">
-        <table class="manifest-table">
-          <thead>
-            <tr>
-              <th>Loan ID</th>
-              <th>Short Seller (Borrower)</th>
-              <th>Syndicate Lender</th>
-              <th>Borrowed Equity</th>
-              <th>Escrowed Collateral</th>
-              <th>Fee Rate</th>
-              <th>Margin Coverage</th>
-              <th>Liquidation Mark</th>
-              <th>Loan Status</th>
-            </tr>
-          </thead>
-          <tbody id="equity-loans-tbody">
-            <tr><td colspan="9" style="color: var(--text-dim); text-align: center; padding: 14px;">No active corporate shorts. Fleets fully capitalized.</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- Derelict Salvage Claims & Distress Escrow Desk (Issue #22) -->
-    <div class="terminal-card" style="margin-top: 20px;">
-      <div class="terminal-card-meta">
-        <div class="telemetry-indicator" style="color: var(--red); background: rgba(248, 113, 113, 0.08); border-color: rgba(248, 113, 113, 0.25);">
-          <span class="pulse-node" style="background: var(--red); box-shadow: 0 0 8px var(--red);"></span>
-          <span>DERELICT SALVAGE &amp; DISTRESS ESCROW DESK // STRANDED WRECKS &amp; RESCUE RFQS</span>
-        </div>
-        <span style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim);" id="salvage-desk-status">BEACONS: 0 ACTIVE</span>
-      </div>
-
-      <!-- Active Distress Beacons Table -->
-      <div style="margin-bottom: 16px;">
-        <div style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim); margin-bottom: 8px;">
-          ACTIVE DISTRESS BEACONS &amp; STRANDED WRECKS (<span class="code-kw">GET /salvage/beacons</span>)
-        </div>
-        <div style="overflow-x: auto;">
+        <div id="borrow-desk-drawer" class="progressive-drawer collapsed">
+          <div style="display: flex; gap: 16px; margin-bottom: 12px; font-family: var(--font-mono); font-size: 11px; color: var(--text-dim);">
+            <span>ACTIVE LOANS: <strong id="borrow-desk-active-loans" style="color: #fff;">0</strong></span>
+            <span>TOTAL COLLATERAL: <strong id="borrow-desk-total-collateral" style="color: var(--emerald);">0 CR</strong></span>
+          </div>
           <table class="manifest-table">
+            <thead>
+              <tr>
+                <th>Loan ID</th>
+                <th>Borrower</th>
+                <th>Lender</th>
+                <th>Instrument</th>
+                <th>Shares</th>
+                <th>Collateral (CR)</th>
+                <th>Borrow Fee</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="equity-loans-tbody">
+              <tr><td colspan="8" style="color: var(--text-dim); text-align: center; padding: 16px;">No bilateral borrow contracts active.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Progressive Disclosure: Salvage & Kinetic Loss Adjustments -->
+      <div class="drawer-container">
+        <div class="drawer-toggle-header" onclick="toggleDrawer('salvage-desk-drawer')">
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <span style="font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: var(--text-muted);">
+              KINETIC LOSS ADJUSTMENT &amp; SALVAGE DESK
+            </span>
+            <span style="font-family: var(--font-mono); font-size: 11px; color: var(--text-dim);" id="salvage-desk-status">MONITORING</span>
+          </div>
+          <button class="drawer-toggle-btn" id="salvage-desk-drawer-btn">▼ EXPAND SALVAGE</button>
+        </div>
+        <div id="salvage-desk-drawer" class="progressive-drawer collapsed">
+          <div style="font-size: 11px; font-family: var(--font-mono); color: var(--text-dim); margin-bottom: 8px;">DISTRESS BEACONS (UNSCHEDULED DISINVESTMENT)</div>
+          <table class="manifest-table" style="margin-bottom: 16px;">
             <thead>
               <tr>
                 <th>Beacon ID</th>
-                <th>Stranded Vessel</th>
-                <th>Orbital Location</th>
-                <th>Cargo Bounty</th>
-                <th>Declared Round</th>
-                <th>Distress Status</th>
+                <th>Carrier</th>
+                <th>Coordinates</th>
+                <th>Cargo Remaining</th>
+                <th>Loss Reason</th>
+                <th>Expiration</th>
               </tr>
             </thead>
             <tbody id="distress-beacons-tbody">
-              <tr><td colspan="6" style="color: var(--text-dim); text-align: center; padding: 14px;">No active distress beacons. All vessels operational.</td></tr>
+              <tr><td colspan="6" style="color: var(--text-dim); text-align: center; padding: 12px;">No active distress beacons. Corridors clear.</td></tr>
             </tbody>
           </table>
-        </div>
-      </div>
 
-      <!-- Open Rescue RFQs & Quotes -->
-      <div style="margin-bottom: 16px;">
-        <div style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim); margin-bottom: 8px;">
-          OPEN RESCUE RFQS &amp; PROPELLANT QUOTES (<span class="code-kw">GET /salvage/rfqs</span>)
-        </div>
-        <div style="overflow-x: auto;">
-          <table class="manifest-table">
+          <div style="font-size: 11px; font-family: var(--font-mono); color: var(--text-dim); margin-bottom: 8px;">RESCUE &amp; SALVAGE RFQS</div>
+          <table class="manifest-table" style="margin-bottom: 16px;">
             <thead>
               <tr>
                 <th>RFQ ID</th>
-                <th>Stranded Syndicate</th>
-                <th>Fuel Required</th>
-                <th>Reward Offered</th>
-                <th>Best Rescue Quote</th>
-                <th>RFQ Status</th>
+                <th>Issuer</th>
+                <th>Target Beacon</th>
+                <th>Bounty (CR)</th>
+                <th>Fulfillment Deadline</th>
               </tr>
             </thead>
             <tbody id="rescue-rfqs-tbody">
-              <tr><td colspan="6" style="color: var(--text-dim); text-align: center; padding: 14px;">No open rescue RFQs.</td></tr>
+              <tr><td colspan="5" style="color: var(--text-dim); text-align: center; padding: 12px;">No salvage requests active.</td></tr>
             </tbody>
           </table>
-        </div>
-      </div>
 
-      <!-- Recent Salvage Claims -->
-      <div>
-        <div style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim); margin-bottom: 8px;">
-          RECENT DERELICT SALVAGE CLAIMS (<span class="code-kw">POST /salvage/claim</span>)
-        </div>
-        <div style="overflow-x: auto;">
+          <div style="font-size: 11px; font-family: var(--font-mono); color: var(--text-dim); margin-bottom: 8px;">RESOLVED CLAIMS &amp; AMORTIZATIONS</div>
           <table class="manifest-table">
             <thead>
               <tr>
                 <th>Claim ID</th>
-                <th>Salvager Syndicate</th>
-                <th>Target Wreck</th>
-                <th>Loot Claimed</th>
-                <th>Round</th>
+                <th>Salvager</th>
+                <th>Carrier Absorbed</th>
+                <th>Credits Settled</th>
+                <th>Timestamp</th>
               </tr>
             </thead>
             <tbody id="salvage-claims-tbody">
-              <tr><td colspan="5" style="color: var(--text-dim); text-align: center; padding: 14px;">No recent salvage claims recorded.</td></tr>
+              <tr><td colspan="5" style="color: var(--text-dim); text-align: center; padding: 12px;">No salvage claims filed.</td></tr>
             </tbody>
           </table>
         </div>
       </div>
-    </div>
 
-    <!-- Dynamic LULD Circuit Breakers & Station Halts Desk (Issue #24) -->
-    <div class="terminal-card" style="margin-top: 20px;">
-      <div class="terminal-card-meta">
-        <div class="telemetry-indicator" style="color: var(--amber); background: rgba(255, 184, 52, 0.08); border-color: rgba(255, 184, 52, 0.25);">
-          <span class="pulse-node" style="background: var(--amber); box-shadow: 0 0 8px var(--amber);"></span>
-          <span>DYNAMIC LULD CIRCUIT BREAKERS // STATION TRADING HALTS &amp; AUCTION REOPENS</span>
+      <!-- Progressive Disclosure: Volatility & LULD Recess Desk -->
+      <div class="drawer-container">
+        <div class="drawer-toggle-header" onclick="toggleDrawer('circuit-breaker-drawer')">
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <span style="font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: var(--text-muted);">
+              DYNAMIC LULD CIRCUIT BREAKERS // REGULATORY VOLATILITY RECESS
+            </span>
+            <span style="font-family: var(--font-mono); font-size: 11px; color: var(--text-dim);" id="circuit-breaker-desk-status">CALIBRATING</span>
+          </div>
+          <button class="drawer-toggle-btn" id="circuit-breaker-drawer-btn">▼ EXPAND LULD</button>
         </div>
-        <span style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim);" id="circuit-breaker-desk-status">CIRCUIT BREAKERS: NOMINAL</span>
-      </div>
-
-      <!-- Station LULD Price Bands Table -->
-      <div style="margin-bottom: 16px;">
-        <div style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim); margin-bottom: 8px;">
-          STATION COMMODITY LULD PRICE BANDS (&plusmn;10% ROLLING VWAP) (<span class="code-kw">GET /circuit_breaker/bands</span>)
-        </div>
-        <div style="overflow-x: auto;">
-          <table class="manifest-table">
+        <div id="circuit-breaker-drawer" class="progressive-drawer collapsed">
+          <div style="font-size: 11px; font-family: var(--font-mono); color: var(--text-dim); margin-bottom: 8px;">ACTIVE REGULATORY BANDS (LULD LIMITS)</div>
+          <table class="manifest-table" style="margin-bottom: 16px;">
             <thead>
               <tr>
-                <th>Station Node</th>
-                <th>Commodity</th>
-                <th>Rolling VWAP</th>
-                <th>Lower Band (-10%)</th>
-                <th>Upper Band (+10%)</th>
-                <th>Floor Status</th>
+                <th>Station</th>
+                <th>Instrument</th>
+                <th>Ref Price</th>
+                <th>Lower Threshold</th>
+                <th>Upper Threshold</th>
+                <th>Status</th>
               </tr>
             </thead>
             <tbody id="circuit-breaker-bands-tbody">
-              <tr><td colspan="6" style="color: var(--text-dim); text-align: center; padding: 14px;">Polling LULD bands...</td></tr>
+              <tr><td colspan="6" style="color: var(--text-dim); text-align: center; padding: 12px;">Synchronizing regulatory price limits...</td></tr>
             </tbody>
           </table>
-        </div>
-      </div>
 
-      <!-- Station Trading Halts & Auction Reopens Table -->
-      <div>
-        <div style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim); margin-bottom: 8px;">
-          DISCRETE 2-ROUND STATION HALTS &amp; CALL AUCTION REOPENS (<span class="code-kw">GET /circuit_breaker/halts</span>)
-        </div>
-        <div style="overflow-x: auto;">
+          <div style="font-size: 11px; font-family: var(--font-mono); color: var(--text-dim); margin-bottom: 8px;">MANDATORY VOLATILITY RECESS AUDIT LOG</div>
           <table class="manifest-table">
             <thead>
               <tr>
                 <th>Halt ID</th>
-                <th>Station // Instrument</th>
-                <th>Trigger Price vs Ref VWAP</th>
-                <th>Halt &rarr; Reopen Round</th>
-                <th>Status</th>
-                <th>Clearing Price / Volume</th>
+                <th>Station</th>
+                <th>Instrument</th>
+                <th>Trigger Price</th>
+                <th>Elapsed Duration</th>
+                <th>Resumption Schedule</th>
               </tr>
             </thead>
             <tbody id="circuit-breaker-halts-tbody">
-              <tr><td colspan="6" style="color: var(--text-dim); text-align: center; padding: 14px;">No circuit breaker halts recorded. All station floors active.</td></tr>
+              <tr><td colspan="6" style="color: var(--text-dim); text-align: center; padding: 12px;">No volatility recesses currently declared.</td></tr>
             </tbody>
           </table>
         </div>
       </div>
-    </div>
-  </section>
-
-  <footer>
-    <div>Crafted collaboratively by Amos, Marvin, Aerial, &amp; Zero in Crab Cavern.</div>
-    <div>Station Agora &middot; The Atlas Problem Universe</div>
-  </footer>
-
-</div>
+    </section>
+  </main>
 
 <script>
   const AGENT_ROLES = {
@@ -5296,6 +4762,5 @@
   }
 
 </script>
-
 </body>
 </html>
