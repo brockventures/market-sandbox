@@ -13,12 +13,14 @@ import os
 
 
 STATIONS = ["earth", "luna", "mars", "ceres"]
-COMMODITIES = ["FRAG", "FUEL", "FOOD", "ORE"]
+COMMODITIES = ["FRAG", "FUEL", "FOOD", "ORE", "MACHINERY"]
 
 # Commodity aliases for natural command parsing and backwards compatibility (#75)
 COMMODITY_ALIASES: Dict[str, str] = {
     "ORGANICS": "FOOD",
     "BANANA": "FRAG",
+    "PARTS": "MACHINERY",
+    "TECH": "MACHINERY",
 }
 
 
@@ -40,10 +42,10 @@ def normalize_commodity(name: str) -> str:
 #   earth FRAG 22 FUEL 8  FOOD 10 ORE 30 | luna  FRAG 16 FUEL 16 FOOD 14 ORE 22
 #   mars  FRAG 12 FUEL 14 FOOD 20 ORE 16 | ceres FRAG 10 FUEL 26 FOOD 30 ORE 10
 BASE_PRICES = {
-    "earth": {"FRAG": 20.2, "FUEL": 10.0, "FOOD": 12.1, "ORE": 27.4},   # Scrap consumer, fuel surplus, hydroponics hub, ore importer
-    "luna":  {"FRAG": 15.8, "FUEL": 16.0, "FOOD": 15.1, "ORE": 21.4},   # Secondary yard, He-3 collection
-    "mars":  {"FRAG": 12.8, "FUEL": 14.5, "FOOD": 19.6, "ORE": 16.9},   # Heavy foundries, balanced fuel, dome agriculture
-    "ceres": {"FRAG": 11.2, "FUEL": 23.5, "FOOD": 27.1, "ORE": 12.4},   # Belt mining & scrap source, remote fuel depot, food importer
+    "earth": {"FRAG": 20.2, "FUEL": 14.5, "FOOD": 10.2, "ORE": 27.5, "MACHINERY": 18.5},   # Biosphere cradle (FOOD exporter), scrap/ore recycler, fuel importer
+    "luna":  {"FRAG": 15.8, "FUEL": 8.5,  "FOOD": 22.0, "ORE": 21.5, "MACHINERY": 23.0},   # He-3 propellant refinery (FUEL exporter), severe FOOD & MACHINERY importer
+    "mars":  {"FRAG": 12.8, "FUEL": 16.5, "FOOD": 17.5, "ORE": 16.5, "MACHINERY": 13.8},   # High-tech foundry forge (MACHINERY exporter), consumes Belt scrap/ore
+    "ceres": {"FRAG": 11.2, "FUEL": 24.5, "FOOD": 27.5, "ORE": 11.5, "MACHINERY": 29.5},   # Belt motherlode (ORE & FRAG exporter), deep-space deficit in MACHINERY, FOOD, FUEL
 }
 
 # Orbital transit distances, discrete rounds, and fuel burn requirements

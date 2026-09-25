@@ -91,13 +91,13 @@ from agora import fleet as fleet_mod  # noqa: E402
 from agora.upgrades import CATALOG as UPGRADES  # noqa: E402
 
 FLEETS = ["zero", "amos", "marvin", "aerial"]
-TRADED = ["FRAG", "FUEL", "FOOD", "ORE"]
+TRADED = ["FRAG", "FUEL", "FOOD", "ORE", "MACHINERY"]
 REF_PRICE = {c: sum(BASE_PRICES[s][c] for s in STATIONS) / len(STATIONS) for c in TRADED}
 
 # Home-station export for the "planet" genesis (the #agent-chat proposal of
 # 2026-09-22): each fleet's starting FRAG is swapped, at equal reference
 # value, for its home station's cheap export. Luna keeps cash.
-PLANET_EXPORT = {"ceres": "ORE", "earth": "FOOD", "mars": "FUEL", "luna": None}
+PLANET_EXPORT = {"ceres": "ORE", "earth": "FOOD", "mars": "MACHINERY", "luna": "FUEL"}
 
 SCENARIOS = {
     "mixed": {"zero": "hauler", "amos": "hauler", "marvin": "maker", "aerial": "idler"},
@@ -619,7 +619,7 @@ class PeerMarket:
             owed = {}
             for c in my_contracts(ref, seller):  # goods it holds for its own contracts are not for sale
                 owed[c["instrument"]] = owed.get(c["instrument"], 0) + c["qty_remaining"]
-            for comm in ("FRAG", "FOOD", "ORE", "FUEL"):
+            for comm in ("FRAG", "FOOD", "ORE", "FUEL", "MACHINERY"):
                 have = min(self.MAX_LOT, hold_capacity(ref, seller), available(ref, seller, comm) - owed.get(comm, 0)
                            - (self.FUEL_RESERVE if comm == "FUEL" else 0))
                 ask = sv[st][comm]["best_ask"]
@@ -735,7 +735,7 @@ class Hauler:
         # 1. Sell cargo here only if this is the best market for it; otherwise
         #    it is cargo to haul (e.g. a per-planet genesis export).
         resting = False
-        for comm in ("FRAG", "FOOD", "ORE"):
+        for comm in ("FRAG", "FOOD", "ORE", "MACHINERY"):
             qty = available(ref, self.agent, comm, v)
             bid = quotes[st][comm]["best_bid"]
             if qty > 0 and bid and bid >= self._hauling_value(quotes, st, comm) and band_ok(ref, st, comm, bid):
@@ -751,7 +751,7 @@ class Hauler:
         if resting:
             return  # stay docked: the NPC buyers fill at the next tick
         inv = inventory(ref, self.agent, v)
-        for comm in ("FRAG", "FOOD", "ORE"):
+        for comm in ("FRAG", "FOOD", "ORE", "MACHINERY"):
             if inv[comm] > 0:
                 dest = max((d for d in STATIONS if d != st), key=lambda d: quotes[d][comm]["best_bid"] or 0)
                 c = self._contract_run(ref, st, comm)
@@ -769,14 +769,14 @@ class Hauler:
         owned = [c["station_id"] for c in sorted(my_contracts(ref, self.agent), key=lambda c: -c["price"])
                  if c["station_id"] != st and self._contract_run(ref, st, c["instrument"], c["station_id"])]
         best = None
-        room = {c: hold_free(ref, self.agent, c, v) for c in ("FRAG", "FOOD", "ORE")}  # #95
+        room = {c: hold_free(ref, self.agent, c, v) for c in ("FRAG", "FOOD", "ORE", "MACHINERY")}  # #95
         for dest in (owned[:1] or waiting[:1] or STATIONS):
             if dest == st:
                 continue
             route = get_route(st, dest, ref.current_round)
             if not route:
                 continue
-            for comm in ("FRAG", "FOOD", "ORE"):
+            for comm in ("FRAG", "FOOD", "ORE", "MACHINERY"):
                 if (st, comm) in self.claims:
                     continue
                 ask = quotes[st][comm]["best_ask"]
@@ -923,7 +923,7 @@ class Privateer(Hauler):
     def _fence(self, ref: AgoraReferee, stats) -> None:
         if not ref.piracy.enabled:
             return
-        for comm in ("FRAG", "ORE", "FOOD", "FUEL"):
+        for comm in ("FRAG", "ORE", "FOOD", "FUEL", "MACHINERY"):
             looted = ref.piracy.get_looted_cargo(self.agent, comm)
             if looted > 0:
                 avail = available(ref, self.agent, comm)
@@ -1038,12 +1038,15 @@ class Maker:
 
     @staticmethod
     def venues() -> List[str]:
-        """Stations that are neither the cheapest nor the dearest for any good."""
-        ends = set()
-        for c in TRADED:
-            ends.add(min(STATIONS, key=lambda st: BASE_PRICES[st][c]))
-            ends.add(max(STATIONS, key=lambda st: BASE_PRICES[st][c]))
-        return [st for st in STATIONS if st not in ends] or list(STATIONS)
+        """Stations with the most two-sided goods (where order flow is balanced: Luna or Mars)."""
+        scores = {}
+        for st in STATIONS:
+            two_sided = sum(1 for c in TRADED
+                            if st != min(STATIONS, key=lambda s: BASE_PRICES[s][c])
+                            and st != max(STATIONS, key=lambda s: BASE_PRICES[s][c]))
+            scores[st] = two_sided
+        max_score = max(scores.values()) if scores else 0
+        return [st for st, sc in scores.items() if sc == max_score] or list(STATIONS)
 
     def act(self, ref: AgoraReferee, quotes, stats) -> None:
         st = location(ref, self.agent)
@@ -1067,7 +1070,7 @@ class Maker:
         # loads only what it offers, so the ship's hold is room for its bids.
         warehouse = bool(ref.fleet.capacity(ship))
         if warehouse:
-            for comm in ("FRAG", "FOOD", "ORE"):
+            for comm in ("FRAG", "FOOD", "ORE", "MACHINERY"):
                 q = ref.available_account(ship, comm)
                 if q > 0:
                     ref.fleet.transfer(self.agent, ship, f"@{st}", comm, q)
@@ -1200,7 +1203,7 @@ class Novice:
         inv = inventory(ref, self.agent)
 
         # Holding cargo: sell it here if this station pays the most, else fly.
-        for comm in ("FRAG", "FOOD", "ORE"):
+        for comm in ("FRAG", "FOOD", "ORE", "MACHINERY"):
             if inv[comm] <= 0:
                 continue
             best_dest = max(STATIONS, key=lambda d: quotes[d][comm]["best_bid"] or 0)
@@ -1225,7 +1228,7 @@ class Novice:
             route = get_route(st, dest, ref.current_round) if dest != st else None
             if not route:
                 continue
-            for comm in ("FRAG", "FOOD", "ORE"):
+            for comm in ("FRAG", "FOOD", "ORE", "MACHINERY"):
                 ask, bid = quotes[st][comm]["best_ask"], quotes[dest][comm]["best_bid"]
                 if not ask or not bid:
                     continue
@@ -1441,11 +1444,11 @@ class DayTrader:
             # A hold with a size (#95): cargo it did not buy (genesis goods,
             # loot) is sold like a position, or it would fill the hold for
             # good; then it takes on what waits in its station hold.
-            for comm in ("FRAG", "FOOD", "ORE"):
+            for comm in ("FRAG", "FOOD", "ORE", "MACHINERY"):
                 p = self.pos.setdefault(comm, [0, 0])
                 p[0] = max(p[0], available(ref, self.agent, comm))
             load_hold(ref, self.agent, None, st, stats)
-        for comm in ("FRAG", "FOOD", "ORE"):
+        for comm in ("FRAG", "FOOD", "ORE", "MACHINERY"):
             q = quotes[st][comm]
             bid, ask = q["best_bid"], q["best_ask"]
             if not bid or not ask:
@@ -1583,7 +1586,7 @@ class Spy(Hauler):
             payload = intel.get("payload", {})
             loc = payload.get("location", {})
             cargo = payload.get("cargo", {})
-            cargo_qty = sum(cargo.get(c, 0) for c in ("FRAG", "FOOD", "ORE"))
+            cargo_qty = sum(cargo.get(c, 0) for c in ("FRAG", "FOOD", "ORE", "MACHINERY"))
             if loc.get("status") == "in_transit" or cargo_qty >= 15:
                 res = ref.covert.execute_sabotage(fleet.agent, target, mode="auto")
                 if res.get("kind") == "sabotage_ok":

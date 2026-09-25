@@ -12,10 +12,10 @@ from unittest import mock
 import agora.spatial as spatial
 
 PRE_162 = {
-    "earth": {"FRAG": 10.0, "FUEL": 8.0, "FOOD": 10.0, "ORE": 30.0},
-    "luna": {"FRAG": 12.0, "FUEL": 16.0, "FOOD": 14.0, "ORE": 22.0},
-    "mars": {"FRAG": 16.0, "FUEL": 14.0, "FOOD": 20.0, "ORE": 16.0},
-    "ceres": {"FRAG": 22.0, "FUEL": 26.0, "FOOD": 30.0, "ORE": 10.0},
+    "earth": {"FRAG": 10.0, "FUEL": 8.0, "FOOD": 10.0, "ORE": 30.0, "MACHINERY": 18.0},
+    "luna": {"FRAG": 12.0, "FUEL": 16.0, "FOOD": 14.0, "ORE": 22.0, "MACHINERY": 22.0},
+    "mars": {"FRAG": 16.0, "FUEL": 14.0, "FOOD": 20.0, "ORE": 16.0, "MACHINERY": 14.0},
+    "ceres": {"FRAG": 22.0, "FUEL": 26.0, "FOOD": 30.0, "ORE": 10.0, "MACHINERY": 30.0},
 }
 
 

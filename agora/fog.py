@@ -161,7 +161,7 @@ class FogEngine:
             if st_id and st_id in spots:
                 marks = {
                     comm: int(round(spots[st_id].get(comm, 0)))
-                    for comm in ('FRAG', 'FOOD', 'ORE')
+                    for comm in ('FRAG', 'FOOD', 'ORE', 'MACHINERY')
                     if comm in spots[st_id]
                 }
                 e['commodity_marks'] = marks

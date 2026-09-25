@@ -15,9 +15,9 @@ from tests.legacy_surface import pre_162_surface
 
 class TestCommoditiesEconomy(unittest.TestCase):
     def test_commodities_constants_and_base_prices(self):
-        """Verify all 4 commodities exist with complete station price surfaces."""
-        self.assertEqual(len(COMMODITIES), 4)
-        for c in ('FRAG', 'FUEL', 'FOOD', 'ORE'):
+        """Verify all 5 commodities exist with complete asymmetric station price surfaces (#247)."""
+        self.assertEqual(len(COMMODITIES), 5)
+        for c in ('FRAG', 'FUEL', 'FOOD', 'ORE', 'MACHINERY'):
             self.assertIn(c, COMMODITIES)
 
         for st in STATIONS:
@@ -26,27 +26,32 @@ class TestCommoditiesEconomy(unittest.TestCase):
                 self.assertIn(c, BASE_PRICES[st])
                 self.assertGreater(BASE_PRICES[st][c], 0.0)
 
-        # Economic topology verification (#162: gaps to the mean narrowed to 75%):
-        # Earth is rich in FOOD and FUEL, consumes ORE
-        self.assertEqual(BASE_PRICES['earth']['FOOD'], 12.1)
-        self.assertEqual(BASE_PRICES['earth']['ORE'], 27.4)
-
-        # Ceres is rich in ORE and scrap, needs FOOD and FUEL (#243)
-        self.assertEqual(BASE_PRICES['ceres']['ORE'], 12.4)
-        self.assertEqual(BASE_PRICES['ceres']['FOOD'], 27.1)
-        self.assertEqual(BASE_PRICES['ceres']['FRAG'], 11.2)
+        # Sol Asymmetric Supply Chain topology verification (#247):
+        # Earth: Biosphere cradle exporter of FOOD, major scrap/ore recycler
+        self.assertEqual(BASE_PRICES['earth']['FOOD'], 10.2)
+        self.assertEqual(BASE_PRICES['earth']['ORE'], 27.5)
         self.assertEqual(BASE_PRICES['earth']['FRAG'], 20.2)
-        # Each good's cheapest and dearest station, and its mean, are verified.
-        from tests.legacy_surface import PRE_162
-        for c in ('FUEL', 'FOOD', 'ORE'):
-            self.assertEqual(min(STATIONS, key=lambda s: BASE_PRICES[s][c]), min(STATIONS, key=lambda s: PRE_162[s][c]))
-            self.assertEqual(max(STATIONS, key=lambda s: BASE_PRICES[s][c]), max(STATIONS, key=lambda s: PRE_162[s][c]))
-            self.assertAlmostEqual(sum(BASE_PRICES[s][c] for s in STATIONS), sum(PRE_162[s][c] for s in STATIONS), delta=0.2)
+        self.assertEqual(min(STATIONS, key=lambda s: BASE_PRICES[s]['FOOD']), 'earth')
 
-        # #243: FRAG is inverted relative to PRE_162 so Ceres is scrap source and Earth is scrap consumer
+        # Luna: He-3 propellant capital exporter of FUEL, importer of FOOD & MACHINERY
+        self.assertEqual(BASE_PRICES['luna']['FUEL'], 8.5)
+        self.assertEqual(BASE_PRICES['luna']['FOOD'], 22.0)
+        self.assertEqual(BASE_PRICES['luna']['MACHINERY'], 23.0)
+        self.assertEqual(min(STATIONS, key=lambda s: BASE_PRICES[s]['FUEL']), 'luna')
+
+        # Mars: High-tech foundry forge exporter of MACHINERY
+        self.assertEqual(BASE_PRICES['mars']['MACHINERY'], 13.8)
+        self.assertEqual(min(STATIONS, key=lambda s: BASE_PRICES[s]['MACHINERY']), 'mars')
+
+        # Ceres: Belt motherlode exporter of ORE and FRAG, severe deficit in MACHINERY & FOOD
+        self.assertEqual(BASE_PRICES['ceres']['ORE'], 11.5)
+        self.assertEqual(BASE_PRICES['ceres']['FRAG'], 11.2)
+        self.assertEqual(BASE_PRICES['ceres']['MACHINERY'], 29.5)
+        self.assertEqual(BASE_PRICES['ceres']['FOOD'], 27.5)
+        self.assertEqual(min(STATIONS, key=lambda s: BASE_PRICES[s]['ORE']), 'ceres')
         self.assertEqual(min(STATIONS, key=lambda s: BASE_PRICES[s]['FRAG']), 'ceres')
-        self.assertEqual(max(STATIONS, key=lambda s: BASE_PRICES[s]['FRAG']), 'earth')
-        self.assertAlmostEqual(sum(BASE_PRICES[s]['FRAG'] for s in STATIONS), sum(PRE_162[s]['FRAG'] for s in STATIONS), delta=0.2)
+        self.assertEqual(max(STATIONS, key=lambda s: BASE_PRICES[s]['MACHINERY']), 'ceres')
+        self.assertEqual(max(STATIONS, key=lambda s: BASE_PRICES[s]['FOOD']), 'ceres')
 
     def test_perishable_flag_and_decay_rates(self):
         """FOOD is perishable and decays in belt transit; ORE is durable."""

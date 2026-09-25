@@ -2931,7 +2931,7 @@ class AgoraReferee:
         for st in STATIONS:
             station_marks[st] = {
                 comm: int(round(self.spatial.get_station_price(st, comm))) if self.spatial else int(round(BASE_PRICES[st][comm]))
-                for comm in ('FRAG', 'FOOD', 'ORE')
+                for comm in ('FRAG', 'FOOD', 'ORE', 'MACHINERY')
             }
 
         with self.lock:
@@ -2946,14 +2946,14 @@ class AgoraReferee:
             """).fetchall():
                 corp = corp_of(r['agent_id'])
                 d = per.setdefault(corp, {'agent_id': corp, 'liquid': 0, 'frags': 0, 'fuel': 0, 'food': 0, 'ore': 0,
-                                          'cargo_val': 0})
+                                          'machinery': 0, 'cargo_val': 0})
                 inst, bal = r['instrument'], r['balance']
                 if inst in ('CR', 'CREDITS', 'CASH'):
                     d['liquid'] += bal
                     continue
-                if inst not in ('FRAG', 'BANANA', 'FUEL', 'FOOD', 'ORE'):
+                if inst not in ('FRAG', 'BANANA', 'FUEL', 'FOOD', 'ORE', 'MACHINERY'):
                     continue
-                key = {'FRAG': 'frags', 'BANANA': 'frags', 'FUEL': 'fuel', 'FOOD': 'food', 'ORE': 'ore'}[inst]
+                key = {'FRAG': 'frags', 'BANANA': 'frags', 'FUEL': 'fuel', 'FOOD': 'food', 'ORE': 'ore', 'MACHINERY': 'machinery'}[inst]
                 d[key] += bal
                 if inst == 'FUEL' or not bal:
                     continue
@@ -2977,7 +2977,7 @@ class AgoraReferee:
                 for st, inst, qty in data.get('goods', []):
                     st_key = st if st in STATIONS else 'ceres'
                     comm_key = 'FRAG' if inst in ('FRAG', 'BANANA') else inst
-                    if comm_key in ('FRAG', 'FOOD', 'ORE'):
+                    if comm_key in ('FRAG', 'FOOD', 'ORE', 'MACHINERY'):
                         mark = station_marks.get(st_key, {}).get(comm_key, 0)
                         escrow_goods_val[agent] = escrow_goods_val.get(agent, 0) + qty * mark
 
