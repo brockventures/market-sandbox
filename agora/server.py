@@ -1501,7 +1501,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 'payload': {
                     'agent_id': raw_data.get('agent_id'),
                     'side': side,
-                    'qty': int(raw_data.get('qty', 0)),
+                    'qty': int(raw_data.get('qty') or raw_data.get('quantity') or 0),
                     'limit_price': int(raw_data.get('limit_price', raw_data.get('price', 0))),
                     'order_id': raw_data.get('order_id') or f"{raw_data.get('agent_id', 'ord')}-{int(time.time())}-{uuid.uuid4().hex[:6]}",
                     'instrument': (raw_data.get('instrument') or raw_data.get('commodity') or 'FRAG').upper(),

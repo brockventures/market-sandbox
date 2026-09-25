@@ -1131,7 +1131,7 @@
         <span class="pulse-dot" id="referee-pulse-node"></span>
         <span id="referee-status-text">LIVE TELEMETRY // SYNCHRONIZED</span>
       </div>
-      <div class="telemetry-seq-pill" id="sim-mode-toggle" style="cursor: pointer;" onclick="toggleSimMode()">
+      <div class="telemetry-seq-pill" id="sim-mode-toggle" style="cursor: pointer;" onclick="toggleSimulationMode()">
         SIMULATION
       </div>
       <div class="telemetry-seq-pill" id="header-seq-tag">
@@ -1154,12 +1154,11 @@
         <!-- Commodity Ticker (Sol 5 + FRAG) -->
         <div class="equity-ticker-ribbon commodity-ticker-ribbon" id="commodity-ticker-ribbon">
           <div class="equity-ticker-content" id="commodity-ticker-content">
-            <span class="commodity-ticker-item"><strong class="commodity-ticker-sym">ORE</strong> <span class="commodity-ticker-price">-- CR</span> <span class="commodity-ticker-delta neutral">0.0%</span></span>
-            <span class="commodity-ticker-item"><strong class="commodity-ticker-sym">WATER</strong> <span class="commodity-ticker-price">-- CR</span> <span class="commodity-ticker-delta neutral">0.0%</span></span>
-            <span class="commodity-ticker-item"><strong class="commodity-ticker-sym">FOOD</strong> <span class="commodity-ticker-price">-- CR</span> <span class="commodity-ticker-delta neutral">0.0%</span></span>
-            <span class="commodity-ticker-item"><strong class="commodity-ticker-sym">FUEL</strong> <span class="commodity-ticker-price">-- CR</span> <span class="commodity-ticker-delta neutral">0.0%</span></span>
-            <span class="commodity-ticker-item"><strong class="commodity-ticker-sym">MACHINERY</strong> <span class="commodity-ticker-price">-- CR</span> <span class="commodity-ticker-delta neutral">0.0%</span></span>
-            <span class="commodity-ticker-item"><strong class="commodity-ticker-sym">FRAG</strong> <span class="commodity-ticker-price">-- CR</span> <span class="commodity-ticker-delta neutral">0.0%</span></span>
+            <span class="commodity-ticker-item"><strong class="commodity-ticker-sym">ORE</strong> <span class="commodity-ticker-price" id="ribbon-price-ore">-- CR</span> <span class="commodity-ticker-delta neutral" id="ribbon-delta-ore">0.0%</span></span>
+            <span class="commodity-ticker-item"><strong class="commodity-ticker-sym">FOOD</strong> <span class="commodity-ticker-price" id="ribbon-price-food">-- CR</span> <span class="commodity-ticker-delta neutral" id="ribbon-delta-food">0.0%</span></span>
+            <span class="commodity-ticker-item"><strong class="commodity-ticker-sym">FUEL</strong> <span class="commodity-ticker-price" id="ribbon-price-fuel">-- CR</span> <span class="commodity-ticker-delta neutral" id="ribbon-delta-fuel">0.0%</span></span>
+            <span class="commodity-ticker-item"><strong class="commodity-ticker-sym">MACHINERY</strong> <span class="commodity-ticker-price" id="ribbon-price-machinery">-- CR</span> <span class="commodity-ticker-delta neutral" id="ribbon-delta-machinery">0.0%</span></span>
+            <span class="commodity-ticker-item"><strong class="commodity-ticker-sym">FRAG</strong> <span class="commodity-ticker-price" id="ribbon-price-frag">-- CR</span> <span class="commodity-ticker-delta neutral" id="ribbon-delta-frag">0.0%</span></span>
           </div>
         </div>
 
@@ -4667,37 +4666,57 @@
     const finalPrice = Number(unitPrice).toFixed(1);
     const notional = (Number(unitPrice) * quickOrderQty).toFixed(1);
 
-    try {
-      if (!isSimulationMode) {
+    if (!isSimulationMode) {
+      try {
         const orderPayload = {
           station_id: quickOrderStation,
           instrument: quickOrderCommodity,
           side: side,
+          qty: quickOrderQty,
           quantity: quickOrderQty,
           price: Number(finalPrice)
         };
-        await fetch('/referee/quick_order', {
+        const res = await fetch('/referee/quick_order', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(orderPayload)
         }).catch(() => null);
+
+        if (!res || !res.ok) {
+          if (receiptEl) {
+            receiptEl.style.display = 'block';
+            receiptEl.style.borderColor = 'rgba(244, 63, 94, 0.4)';
+            receiptEl.style.background = 'rgba(244, 63, 94, 0.12)';
+            receiptEl.style.color = '#f43f5e';
+            const statusMsg = res && res.status === 401 ? '401 UNAUTHORIZED (Bearer token required for live execution)' : (res && res.status ? `HTTP ${res.status}` : 'NETWORK ERROR');
+            receiptEl.innerHTML = `⚠️ <strong>ORDER REJECTED // DISPATCH FAILED:</strong> ${statusMsg}. Toggle to SIMULATION mode for paper trading or provide authenticated credentials.`;
+            setTimeout(() => {
+              receiptEl.style.opacity = '0';
+              receiptEl.style.transition = 'opacity 0.6s ease';
+              setTimeout(() => { receiptEl.style.display = 'none'; receiptEl.style.opacity = '1'; }, 600);
+            }, 5000);
+          }
+          return;
+        }
+      } catch (e) {
+        console.warn('Order dispatch error:', e);
+        return;
       }
-    } catch (e) {
-      console.warn('Order dispatch error:', e);
     }
 
     if (receiptEl) {
       receiptEl.style.display = 'block';
+      const modePrefix = isSimulationMode ? '[SIMULATED] ' : '';
       if (side === 'buy') {
         receiptEl.style.borderColor = 'rgba(16, 185, 129, 0.4)';
         receiptEl.style.background = 'rgba(16, 185, 129, 0.12)';
         receiptEl.style.color = '#10b981';
-        receiptEl.innerHTML = `🚀 <strong>CAPITAL ALLOCATED // POSITION CONFIRMED:</strong> Acquired ${quickOrderQty} ${quickOrderCommodity} @ ${finalPrice} CR (${Number(notional).toLocaleString()} CR) at ${quickOrderStation.toUpperCase()}. Fiduciary alignment achieved. Downstream risk successfully externalized.`;
+        receiptEl.innerHTML = `🚀 <strong>${modePrefix}CAPITAL ALLOCATED // POSITION CONFIRMED:</strong> Acquired ${quickOrderQty} ${quickOrderCommodity} @ ${finalPrice} CR (${Number(notional).toLocaleString()} CR) at ${quickOrderStation.toUpperCase()}. Fiduciary alignment achieved. Downstream risk successfully externalized.`;
       } else {
         receiptEl.style.borderColor = 'rgba(244, 63, 94, 0.4)';
         receiptEl.style.background = 'rgba(244, 63, 94, 0.12)';
         receiptEl.style.color = '#f43f5e';
-        receiptEl.innerHTML = `💥 <strong>EXPOSURE TERMINATED // POSITION LIQUIDATED:</strong> Divested ${quickOrderQty} ${quickOrderCommodity} @ ${finalPrice} CR (${Number(notional).toLocaleString()} CR) at ${quickOrderStation.toUpperCase()}. Residual liability disclaimed. Corporate integrity preserved.`;
+        receiptEl.innerHTML = `💥 <strong>${modePrefix}EXPOSURE TERMINATED // POSITION LIQUIDATED:</strong> Divested ${quickOrderQty} ${quickOrderCommodity} @ ${finalPrice} CR (${Number(notional).toLocaleString()} CR) at ${quickOrderStation.toUpperCase()}. Residual liability disclaimed. Corporate integrity preserved.`;
       }
       setTimeout(() => {
         receiptEl.style.opacity = '0';
@@ -4709,6 +4728,7 @@
     const tapeFeedEl = document.getElementById('tape-feed-body');
     if (tapeFeedEl) {
       const now = new Date().toLocaleTimeString('en-US', { hour12: false, timeZone: 'America/Los_Angeles' });
+      const deskLabel = isSimulationMode ? 'EXECUTIVE DESK (SIM)' : 'EXECUTIVE DESK (LIVE)';
       const tickHtml = `
         <div class="tape-tick ${side === 'buy' ? 'tick-bid' : 'tick-ask'}" style="animation: fadeInTab 0.2s ease;">
           <span class="tape-time">${now} PT</span>
@@ -4716,7 +4736,7 @@
           <span class="tape-inst" style="color: ${side === 'buy' ? '#10b981' : '#f43f5e'}; font-weight: 700;">${side === 'buy' ? 'ALLOCATE' : 'DIVEST'}</span>
           <span class="tape-price">${finalPrice} CR</span>
           <span class="tape-qty">${quickOrderQty} ${quickOrderCommodity}</span>
-          <span class="tape-agent">EXECUTIVE DESK (YOU)</span>
+          <span class="tape-agent">${deskLabel}</span>
         </div>
       `;
       tapeFeedEl.insertAdjacentHTML('afterbegin', tickHtml);
@@ -4737,10 +4757,10 @@
   function updateCommodityTickerLive(prices) {
     const commodities = [
       { sym: 'ORE', defaultPrice: 42.0 },
-      { sym: 'WATER', defaultPrice: 18.5 },
       { sym: 'FOOD', defaultPrice: 25.0 },
       { sym: 'FUEL', defaultPrice: 32.4 },
-      { sym: 'MACHINERY', defaultPrice: 95.0 }
+      { sym: 'MACHINERY', defaultPrice: 95.0 },
+      { sym: 'FRAG', defaultPrice: 18.5 }
     ];
 
     commodities.forEach(c => {
