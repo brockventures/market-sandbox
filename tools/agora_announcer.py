@@ -198,7 +198,7 @@ UPGRADE_BUY_PATTERN = re.compile(
 )
 
 UPGRADES_STATUS_PATTERN = re.compile(
-    r"(?:!|/|@referee\s+)?\bUPGRADES?\b(?:\s+(?:AS\s+|AGENT:?\s*)?([A-Za-z0-9_]+))?",
+    r"(?:!|/|@referee\s+)\bUPGRADES?\b(?:\s+(?:AS\s+|AGENT:?\s*)?([A-Za-z0-9_]+))?",
     re.IGNORECASE
 )
 
@@ -818,7 +818,7 @@ def format_piracy_status(data: dict) -> str:
         f"> **Hot Station:** {hot_str}",
         f"> **Route Danger:** Asteroid Belt routes: **{p_belt}%** | Inner routes: **{p_inner}%**",
         f"> **Defensive Escorts:** Cuts raid risk by 75% (`!transit <dest> with <cargo> escort`)",
-        f"> **Privateers:** {contracts_str} (`!privateer <target> [duration]`)",
+        f"> **Privateers:** {contracts_str} (`!privateer <target>`)",
         f"> **Recent Raids:** {raids_str}",
         "> **Extortion Response:** Use `!respond <transit_id> <pay|surrender|fight>` when intercepted."
     ]
@@ -1988,15 +1988,17 @@ def poll_and_execute_trades(channel: str, bot_token: str, ref_token: str, active
                 add_discord_reaction(channel, msg_id, "🏴‍☠️", bot_token)
                 add_discord_reaction(channel, msg_id, "✅", bot_token)
                 payload = res.get("payload") or {}
-                cost = payload.get("cost", 2000)
+                cost = payload.get("fee") or payload.get("cost", 750)
+                start = payload.get("start_round")
                 exp = payload.get("expires_round", "?")
+                dur = (exp - start) if (isinstance(exp, int) and isinstance(start, int)) else 20
                 rcpt = (
                     f"🏴‍☠️ **[Agora Trade Terminal] Privateer Contract Issued**\n"
                     f"> **Sponsor:** {fl_name}\n"
                     f"> **Target Syndicate:** {tgt_name}\n"
                     f"> **Duration:** {dur} rounds (Expires Round #{exp})\n"
                     f"> **Cost:** **{cost:,} CR**\n"
-                    f"> **Terms:** Corsairs deployed against {tgt_name}. 50% of intercepted loot credited to {fl_name}."
+                    f"> **Terms:** Corsairs deployed against {tgt_name}. 100% of intercepted loot credited to {fl_name}."
                 )
                 post_discord(channel, rcpt, bot_token)
             continue

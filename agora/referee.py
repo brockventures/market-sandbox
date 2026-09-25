@@ -977,8 +977,27 @@ class AgoraReferee:
             'fleets': [r['agent_id'] for r in self.conn.execute("SELECT agent_id FROM fleet_roster").fetchall()],
         }
 
+    def _migrate_resting_banana_orders(self) -> None:
+        """Migrate any resting BANANA orders in SQLite and in-memory books to FRAG (#266)."""
+        try:
+            self.conn.execute("UPDATE orders SET instrument = 'FRAG' WHERE instrument = 'BANANA'")
+            self.conn.commit()
+        except Exception:
+            pass
+        for st, st_books in self.books.items():
+            if 'BANANA' in st_books:
+                banana_book = st_books.pop('BANANA')
+                frag_book = st_books.setdefault('FRAG', OrderBook(instrument='FRAG'))
+                for bid in banana_book.bids:
+                    bid.instrument = 'FRAG'
+                    frag_book._insert_bid(bid)
+                for ask in banana_book.asks:
+                    ask.instrument = 'FRAG'
+                    frag_book._insert_ask(ask)
+
     def _rehydrate_book(self):
         """Rehydrate resting orders from database into in-memory order book in price-time priority."""
+        self._migrate_resting_banana_orders()
         cur = self.conn.cursor()
         cols = [r[1] for r in self.conn.execute("PRAGMA table_info(orders)").fetchall()]
         has_station_col = 'station_id' in cols
@@ -993,21 +1012,21 @@ class AgoraReferee:
         """
         cur.execute(query)
         for r in cur.fetchall():
+            inst = normalize_commodity(r['instrument'])
             order = Order(
                 order_id=r['order_id'],
                 agent_id=r['agent_id'],
-                instrument=r['instrument'],
+                instrument=inst,
                 side=r['side'],
                 qty=r['qty'],
                 limit_price=r['limit_price'],
                 seq_seen=r['seq_seen'],
                 filled_qty=r['filled_qty']
             )
-            if r['instrument'] in GOODS and self.fleet.is_corp(r['agent_id']):
+            if inst in GOODS and self.fleet.is_corp(r['agent_id']):
                 order.vessel_id = (r['vessel_id'] if has_vessel_col else None) or f"{r['agent_id']}/1"
                 order.acct = order.vessel_id
             st = r['station_id'] if has_station_col and r['station_id'] in self.books else 'ceres'
-            inst = order.instrument
             if inst not in self.books[st]:
                 self.books[st][inst] = OrderBook(instrument=inst)
             target = self.books[st][inst]
