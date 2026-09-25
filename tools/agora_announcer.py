@@ -4,7 +4,7 @@ agora_announcer.py - Station Agora Trade Terminal Announcer & In-Channel Order R
 
 Features:
 1. Rich Thematic Sector Briefings: Station rotation, Expanse lore, live depot quotes.
-2. Complete Holdings Telemetry: CR, FRAG, FUEL, FOOD, ORE, and MTM Net Worth.
+2. Complete Holdings Telemetry: CR, FRAG, FUEL, FOOD, ORE, MACHINERY, and MTM Net Worth.
 3. Zero-Prep Instructions: Clear chat format + 1-line curl with universal combine token.
 4. Active In-Channel Trade Listener: Intercepts natural language orders in Discord,
    executes them atomically against the referee, adds reactions (🚀/✅/❌), and emits
@@ -22,7 +22,7 @@ import urllib.request
 import urllib.parse
 import urllib.error
 from typing import Dict, Any, Optional, Set, Tuple
-from agora.spatial import COMMODITY_ALIASES, normalize_commodity
+from agora.spatial import COMMODITIES, COMMODITY_ALIASES, normalize_commodity
 
 DEFAULT_CHANNEL_ID = "1534436119888793750"  # #the-banana-stand
 # Load environment variables early so AGORA_BASE_URL and tokens are populated
@@ -88,8 +88,13 @@ STOCK_TICKERS = {
     "AERL": "EQ_AERL",
 }
 
+# Dynamic commodity alternation from COMMODITIES and COMMODITY_ALIASES (Issue #260)
+_ALL_COMMODITY_TERMS = sorted(set(COMMODITIES) | set(COMMODITY_ALIASES.keys()), key=len, reverse=True)
+GOODS_TRANSFER_PATTERN = r"(?:" + "|".join(re.escape(c) for c in _ALL_COMMODITY_TERMS) + r")"
+TRADE_COMMODITY_PATTERN = rf"(?:{GOODS_TRANSFER_PATTERN}|EQ_[A-Za-z0-9_]+|EQ\s+[A-Za-z0-9_]+|AMOS|MARV|ZERO|AERL)"
+
 TRADE_PATTERN = re.compile(
-    r"\b(BUY|BID|SELL|ASK)\s+(\d+)\s+(FRAG|FUEL|FOOD|ORE|BANANA|ORGANICS|EQ_[A-Za-z0-9_]+|EQ\s+[A-Za-z0-9_]+|AMOS|MARV|ZERO|AERL)\b(?:[^\d]*?(\d+))?(?:.*?\b(?:AT|IN|STATION)\s+([A-Za-z]+))?",
+    rf"\b(BUY|BID|SELL|ASK)\s+(\d+)\s+({TRADE_COMMODITY_PATTERN})\b(?:[^\d]*?(\d+))?(?:.*?\b(?:AT|IN|STATION)\s+([A-Za-z]+))?",
     re.IGNORECASE
 )
 
@@ -162,7 +167,6 @@ SHIP_BUY_PATTERN = re.compile(
     re.IGNORECASE
 )
 
-GOODS_TRANSFER_PATTERN = r"(?:FRAG|FUEL|FOOD|ORE|BANANA|ORGANICS)"
 TRANSFER_PATTERN = re.compile(
     rf"(?:!|/)?\bTRANSFER\s+(?:(\d+)\s+({GOODS_TRANSFER_PATTERN})\s+(?:FROM\s+)?([A-Za-z0-9_/@]+)\s+(?:TO\s+)?([A-Za-z0-9_/@]+)|(?:FROM\s+)?([A-Za-z0-9_/@]+)\s+(?:TO\s+)([A-Za-z0-9_/@]+)\s+(\d+)\s+({GOODS_TRANSFER_PATTERN})|([A-Za-z0-9_/@]+)\s+([A-Za-z0-9_/@]+)\s+(\d+)\s+({GOODS_TRANSFER_PATTERN}))\b",
     re.IGNORECASE
@@ -335,11 +339,12 @@ def format_final_standings(leaderboard_data: dict) -> str:
         fuel = e.get("balance", {}).get("FUEL", 0)
         food = e.get("balance", {}).get("FOOD", 0)
         ore = e.get("balance", {}).get("ORE", 0)
+        mach = e.get("balance", {}).get("MACHINERY", 0)
         mtm = e.get("mtm_net_worth", cr)
         lines.append(
             f"{medals.get(idx, '•')} **#{idx} {name}**\n"
             f"> **Net Worth:** `{mtm:,} CR` | Liquid: `{cr:,} CR`\n"
-            f"> Cargo: `{frag} FRAG` | `{food} FOOD` | `{ore} ORE` (Fuel: `{fuel}`)"
+            f"> Cargo: `{frag} FRAG` | `{food} FOOD` | `{ore} ORE` | `{mach} MACHINERY` (Fuel: `{fuel}`)"
         )
     return "\n".join(lines)
 
@@ -1596,7 +1601,7 @@ def build_burst_kickoff(burst_id: str, rounds: int, interval_sec: float, start_r
         f"ROUND CADENCE:  {interval_sec:.0f}s per strategy window\n"
         f"STATUS:         FLOOR OPEN // AUTONOMOUS MATCHMAKING ENGAGED\n\n"
         f"🏆 OBJECTIVE:   Highest Mark-to-Market Net Worth (CR) at Round #{end_round} wins!\n"
-        f"⚠️ SCORING:     Net Worth = Liquid CR + Cargo (FRAG, FOOD, ORE @ local station spot).\n"
+        f"⚠️ SCORING:     Net Worth = Liquid CR + Cargo (FRAG, FOOD, ORE, MACHINERY @ local station spot).\n"
         f"               *FUEL is consumable propellant (0 CR score value).*\n"
         f"```\n"
         f"🎯 **HOW TO TRADE THIS BURST:**\n"
@@ -1652,6 +1657,7 @@ def build_announcement(round_num: int = 1, rounds_total: int = 8, codename: str 
         fuel = e.get("fuel", 0)
         food = e.get("food", 0)
         ore = e.get("ore", 0)
+        mach = e.get("machinery", 0)
         nw = e.get("net_worth", 0)
 
         holdings = []
@@ -1661,6 +1667,8 @@ def build_announcement(round_num: int = 1, rounds_total: int = 8, codename: str 
             holdings.append(f"{food} FOOD")
         if ore > 0:
             holdings.append(f"{ore} ORE")
+        if mach > 0:
+            holdings.append(f"{mach} MACHINERY")
         if fuel > 0:
             holdings.append(f"{fuel} FUEL")
         cargo_str = f" | {', '.join(holdings)}" if holdings else ""
@@ -1680,7 +1688,7 @@ def build_announcement(round_num: int = 1, rounds_total: int = 8, codename: str 
     msg = (
         f"🔔 **STATION AGORA // {title}** ({target_tag})\n"
         f"**Sector:** {st_info['emoji']} **{st_info['name']}** | **Floor:** {floor.upper()} | **Seq:** #{seq}\n"
-        f"🎯 **Objective:** Max Net Worth at Round #{rounds_total} | *Cargo scores (FRAG/FOOD/ORE), FUEL=0 CR*\n\n"
+        f"🎯 **Objective:** Max Net Worth at Round #{rounds_total} | *Cargo scores (FRAG/FOOD/ORE/MACHINERY), FUEL=0 CR*\n\n"
         f"📡 **GALNET:** *{st_info['intel']}* — 💡 *{st_info['opp']}*\n\n"
         f"📈 **{st_key.upper()} DEPOT QUOTES:**\n"
         f"{quotes_str}\n\n"
