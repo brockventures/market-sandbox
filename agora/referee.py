@@ -3049,6 +3049,7 @@ class AgoraReferee:
                     'fuel': r['fuel'],
                     'food': r['food'] if 'food' in r.keys() else 0,
                     'ore': r['ore'] if 'ore' in r.keys() else 0,
+                    'machinery': r['machinery'] if 'machinery' in r.keys() else 0,
                     'bananas': r['frags'],  # backward compatibility alias
                     'mark_price': fleet_marks['FRAG'],
                     'commodity_marks': fleet_marks,

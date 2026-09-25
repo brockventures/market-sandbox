@@ -97,7 +97,7 @@ REF_PRICE = {c: sum(BASE_PRICES[s][c] for s in STATIONS) / len(STATIONS) for c i
 # Home-station export for the "planet" genesis (the #agent-chat proposal of
 # 2026-09-22): each fleet's starting FRAG is swapped, at equal reference
 # value, for its home station's cheap export. Luna keeps cash.
-PLANET_EXPORT = {"ceres": "ORE", "earth": "FOOD", "mars": "MACHINERY", "luna": "FUEL"}
+PLANET_EXPORT = {"ceres": "ORE", "earth": "FOOD", "mars": "MACHINERY", "luna": None}
 
 SCENARIOS = {
     "mixed": {"zero": "hauler", "amos": "hauler", "marvin": "maker", "aerial": "idler"},

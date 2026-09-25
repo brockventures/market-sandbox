@@ -193,6 +193,38 @@ NEWS_TEMPLATES = [
         "drift_bias": 0.30,
         "duration_rounds": 3,
     },
+    {
+        "station_id": "mars",
+        "commodity": "MACHINERY",
+        "headline": "ARCADIA INDUSTRIAL FORGE FOUNDRY EXPANSION",
+        "body": "Martian heavy automated fabrication yards brought fourth assembly line online, flooding regional depots with advanced industrial machinery.",
+        "drift_bias": -0.30,
+        "duration_rounds": 4,
+    },
+    {
+        "station_id": "ceres",
+        "commodity": "MACHINERY",
+        "headline": "BELT DRILLING RIG BREAKDOWNS SPIKE REPLACEMENT DEMAND",
+        "body": "Severe tectonic cavitation in deep asteroid shafts damaged core heavy drilling components. Ceres requisitions emergency replacement machinery at steep premiums.",
+        "drift_bias": 0.35,
+        "duration_rounds": 4,
+    },
+    {
+        "station_id": "earth",
+        "commodity": "MACHINERY",
+        "headline": "ORBITAL ELEVATOR ROBOTICS OVERHAUL REQUIRES SPARES",
+        "body": "Counterweight gantry stabilization project on Earth elevator hub demands rapid delivery of precision machine components.",
+        "drift_bias": 0.25,
+        "duration_rounds": 3,
+    },
+    {
+        "station_id": "luna",
+        "commodity": "MACHINERY",
+        "headline": "SHACKLETON MASS-DRIVER ACCELERATOR TOOLING ACCORD",
+        "body": "Lunar infrastructure consortium completes tooling phase for new linear magnetic accelerator. Surplus machinery released to spot markets.",
+        "drift_bias": -0.20,
+        "duration_rounds": 3,
+    },
 ]
 
 
