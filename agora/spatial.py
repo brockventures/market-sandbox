@@ -18,8 +18,6 @@ COMMODITIES = ["FRAG", "FUEL", "FOOD", "ORE"]
 # Commodity aliases for natural command parsing and backwards compatibility (#75)
 COMMODITY_ALIASES: Dict[str, str] = {
     "ORGANICS": "FOOD",
-    "BIO": "FOOD",
-    "HYDROPONICS": "FOOD",
     "BANANA": "FRAG",
 }
 
@@ -70,7 +68,7 @@ BELT_ROUTES = {
 
 BELT_TOLL_CR = 25  # Belt Authority toll booth surcharge (CR)
 BELT_CARGO_DECAY_RATE = 0.05  # 5% perishable cargo degradation per transit round
-PERISHABLE_COMMODITIES = {"ORGANICS", "BIO", "HYDROPONICS", "FOOD"}
+PERISHABLE_COMMODITIES = {"FOOD", "ORGANICS"}
 
 # Planetary orbital alignment corridors (Task #25)
 ALIGNMENT_WINDOWS = [
