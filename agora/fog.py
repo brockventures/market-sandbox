@@ -150,10 +150,15 @@ class FogEngine:
     def leaderboard_view(self, ref, viewer: Optional[str], leaderboard: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """A fog-safe leaderboard view for viewer (#121). Admin sees exact
         marks; non-admin viewers get commodity_marks and mark_price computed
-        from their fog view (exact where docked, lagged and jittered elsewhere)."""
-        if viewer == ADMIN or not self.snapshots:
+        from their fog view (exact where docked, lagged and jittered elsewhere).
+        Rows the viewer cannot see exactly have net_worth recomputed at the
+        jittered marks to prevent solving exact remote prices (#261)."""
+        has_telemetry = bool(viewer and getattr(ref, 'upgrades_enabled', False) and
+                             getattr(ref, 'upgrades', None) and ref.upgrades.has_telemetry(viewer))
+        if viewer == ADMIN or has_telemetry or not self.snapshots:
             return leaderboard
         spots = self.spot_view(ref, viewer)
+        live_at = self.docked_everywhere(ref, viewer)
         out = []
         for entry in leaderboard:
             e = dict(entry)
@@ -167,7 +172,31 @@ class FogEngine:
                 e['commodity_marks'] = marks
                 if 'FRAG' in marks:
                     e['mark_price'] = marks['FRAG']
+
+            # If the viewer cannot see this row's station live and it's not their own row,
+            # recompute net_worth at the jittered marks to prevent solving exact remote prices (#261).
+            if viewer != e.get('agent_id') and (st_id is None or st_id not in live_at):
+                raw_marks = entry.get('commodity_marks', {})
+                new_marks = e.get('commodity_marks', {})
+                delta = 0
+                qty_map = {
+                    'FRAG': entry.get('frags', 0),
+                    'FOOD': entry.get('food', 0),
+                    'ORE': entry.get('ore', 0),
+                    'MACHINERY': entry.get('machinery', 0),
+                }
+                for comm, qty in qty_map.items():
+                    if qty and comm in raw_marks and comm in new_marks:
+                        delta += qty * (new_marks[comm] - raw_marks[comm])
+                if 'in_transit_cargo' in entry and isinstance(entry['in_transit_cargo'], dict):
+                    for comm_raw, qty in entry['in_transit_cargo'].items():
+                        comm = 'FRAG' if comm_raw in ('FRAG', 'BANANA') else comm_raw
+                        if qty and comm in raw_marks and comm in new_marks:
+                            delta += qty * (new_marks[comm] - raw_marks[comm])
+                e['net_worth'] = entry.get('net_worth', 0) + delta
+
             out.append(e)
+        out.sort(key=lambda x: x.get('net_worth', 0), reverse=True)
         return out
 
     def filter_ticks(self, ref, viewer: Optional[str], ticks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

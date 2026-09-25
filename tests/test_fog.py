@@ -69,6 +69,51 @@ class TestFogEngine(unittest.TestCase):
         pub_amos = next(e for e in pub_view if e["agent_id"] == "amos")
         self.assertNotEqual(pub_amos["commodity_marks"], raw_amos["commodity_marks"])
 
+    def test_leaderboard_view_fogs_net_worth_preventing_price_leak(self):
+        # Repro for #261: verify exact remote commodity prices cannot be solved from net_worth
+        raw_lb = self.ref.get_leaderboard()
+        amos_view = self.ref.fog.leaderboard_view(self.ref, "amos", raw_lb)
+        zero_row = next(e for e in amos_view if e["agent_id"] == "zero")
+        raw_zero = next(e for e in raw_lb if e["agent_id"] == "zero")
+        amos_row = next(e for e in amos_view if e["agent_id"] == "amos")
+        raw_amos = next(e for e in raw_lb if e["agent_id"] == "amos")
+
+        # Amos sees own exact net_worth
+        self.assertEqual(amos_row["net_worth"], raw_amos["net_worth"])
+
+        # Zero is docked at Ceres; net_worth must be fogged (recomputed with jittered marks)
+        self.assertNotEqual(zero_row["commodity_marks"], raw_zero["commodity_marks"])
+        self.assertNotEqual(zero_row["net_worth"], raw_zero["net_worth"])
+
+        # Algebraic solve: (net_worth - liquid) / frags must yield jittered mark, NOT raw exact mark
+        solved_mark = (zero_row["net_worth"] - zero_row["liquid"]) / zero_row["frags"]
+        self.assertEqual(solved_mark, zero_row["mark_price"])
+        self.assertNotEqual(solved_mark, raw_zero["mark_price"])
+
+        # Multi-commodity test with FOOD
+        ref2 = AgoraReferee(depots=True)
+        ref2.new_game(seed=7, depots=True, fog={'lag': 3, 'noise': 0.15})
+        dock(ref2, 'amos', 'earth')
+        dock(ref2, 'zero', 'ceres')
+        with ref2.conn:
+            ref2.conn.execute("INSERT OR REPLACE INTO accounts (agent_id, instrument, balance) VALUES ('zero', 'FOOD', 500)")
+        for _ in range(6):
+            ref2.step_round()
+        raw2 = ref2.get_leaderboard()
+        raw2_zero = next(e for e in raw2 if e["agent_id"] == "zero")
+        view2 = ref2.fog.leaderboard_view(ref2, "amos", raw2)
+        view2_zero = next(e for e in view2 if e["agent_id"] == "zero")
+
+        expected_fogged_nw = (view2_zero['liquid'] +
+                              view2_zero['frags'] * view2_zero['commodity_marks']['FRAG'] +
+                              view2_zero['food'] * view2_zero['commodity_marks']['FOOD'] +
+                              view2_zero['ore'] * view2_zero['commodity_marks']['ORE'] +
+                              view2_zero['machinery'] * view2_zero['commodity_marks']['MACHINERY'] +
+                              view2_zero['upgrades_value'] + view2_zero['ships_value'] + view2_zero['stocks_value'])
+        self.assertEqual(view2_zero["food"], 500)
+        self.assertEqual(view2_zero["net_worth"], expected_fogged_nw)
+        self.assertNotEqual(view2_zero["net_worth"], raw2_zero["net_worth"])
+
     def test_off_by_default(self):
         self.assertIsNone(AgoraReferee().fog)
 
@@ -149,6 +194,15 @@ class TestFogEndpoints(unittest.TestCase):
         self.assertNotEqual(pub_amos_entry['commodity_marks'], raw_amos['commodity_marks'])
         # Admin sees exact Ceres marks
         self.assertEqual(adm_zero_entry['commodity_marks'], raw_zero['commodity_marks'])
+
+        # Net worth on Zero's row is fogged for Amos and solves to jittered mark (#261)
+        self.assertNotEqual(zero_entry['net_worth'], raw_zero['net_worth'])
+        solved_endpoint_mark = (zero_entry['net_worth'] - zero_entry['liquid']) / zero_entry['frags']
+        self.assertEqual(solved_endpoint_mark, zero_entry['mark_price'])
+        self.assertNotEqual(solved_endpoint_mark, raw_zero['mark_price'])
+
+        # Admin sees exact net_worth for all fleets
+        self.assertEqual(adm_zero_entry['net_worth'], raw_zero['net_worth'])
 
 
 class TestFoggedTerminalStream(unittest.TestCase):
