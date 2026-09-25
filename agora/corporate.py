@@ -25,6 +25,7 @@ balanced ledger entry. Off unless the referee's corporate flag is set
 (new_game or AGORA_CORPORATE=1).
 """
 
+import json
 import math
 import os
 from typing import Any, Dict, List, Optional
@@ -131,7 +132,69 @@ SCHEMA = [
         collateral_sym  TEXT NOT NULL,
         status          TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'repaid', 'defaulted'))
     )""",
+    """CREATE TABLE IF NOT EXISTS corp_negligence_directives (
+        agent_id        TEXT NOT NULL,
+        directive_id    TEXT NOT NULL,
+        enabled         INTEGER NOT NULL DEFAULT 1,
+        activated_round INTEGER NOT NULL,
+        PRIMARY KEY (agent_id, directive_id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS corp_liability_escrow (
+        agent_id        TEXT PRIMARY KEY,
+        liability_escrow_cr INTEGER NOT NULL DEFAULT 0,
+        rounds_active   INTEGER NOT NULL DEFAULT 0,
+        total_penalties_paid INTEGER NOT NULL DEFAULT 0,
+        leaked          INTEGER NOT NULL DEFAULT 0,
+        last_leak_round INTEGER
+    )""",
+    """CREATE TABLE IF NOT EXISTS corp_audit_dossiers (
+        dossier_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+        actor           TEXT NOT NULL,
+        target          TEXT NOT NULL,
+        directives_json TEXT NOT NULL,
+        liability_escrow_cr INTEGER NOT NULL,
+        rounds_active   INTEGER NOT NULL,
+        created_round   INTEGER NOT NULL,
+        status          TEXT NOT NULL DEFAULT 'unleaked' CHECK (status IN ('unleaked', 'leaked'))
+    )""",
+    """CREATE TABLE IF NOT EXISTS corp_scuttle_claims (
+        claim_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+        agent_id        TEXT NOT NULL,
+        vessel_id       TEXT NOT NULL,
+        payout_cr       INTEGER NOT NULL,
+        round           INTEGER NOT NULL,
+        status          TEXT NOT NULL DEFAULT 'paid'
+    )""",
 ]
+
+# Executive Negligence Directives catalog (#248)
+NEGLIGENCE_DIRECTIVES: Dict[str, Dict[str, Any]] = {
+    "atmosphere_optimization": {
+        "name": "Atmosphere Optimization",
+        "doublespeak": "Sub-ambient nitrogen mix and dynamic oxygen rationing for lean life-support efficiency.",
+        "fuel_discount": 0.35,
+        "opex_discount": 0.35,
+        "liability_per_round": 150,
+        "vulnerability": 0.25,
+    },
+    "agile_thrusters": {
+        "name": "Agile Thruster Certification",
+        "doublespeak": "Overclocked burn profiles bypassing manufacturer thermal governors for agile velocity.",
+        "fuel_discount": 0.40,
+        "opex_discount": 0.40,
+        "liability_per_round": 200,
+        "vulnerability": 0.30,
+    },
+    "zero_cr_hazard": {
+        "name": "Zero-CR Hazard Pay",
+        "doublespeak": "Voluntary mission equity conversion replacing legacy hazard surcharges for Belter crew.",
+        "fuel_discount": 0.0,
+        "opex_discount": 0.35,
+        "liability_per_round": 180,
+        "vulnerability": 0.25,
+    },
+}
+
 
 
 class CorporateDesk:
@@ -1220,7 +1283,8 @@ class CorporateDesk:
             if avail <= GENESIS_CASH:
                 continue
             excess = avail - GENESIS_CASH
-            budget = int(excess * 0.05)
+            div_mult = self.get_dividend_multiplier(issuer)
+            budget = int(excess * 0.05 * div_mult)
             if budget <= 0:
                 continue
             holders = ref.conn.execute(
@@ -1267,6 +1331,356 @@ class CorporateDesk:
                 self._bankrupt(agent)
         self._check_loan_maturities(round_num)
         self._takeovers()
+        self._step_negligence_escrow_locked(round_num)
         if getattr(self.ref, 'dividends_enabled', False):
             self._distribute_dividends_locked(round_num)
         return {"active": self.active()}
+
+    # ------------------------------------------------------------ moral hazard & negligence (#248)
+
+    def set_negligence_directive(self, agent_id: str, directive_id: str, enabled: bool = True) -> Dict[str, Any]:
+        """Toggles an executive negligence directive for an active corporation (#248)."""
+        agent = (agent_id or '').strip().lower()
+        directive_id = (directive_id or '').strip().lower()
+        if directive_id not in NEGLIGENCE_DIRECTIVES:
+            return _reject('invalid_directive', f"Unknown directive '{directive_id}'. Options: {sorted(NEGLIGENCE_DIRECTIVES)}")
+
+        fleets = set(self._fleets())
+        if agent not in fleets:
+            return _reject('invalid_agent', f"Unknown fleet '{agent}'")
+        if agent not in self.active():
+            return _reject('inactive_agent', f"Corporation '{agent}' is not active")
+
+        ref = self.ref
+        with ref.lock, ref.conn:
+            val = 1 if enabled else 0
+            ref.conn.execute("""
+                INSERT INTO corp_negligence_directives (agent_id, directive_id, enabled, activated_round)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(agent_id, directive_id) DO UPDATE SET
+                    enabled = excluded.enabled,
+                    activated_round = CASE WHEN excluded.enabled = 1 THEN excluded.activated_round ELSE activated_round END
+            """, (agent, directive_id, val, ref.current_round))
+
+            ref.conn.execute("""
+                INSERT INTO corp_liability_escrow (agent_id, liability_escrow_cr, rounds_active)
+                VALUES (?, 0, 0)
+                ON CONFLICT(agent_id) DO NOTHING
+            """, (agent,))
+
+            # Record event in corp_events with secret visibility (only actor sees it)
+            if hasattr(ref, 'events') and ref.events is not None:
+                state_word = "enabled" if enabled else "disabled"
+                ref.events.record_locked(
+                    'directive_toggle',
+                    'secret',
+                    actor=agent,
+                    detail=f"{agent} {state_word} directive '{directive_id}' ({NEGLIGENCE_DIRECTIVES[directive_id]['name']})",
+                    round_num=ref.current_round
+                )
+
+            return {
+                'ok': True,
+                'agent_id': agent,
+                'directive_id': directive_id,
+                'enabled': bool(val),
+                'directive': NEGLIGENCE_DIRECTIVES[directive_id],
+                'round': ref.current_round
+            }
+
+    def get_negligence_directives(self, agent_id: str) -> Dict[str, Any]:
+        """Returns the active directives, opex discounts, and off-balance-sheet liability escrow for an agent."""
+        agent = (agent_id or '').strip().lower()
+        ref = self.ref
+        with ref.lock:
+            rows = ref.conn.execute(
+                "SELECT directive_id, enabled, activated_round FROM corp_negligence_directives WHERE agent_id = ?",
+                (agent,)).fetchall()
+            active_dirs = {}
+            for r in rows:
+                if r['enabled']:
+                    d_id = r['directive_id']
+                    active_dirs[d_id] = {
+                        **NEGLIGENCE_DIRECTIVES.get(d_id, {}),
+                        'activated_round': r['activated_round']
+                    }
+
+            escrow = ref.conn.execute(
+                "SELECT liability_escrow_cr, rounds_active, total_penalties_paid, leaked, last_leak_round "
+                "FROM corp_liability_escrow WHERE agent_id = ?",
+                (agent,)).fetchone()
+
+            return {
+                'agent_id': agent,
+                'active_directives': active_dirs,
+                'fuel_discount': self.get_fuel_burn_discount(agent),
+                'opex_discount': self.get_opex_discount(agent),
+                'dividend_multiplier': self.get_dividend_multiplier(agent),
+                'liability_escrow_cr': escrow['liability_escrow_cr'] if escrow else 0,
+                'rounds_active': escrow['rounds_active'] if escrow else 0,
+                'total_penalties_paid': escrow['total_penalties_paid'] if escrow else 0,
+                'leaked': bool(escrow['leaked']) if escrow else False,
+                'last_leak_round': escrow['last_leak_round'] if escrow else None,
+            }
+
+    def get_fuel_burn_discount(self, agent_id: str) -> float:
+        """Returns fractional fuel burn discount from active negligence directives (e.g. 0.35 to 0.40)."""
+        ref = self.ref
+        rows = ref.conn.execute(
+            "SELECT directive_id FROM corp_negligence_directives WHERE agent_id = ? AND enabled = 1",
+            (agent_id.lower().strip(),)).fetchall()
+        if not rows:
+            return 0.0
+        discounts = [NEGLIGENCE_DIRECTIVES.get(r[0], {}).get('fuel_discount', 0.0) for r in rows]
+        return max(discounts) if discounts else 0.0
+
+    def get_opex_discount(self, agent_id: str) -> float:
+        """Returns fractional opex/toll discount from active negligence directives (e.g. 0.35)."""
+        ref = self.ref
+        rows = ref.conn.execute(
+            "SELECT directive_id FROM corp_negligence_directives WHERE agent_id = ? AND enabled = 1",
+            (agent_id.lower().strip(),)).fetchall()
+        if not rows:
+            return 0.0
+        discounts = [NEGLIGENCE_DIRECTIVES.get(r[0], {}).get('opex_discount', 0.0) for r in rows]
+        return max(discounts) if discounts else 0.0
+
+    def get_dividend_multiplier(self, agent_id: str) -> float:
+        """Returns dividend budget multiplier if negligence directives are active (1.5x boost)."""
+        ref = self.ref
+        rows = ref.conn.execute(
+            "SELECT directive_id FROM corp_negligence_directives WHERE agent_id = ? AND enabled = 1",
+            (agent_id.lower().strip(),)).fetchall()
+        return 1.5 if rows else 1.0
+
+    def _step_negligence_escrow_locked(self, round_num: int) -> None:
+        """Advance compounding liability escrow for active negligence directives."""
+        ref = self.ref
+        for agent in self.active():
+            rows = ref.conn.execute(
+                "SELECT directive_id FROM corp_negligence_directives WHERE agent_id = ? AND enabled = 1",
+                (agent,)).fetchall()
+            if not rows:
+                continue
+            total_liability = sum(NEGLIGENCE_DIRECTIVES.get(r[0], {}).get('liability_per_round', 150) for r in rows)
+            ref.conn.execute("""
+                INSERT INTO corp_liability_escrow (agent_id, liability_escrow_cr, rounds_active)
+                VALUES (?, ?, 1)
+                ON CONFLICT(agent_id) DO UPDATE SET
+                    liability_escrow_cr = liability_escrow_cr + excluded.liability_escrow_cr,
+                    rounds_active = rounds_active + 1
+            """, (agent, total_liability))
+
+    def compile_audit_dossier(self, actor: str, target: str) -> Dict[str, Any]:
+        """Wiretaps/forensic audits penetrate fog to discover active directives and generate an encrypted Audit Dossier (#248)."""
+        actor = (actor or '').strip().lower()
+        target = (target or '').strip().lower()
+        if actor == target:
+            return _reject('self_audit', 'Cannot compile an audit dossier on your own corporation')
+        fleets = set(self._fleets())
+        if actor not in fleets and actor != 'admin':
+            return _reject('invalid_actor', f"Unknown fleet '{actor}'")
+        if target not in fleets:
+            return _reject('invalid_target', f"Unknown target '{target}'")
+
+        ref = self.ref
+        with ref.lock, ref.conn:
+            # Check wiretap or forensic audit fee
+            has_wiretap = hasattr(ref, 'covert') and ref.covert.has_wiretap(actor, target)
+            AUDIT_COST = 500
+            if not has_wiretap and actor != 'admin':
+                avail = ref.peer._available(actor, 'CR') if hasattr(ref, 'peer') else ref.get_balance(actor, 'CR')
+                if avail < AUDIT_COST:
+                    return _reject('no_wiretap_or_credits',
+                                   f"Active wiretap on {target} or {AUDIT_COST} CR forensic audit fee required")
+                self._move(f"audit-{actor}-{target}-r{ref.current_round}", [(actor, 'CR', -AUDIT_COST), ('SYSTEM', 'CR', AUDIT_COST)])
+
+            rows = ref.conn.execute(
+                "SELECT directive_id FROM corp_negligence_directives WHERE agent_id = ? AND enabled = 1",
+                (target,)).fetchall()
+            active_dirs = [r[0] for r in rows]
+
+            escrow_row = ref.conn.execute(
+                "SELECT liability_escrow_cr, rounds_active FROM corp_liability_escrow WHERE agent_id = ?",
+                (target,)).fetchone()
+            liability_cr = escrow_row['liability_escrow_cr'] if escrow_row else 0
+            rounds_active = escrow_row['rounds_active'] if escrow_row else 0
+
+            if not active_dirs and liability_cr <= 0:
+                return _reject('no_negligence_detected',
+                               f"Forensic audit of {target} found zero active negligence directives or un-penalized liability escrow.")
+
+            cur = ref.conn.execute(
+                "INSERT INTO corp_audit_dossiers (actor, target, directives_json, liability_escrow_cr, rounds_active, created_round, status) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'unleaked')",
+                (actor, target, json.dumps(active_dirs), liability_cr, rounds_active, ref.current_round)
+            )
+            dossier_id = cur.lastrowid
+            return {
+                'ok': True,
+                'dossier_id': dossier_id,
+                'actor': actor,
+                'target': target,
+                'directives': active_dirs,
+                'liability_escrow_cr': liability_cr,
+                'rounds_active': rounds_active,
+                'created_round': ref.current_round,
+                'status': 'unleaked'
+            }
+
+    def leak_audit_dossier(self, actor: str, dossier_id: int) -> Dict[str, Any]:
+        """Leaking an audit dossier triggers Sol Regulatory Commission treble fines,
+        dynamic stock crash (12-20%), and whistleblower bounties (#248)."""
+        actor = (actor or '').strip().lower()
+        ref = self.ref
+        with ref.lock, ref.conn:
+            row = ref.conn.execute("SELECT * FROM corp_audit_dossiers WHERE dossier_id = ?", (dossier_id,)).fetchone()
+            if not row:
+                return _reject('not_found', f"No audit dossier #{dossier_id}")
+            if row['actor'] != actor and actor != 'admin':
+                return _reject('unauthorized', f"Dossier #{dossier_id} belongs to '{row['actor']}'")
+            if row['status'] == 'leaked':
+                return _reject('already_leaked', f"Dossier #{dossier_id} was already leaked to GalNet")
+
+            target = row['target']
+            rounds_active = row['rounds_active']
+            base_liability = row['liability_escrow_cr']
+            dirs = json.loads(row['directives_json'])
+
+            if base_liability <= 0 and dirs:
+                base_liability = 500
+
+            treble_fine = base_liability * 3
+
+            avail_target = ref.peer._available(target, 'CR') if hasattr(ref, 'peer') else ref.get_balance(target, 'CR')
+            paid_cash = max(0, min(avail_target, treble_fine))
+            shortfall = treble_fine - paid_cash
+
+            txn = f"whistleblower-fine-{target}-r{ref.current_round}"
+            if paid_cash > 0:
+                self._move(txn, [(target, 'CR', -paid_cash), ('SYSTEM', 'CR', paid_cash)])
+
+            if shortfall > 0:
+                self.add_debt(target, shortfall, reason=f"Sol Regulatory Commission treble fine shortfall (#{dossier_id})")
+
+            bounty = max(100, int(treble_fine * 0.20))
+            self._move(f"bounty-{actor}-r{ref.current_round}", [('SYSTEM', 'CR', -bounty), (actor, 'CR', bounty)])
+
+            pct = max(-0.20, min(-0.12, -0.12 - 0.01 * max(0, rounds_active - 1)))
+            sym = self._sym(target)
+            old_price = None
+            new_price = None
+            from agora.exchange import EXCHANGE_STATION
+            if sym and hasattr(ref, 'exchange') and ref.exchange is not None:
+                ev = {
+                    'kind': 'whistleblower_leak',
+                    'id': dossier_id,
+                    'actor': actor,
+                    'target': target,
+                    'victim': target,
+                    'liability_rounds': rounds_active,
+                    'pct': pct
+                }
+                rec = ref.exchange.event_shock_locked(ev)
+                if rec:
+                    old_price = rec.get('before')
+                    new_price = rec.get('after')
+                    ref.last_prices[(EXCHANGE_STATION, sym)] = new_price
+
+            if hasattr(ref, 'events') and ref.events is not None:
+                ref.events.record_locked(
+                    'whistleblower_leak',
+                    'public',
+                    actor=actor,
+                    victim=target,
+                    detail=f"Whistleblower leaked audit dossier on {target}. Treble fine of {treble_fine} CR enforced; stock cratered {abs(int(pct*100))}%",
+                    agent_id=target
+                )
+
+            ref.conn.execute("UPDATE corp_audit_dossiers SET status = 'leaked' WHERE dossier_id = ?", (dossier_id,))
+            ref.conn.execute(
+                "UPDATE corp_liability_escrow SET liability_escrow_cr = 0, rounds_active = 0, "
+                "total_penalties_paid = total_penalties_paid + ?, leaked = 1, last_leak_round = ? WHERE agent_id = ?",
+                (treble_fine, ref.current_round, target)
+            )
+
+            return {
+                'ok': True,
+                'dossier_id': dossier_id,
+                'target': target,
+                'treble_fine': treble_fine,
+                'cash_paid': paid_cash,
+                'debt_added': shortfall,
+                'whistleblower_bounty': bounty,
+                'stock_shock_pct': pct,
+                'old_price': old_price,
+                'new_price': new_price,
+                'directives': dirs
+            }
+
+    def get_dossiers(self, viewer: str) -> List[Dict[str, Any]]:
+        """List audit dossiers held by viewer."""
+        viewer = (viewer or '').strip().lower()
+        with self.ref.lock:
+            rows = self.ref.conn.execute(
+                "SELECT dossier_id, actor, target, directives_json, liability_escrow_cr, rounds_active, created_round, status "
+                "FROM corp_audit_dossiers WHERE actor = ? OR ? = 'admin' ORDER BY dossier_id DESC",
+                (viewer, viewer)
+            ).fetchall()
+            return [{
+                'dossier_id': r['dossier_id'],
+                'actor': r['actor'],
+                'target': r['target'],
+                'directives': json.loads(r['directives_json']),
+                'liability_escrow_cr': r['liability_escrow_cr'],
+                'rounds_active': r['rounds_active'],
+                'created_round': r['created_round'],
+                'status': r['status']
+            } for r in rows]
+
+    def scuttle_vessel(self, agent_id: str, vessel_id: str) -> Dict[str, Any]:
+        """Hull Scuttling moral hazard: Over-insure failing hauler to collect payout exceeding scrap value (#248)."""
+        agent = (agent_id or '').strip().lower()
+        ref = self.ref
+        with ref.lock, ref.conn:
+            row = ref.conn.execute("SELECT * FROM vessels WHERE vessel_id = ? AND agent_id = ?", (vessel_id, agent)).fetchone()
+            if not row:
+                return _reject('vessel_not_found', f"Vessel '{vessel_id}' not found for agent '{agent}'")
+
+            cost = row['cost'] or 1000
+            payout = max(1500, int(cost * 1.5))
+
+            txn = f"scuttle-payout-{vessel_id}-r{ref.current_round}"
+            self._move(txn, [('SYSTEM', 'CR', -payout), (agent, 'CR', payout)])
+            ref.conn.execute("DELETE FROM vessels WHERE vessel_id = ?", (vessel_id,))
+
+            SCUTTLE_LIABILITY = 300
+            ref.conn.execute("""
+                INSERT INTO corp_liability_escrow (agent_id, liability_escrow_cr, rounds_active)
+                VALUES (?, ?, 1)
+                ON CONFLICT(agent_id) DO UPDATE SET
+                    liability_escrow_cr = liability_escrow_cr + excluded.liability_escrow_cr,
+                    rounds_active = rounds_active + 1
+            """, (agent, SCUTTLE_LIABILITY))
+
+            ref.conn.execute(
+                "INSERT INTO corp_scuttle_claims (agent_id, vessel_id, payout_cr, round, status) VALUES (?, ?, ?, ?, 'paid')",
+                (agent, vessel_id, payout, ref.current_round)
+            )
+
+            if hasattr(ref, 'events') and ref.events is not None:
+                ref.events.record_locked(
+                    'hull_scuttle',
+                    'private',
+                    actor=agent,
+                    detail=f"{agent} claimed {payout} CR emergency insurance scuttling vessel {vessel_id}",
+                    round_num=ref.current_round
+                )
+
+            return {
+                'ok': True,
+                'vessel_id': vessel_id,
+                'agent_id': agent,
+                'payout_cr': payout,
+                'liability_added': SCUTTLE_LIABILITY
+            }

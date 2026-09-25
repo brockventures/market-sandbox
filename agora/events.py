@@ -80,10 +80,12 @@ SCANDALS = {
                  "{actor} has been exposed as the hand behind the sabotage of {victim}. ({how})"),
     'wiretap': ("SCANDAL: {ACTOR} WIRETAPPED {VICTIM}",
                 "Counter-intelligence operations uncovered an electronic wiretap planted on {victim} by {actor}. ({how})"),
+    'whistleblower_leak': ("SCANDAL: SOL REGULATORS EXPOSE {VICTIM} NEGLIGENCE",
+                           "Encrypted internal dossiers leaked by {actor} reveal {victim} systematically falsified safety directives to inflate quarterly dividends. Treble fines enforced by the Sol Regulatory Commission; stock cratered under activist short pressure. ({how})"),
 }
 DEFAULT_SCANDAL = ("SCANDAL: {ACTOR} EXPOSED",
                    "{actor}'s covert {kind} against {victim} has come to light. ({how})")
-HOW = {'leak': 'a source leaked it', 'trace': 'traced by traffic control', 'counter_intel': 'uncovered by counter-intelligence'}
+HOW = {'leak': 'a source leaked it', 'trace': 'traced by traffic control', 'counter_intel': 'uncovered by counter-intelligence', 'whistleblower': 'leaked by an insider whistleblower'}
 
 
 def env_events() -> bool:

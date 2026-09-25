@@ -1565,6 +1565,10 @@ class AgoraReferee:
 
             # Engines tier 2 cuts the burn by 40% (agora/upgrades.py, #189).
             required_fuel = self.upgrades.engine_fuel(agent_id, route['fuel'])
+            if getattr(self, 'corporate_enabled', False) and hasattr(self, 'corporate'):
+                fuel_cut = self.corporate.get_fuel_burn_discount(agent_id)
+                if fuel_cut > 0:
+                    required_fuel = max(1, int(required_fuel * (1.0 - fuel_cut)))
             fuel_bal = self._account_balance(acct, 'FUEL')
             committed_fuel = self.committed(agent_id, 'FUEL', acct)
             avail_fuel = fuel_bal - committed_fuel
@@ -1579,6 +1583,10 @@ class AgoraReferee:
             decay_rate = route.get('decay_rate', 0.0) if is_perishable else 0.0
 
             toll_required = route.get('toll', 0)
+            if getattr(self, 'corporate_enabled', False) and hasattr(self, 'corporate') and toll_required > 0:
+                toll_cut = self.corporate.get_opex_discount(agent_id)
+                if toll_cut > 0:
+                    toll_required = int(toll_required * (1.0 - toll_cut))
             if toll_required > 0:
                 cr_bal = self.get_balance(agent_id, 'CR')
                 committed_cr = self.committed(agent_id, 'CR')

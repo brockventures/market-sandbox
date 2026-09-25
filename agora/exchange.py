@@ -118,6 +118,7 @@ SHOCKS: Dict[str, tuple] = {
     'sabotage':             ('actor', -0.08),   # fires only on exposure
     'stake_20':             ('victim', 0.03),   # takeover premium
     'deregulation_enacted': ('actor', 0.03), # planetary council lobbying shock (#134)
+    'whistleblower_leak':   ('victim', -0.15),  # dynamic 12-20% shock in shock_for (#248)
 }
 
 EXTENDED_SHOCKS: Dict[str, tuple] = {
@@ -142,6 +143,12 @@ def shock_for(ev: Dict[str, Any], include_extended: bool = False) -> Optional[tu
         lost = max(0, int(ev.get('amount') or 0))
         pct = max(LOSS_CAP, LOSS_PER * lost / LOSS_UNIT)
         return (ev.get('victim'), pct) if pct else None
+    if kind == 'whistleblower_leak':
+        # Dynamic 12% to 20% price drop scaled to accumulated liability rounds (#248)
+        rounds = max(1, int(ev.get('liability_rounds') or ev.get('rounds_active') or 1))
+        pct = max(-0.20, min(-0.12, -0.12 - 0.01 * (rounds - 1)))
+        who = ev.get('victim') or ev.get('target') or ev.get('actor')
+        return (who, pct) if who else None
     table = dict(SHOCKS)
     if include_extended:
         table.update(EXTENDED_SHOCKS)

@@ -1137,7 +1137,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             self._send_json(400 if result.get('kind') == 'reject' else 200, result)
             return
 
-        if path in ('/referee/covert/wiretap', '/referee/covert/sabotage', '/referee/covert/rumor'):
+        if path in ('/referee/covert/wiretap', '/referee/covert/sabotage', '/referee/covert/rumor', '/referee/covert/dossier', '/referee/covert/leak'):
             auth_agent, auth_err = self._authenticate_request()
             if auth_err:
                 self._send_json(401, auth_err)
@@ -1168,6 +1168,10 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
             elif path == '/referee/covert/sabotage':
                 result = ref.covert.execute_sabotage(agent, str(data.get('target', '')), str(data.get('mode', 'auto')),
                                                      target_vessel=data.get('target_vessel'))
+            elif path == '/referee/covert/dossier':
+                result = ref.covert.compile_audit_dossier(agent, str(data.get('target', '')))
+            elif path == '/referee/covert/leak':
+                result = ref.covert.leak_audit_dossier(agent, int(data.get('dossier_id', 0)))
             else:
                 result = ref.covert.plant_rumor(
                     agent,
@@ -1248,7 +1252,8 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 'loan', 'loan_offer', 'loan_accept', 'loan_cancel',
                 'loan/offer', 'loan/accept', 'loan/cancel',
                 'debt_buy', 'loan_repay',
-                'spin_off', 'spin-off', 'asset_spin_off'
+                'spin_off', 'spin-off', 'asset_spin_off',
+                'directive', 'scuttle'
             )
             if action in allowed_actions:
                 auth_agent, auth_err = self._authenticate_request()
@@ -1305,6 +1310,17 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                             data.get('asset_type', ''),
                             asset_id=data.get('asset_id') or data.get('vessel_id'),
                             shares=data.get('shares')
+                        )
+                    elif action == 'directive':
+                        result = ref.corporate.set_negligence_directive(
+                            agent,
+                            str(data.get('directive_id', '')),
+                            bool(data.get('enabled', True))
+                        )
+                    elif action == 'scuttle':
+                        result = ref.corporate.scuttle_vessel(
+                            agent,
+                            str(data.get('vessel_id', ''))
                         )
                     else:
                         result = {'v': 1, 'kind': 'reject', 'payload': {'reason': 'unknown_action', 'detail': f"Unknown governance action '{action}'"}}
@@ -1877,6 +1893,24 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 since, limit = 0, 50
             self._send_json(200, {'status': 'ok', 'events_enabled': ref.events_enabled, 'round': ref.current_round,
                                   'viewer': viewer, 'events': ref.events.visible_to(viewer, since, limit)})
+        elif path == '/referee/corporate/directives':
+            viewer = self._reader()
+            if not viewer:
+                self._send_json(401, {'error': 'unauthorized', 'detail': 'Authentication required'})
+                return
+            agent = query_params.get('agent_id', [viewer])[0]
+            if agent != viewer and viewer != 'admin':
+                self._send_json(403, {'error': 'forbidden', 'detail': 'Cannot inspect private corporate directives without wiretap or admin'})
+                return
+            self._send_json(200, {'status': 'ok', **ref.corporate.get_negligence_directives(agent)})
+            return
+        elif path == '/referee/covert/dossiers':
+            viewer = self._reader()
+            if not viewer:
+                self._send_json(401, {'error': 'unauthorized', 'detail': 'Authentication required'})
+                return
+            self._send_json(200, {'status': 'ok', 'dossiers': ref.covert.get_dossiers(viewer)})
+            return
         elif path == '/referee/upgrades':
             who = query_params.get('agent_id', [None])[0]
             self._send_json(200, {'status': 'ok', 'upgrades_enabled': ref.upgrades_enabled,
