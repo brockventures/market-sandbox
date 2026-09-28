@@ -271,6 +271,14 @@ class TickerEngine:
         seq = self.referee.record_burst_event("start", {
             "burst_id": burst_id, "rounds": rounds, "interval_sec": interval_sec,
         })
+        try:
+            # Combine standings rank-by-delta (#see referee.record_burst_baseline):
+            # snapshot net worth before the first round of this burst runs so a
+            # fleet can't win purely on pre-existing cargo valuation. Best-effort
+            # -- a snapshot failure should not block the burst itself.
+            self.referee.record_burst_baseline(burst_id)
+        except Exception:
+            pass
 
         self._burst_thread = threading.Thread(
             target=self._run_burst_loop, args=(burst_id, rounds, interval_sec), name="agora-burst", daemon=True

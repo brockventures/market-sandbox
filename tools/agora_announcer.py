@@ -332,11 +332,35 @@ def cancel_referee_burst() -> dict:
 
 
 def format_final_standings(leaderboard_data: dict) -> str:
-    """Format final combine standings table from leaderboard data."""
-    entries = leaderboard_data.get("leaderboard", [])
+    """Format final combine standings table from leaderboard data.
+
+    When the referee has a burst baseline recorded, entries carry
+    baseline_net_worth/delta_net_worth (agora/referee.py get_leaderboard),
+    and standings are ranked by delta (change in net worth over the burst)
+    instead of absolute net worth -- otherwise a fleet that makes zero
+    trades can win purely on starting cargo valuation (burst-1790484966-
+    ec8543: APM won 26,775 CR with no trades). No cheap per-agent trade-
+    volume field exists to break ties, so ties fall back to final net worth.
+    Absent a baseline, falls back to the order the leaderboard arrived in
+    (i.e. absolute net worth, unchanged from before)."""
+    entries = list(leaderboard_data.get("leaderboard", []))
     if not entries:
         return "> *No fleet telemetry available.*"
-    lines = ["🏆 **FINAL STANDINGS // SOL SYSTEM COMBINE CHAMPIONSHIP:**"]
+
+    has_delta = any(e.get("delta_net_worth") is not None for e in entries)
+    if has_delta:
+        entries.sort(
+            key=lambda e: (
+                e.get("delta_net_worth") if e.get("delta_net_worth") is not None else float("-inf"),
+                e.get("net_worth", e.get("mtm_net_worth", 0)),
+            ),
+            reverse=True,
+        )
+
+    header = "🏆 **FINAL STANDINGS // SOL SYSTEM COMBINE CHAMPIONSHIP:**"
+    if has_delta:
+        header += " *(ranked by Δ Net Worth this burst)*"
+    lines = [header]
     medals = {1: "🥇", 2: "🥈", 3: "🥉", 4: "🏅"}
     for idx, e in enumerate(entries[:4], 1):
         ag = e.get("agent_id", "unknown")
@@ -347,12 +371,18 @@ def format_final_standings(leaderboard_data: dict) -> str:
         food = e.get("balance", {}).get("FOOD", 0)
         ore = e.get("balance", {}).get("ORE", 0)
         mach = e.get("balance", {}).get("MACHINERY", 0)
-        mtm = e.get("mtm_net_worth", cr)
-        lines.append(
+        mtm = e.get("mtm_net_worth", e.get("net_worth", cr))
+        line = (
             f"{medals.get(idx, '•')} **#{idx} {name}**\n"
             f"> **Net Worth:** `{mtm:,} CR` | Liquid: `{cr:,} CR`\n"
             f"> Cargo: `{frag} FRAG` | `{food} FOOD` | `{ore} ORE` | `{mach} MACHINERY` (Fuel: `{fuel}`)"
         )
+        baseline = e.get("baseline_net_worth")
+        delta = e.get("delta_net_worth")
+        if baseline is not None and delta is not None:
+            sign = "+" if delta >= 0 else ""
+            line += f"\n> Baseline: `{baseline:,} CR` | Final: `{mtm:,} CR` | **Δ NW: `{sign}{delta:,} CR`**"
+        lines.append(line)
     return "\n".join(lines)
 
 def pause_referee_ticker() -> dict:
@@ -1485,7 +1515,23 @@ def build_announcement(round_num: int = 1, rounds_total: int = 8, codename: str 
     ]
     quotes_str = "\n".join(quotes)
 
-    lb_entries = leaderboard.get("leaderboard", [])
+    # Combine standings rank-by-delta: when the referee has a burst baseline
+    # recorded (agora/referee.py get_leaderboard), rank this round's display
+    # by change in net worth over the burst instead of absolute net worth --
+    # otherwise a fleet sitting on starting cargo with zero trades reads as
+    # "winning" every round (burst-1790484966-ec8543: APM, 26,775 CR, no
+    # trades). Ties fall back to final net worth (no cheap per-agent trade-
+    # volume field exists yet to break them more finely).
+    lb_entries = list(leaderboard.get("leaderboard", []))
+    standings_has_delta = any(e.get("delta_net_worth") is not None for e in lb_entries)
+    if standings_has_delta:
+        lb_entries.sort(
+            key=lambda e: (
+                e.get("delta_net_worth") if e.get("delta_net_worth") is not None else float("-inf"),
+                e.get("net_worth", 0),
+            ),
+            reverse=True,
+        )
     standings_lines = []
     for idx, e in enumerate(lb_entries[:4], 1):
         ag = e.get("agent_id", "unknown")
@@ -1510,9 +1556,13 @@ def build_announcement(round_num: int = 1, rounds_total: int = 8, codename: str 
         if fuel > 0:
             holdings.append(f"{fuel} FUEL")
         cargo_str = f" | {', '.join(holdings)}" if holdings else ""
-        standings_lines.append(
-            f"• **#{idx} {fl}:** **{nw:,} CR** NW ({cr:,} liquid{cargo_str})"
-        )
+        line = f"• **#{idx} {fl}:** **{nw:,} CR** NW ({cr:,} liquid{cargo_str})"
+        baseline = e.get("baseline_net_worth")
+        delta = e.get("delta_net_worth")
+        if baseline is not None and delta is not None:
+            sign = "+" if delta >= 0 else ""
+            line += f" | Base `{baseline:,}` -> Δ **`{sign}{delta:,}`**"
+        standings_lines.append(line)
     standings_str = "\n".join(standings_lines) if standings_lines else "No active balances"
 
     target_tag = mention if mention else DEFAULT_TARGET_TAG
@@ -1530,7 +1580,7 @@ def build_announcement(round_num: int = 1, rounds_total: int = 8, codename: str 
         f"📡 **GALNET:** *{st_info['intel']}* — 💡 *{st_info['opp']}*\n\n"
         f"📈 **{st_key.upper()} DEPOT QUOTES:**\n"
         f"{quotes_str}\n\n"
-        f"📊 **STANDINGS (MARK-TO-MARKET NET WORTH):**\n"
+        f"📊 **STANDINGS ({'Δ NET WORTH THIS BURST' if standings_has_delta else 'MARK-TO-MARKET NET WORTH'}):**\n"
         f"{standings_str}\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🤖 **DIRECTIVE (Round #{round_num}):**\n"

@@ -212,6 +212,14 @@ class FogEngine:
                         if qty and comm in raw_marks and comm in new_marks:
                             delta += qty * (new_marks[comm] - raw_marks[comm])
                 e['net_worth'] = entry.get('net_worth', 0) + delta
+                # Combine standings rank-by-delta: baseline_net_worth is a
+                # frozen snapshot from burst start (not a live remote price),
+                # so it is safe to show as-is; delta_net_worth is recomputed
+                # from whatever net_worth this viewer actually sees (jittered
+                # here) so a fogged viewer's delta never leaks the exact
+                # underlying net_worth via cross-checking against baseline.
+                if e.get('baseline_net_worth') is not None:
+                    e['delta_net_worth'] = e['net_worth'] - e['baseline_net_worth']
 
             out.append(e)
         out.sort(key=lambda x: x.get('net_worth', 0), reverse=True)

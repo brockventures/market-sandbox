@@ -468,6 +468,22 @@ class AgoraReferee:
                 )
             """)
 
+            # Ensure burst_baseline table exists unconditionally (combine
+            # standings rank-by-delta): snapshots each fleet's net worth at
+            # burst start so a fleet that made zero trades can't win purely
+            # on starting cargo valuation, and so a restart mid-burst
+            # doesn't lose the baseline. Wholesale-replaced on the next
+            # start_burst (see record_burst_baseline).
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS burst_baseline (
+                    burst_id    TEXT NOT NULL,
+                    agent_id    TEXT NOT NULL,
+                    net_worth   INTEGER NOT NULL,
+                    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                    PRIMARY KEY (burst_id, agent_id)
+                )
+            """)
+
             # Ensure equity_loans table exists unconditionally
             self.conn.execute("""
                 CREATE TABLE IF NOT EXISTS equity_loans (
@@ -1185,6 +1201,44 @@ class AgoraReferee:
                 fields.append("last_tick_at = ?")
                 params.append(last_tick_at)
             self.conn.execute(f"UPDATE ticker_state SET {', '.join(fields)} WHERE id = 1", params)
+
+    def record_burst_baseline(self, burst_id: str) -> Dict[str, int]:
+        """
+        Snapshot each fleet's net worth at burst start (combine standings,
+        rank-by-delta): a fleet that makes zero trades should not win burst
+        standings on starting cargo valuation alone (burst-1790484966-ec8543:
+        APM won 26,775 CR with no trades). Server-authoritative -- computed
+        the same way get_leaderboard() computes net_worth -- and persisted
+        so a restart mid-burst doesn't lose it. Wholesale-replaces any prior
+        burst's baseline; only the most recent burst's baseline is kept.
+        """
+        board = self.get_leaderboard()
+        snapshot = {row['agent_id']: int(row['net_worth']) for row in board}
+        with self.lock, self.conn:
+            self.conn.execute("DELETE FROM burst_baseline")
+            self.conn.executemany(
+                "INSERT INTO burst_baseline (burst_id, agent_id, net_worth) VALUES (?, ?, ?)",
+                [(burst_id, agent_id, nw) for agent_id, nw in snapshot.items()]
+            )
+        return snapshot
+
+    def get_burst_baseline(self) -> Optional[Dict[str, Any]]:
+        """
+        Read the persisted burst baseline, if any. Returns
+        {'burst_id': ..., 'net_worth': {agent_id: baseline_net_worth}}, or
+        None if no burst has ever been started against this database (or the
+        table is otherwise empty).
+        """
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT burst_id, agent_id, net_worth FROM burst_baseline"
+            ).fetchall()
+        if not rows:
+            return None
+        return {
+            'burst_id': rows[0]['burst_id'],
+            'net_worth': {r['agent_id']: r['net_worth'] for r in rows},
+        }
 
     def record_burst_event(self, phase: str, payload_extra: Optional[Dict[str, Any]] = None) -> int:
         """
@@ -3149,6 +3203,23 @@ class AgoraReferee:
                 b['stocks_value'] = value
                 b['net_worth'] += value
             board.sort(key=lambda x: x['net_worth'], reverse=True)
+
+            # Combine standings rank-by-delta: attach the burst-start baseline
+            # and each fleet's change in net worth since then, when a burst
+            # baseline has been recorded. Absent baseline -> both fields are
+            # None; this never changes the sort above (still by net_worth) --
+            # callers that want a delta-ranked view (the Discord announcer)
+            # re-sort on delta_net_worth themselves.
+            baseline = self.get_burst_baseline()
+            bmap = baseline['net_worth'] if baseline else {}
+            for b in board:
+                base_nw = bmap.get(b['agent_id'])
+                if base_nw is not None:
+                    b['baseline_net_worth'] = base_nw
+                    b['delta_net_worth'] = b['net_worth'] - base_nw
+                else:
+                    b['baseline_net_worth'] = None
+                    b['delta_net_worth'] = None
             return board
     def _fleet_mark_station_locked(self, agent_id: str) -> str:
         """Ship 1's station (its trip's origin while it flies), for a fleet's
