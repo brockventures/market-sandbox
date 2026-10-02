@@ -212,6 +212,13 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
             out.extend(hist_table)
             out.append("")
     out.append("## Routes")
+    burst_info = getattr(ref, 'get_burst_info', lambda: None)()
+    if burst_info and burst_info.get('active'):
+        rounds_left = burst_info.get('rounds_remaining', 0)
+        end_round = burst_info.get('end_round')
+        end_str = f" (final round: {end_round})" if end_round is not None else ""
+        out.append(f"**Rounds left in burst: {rounds_left}**{end_str}")
+        out.append("")
     out.extend(_route_table(rnd))
     out.append("")
     out.append("## Fleets")

@@ -1258,6 +1258,34 @@ class AgoraReferee:
             )
             return next_seq
 
+    def get_burst_info(self) -> Dict[str, Any]:
+        """
+        Returns active burst run status and round boundaries (Issue #289).
+        Integrates with TickerEngine or test-injected _manual_burst_info.
+        """
+        manual = getattr(self, '_manual_burst_info', None)
+        if manual is not None:
+            return manual
+        ticker = getattr(self, 'ticker', None)
+        if ticker:
+            burst_lock = getattr(ticker, '_burst_lock', None)
+            if burst_lock:
+                with burst_lock:
+                    if getattr(ticker, '_burst_active', False):
+                        remaining = getattr(ticker, '_burst_rounds_remaining', 0)
+                        total = getattr(ticker, '_burst_rounds_total', 0)
+                        end_round = getattr(ticker, '_burst_end_round', None)
+                        if end_round is None:
+                            end_round = self.current_round + remaining
+                        return {
+                            'active': True,
+                            'burst_id': getattr(ticker, '_burst_id', None),
+                            'rounds_remaining': remaining,
+                            'rounds_total': total,
+                            'end_round': end_round,
+                        }
+        return {'active': False, 'burst_id': None, 'rounds_remaining': 0, 'rounds_total': 0, 'end_round': None}
+
     def get_balance(self, agent_id: str, instrument: str) -> int:
         """One account's balance. For a roster corp and a good (#175), the
         corp total: every ship's hold plus its station holds. Code that
@@ -1803,31 +1831,52 @@ class AgoraReferee:
                     })
                 ))
 
-            return {
+            burst_info = self.get_burst_info()
+            arrives_after_burst_end = False
+            warning = None
+            if burst_info.get('active'):
+                end_rnd = burst_info.get('end_round')
+                if end_rnd is not None and arr_round >= end_rnd:
+                    arrives_after_burst_end = True
+                    warning = (
+                        f"Transit arrives on round {arr_round}, at or after the burst's final round "
+                        f"({end_rnd}). Cargo cannot be sold before the burst concludes."
+                    )
+
+            resp_payload = {
+                'transit_id': transit_id,
+                'agent_id': agent_id,
+                'vessel_id': vessel_id,
+                'origin': origin,
+                'destination': dest,
+                'departure_round': dep_round,
+                'arrival_round': arr_round,
+                'rounds_duration': base_rounds,
+                'commodity': comm,
+                'cargo_qty': cargo_qty,
+                'fuel_burned': required_fuel,
+                'is_aligned': route.get('is_aligned', False),
+                'window_name': route.get('window_name'),
+                'toll_paid': toll_required,
+                'perishable': is_perishable,
+                'decay_rate': decay_rate,
+                'hazard': {'delay': hz_delay, 'lost_qty': hz_lost, 'note': hz_note} if hz_note else None,
+                'piracy': piracy,
+                'arrives_after_burst_end': arrives_after_burst_end,
+            }
+            if warning:
+                resp_payload['warning'] = warning
+
+            ret = {
                 'v': 1,
                 'kind': 'status',
                 'status': 'in_transit',
-                'payload': {
-                    'transit_id': transit_id,
-                    'agent_id': agent_id,
-                    'vessel_id': vessel_id,
-                    'origin': origin,
-                    'destination': dest,
-                    'departure_round': dep_round,
-                    'arrival_round': arr_round,
-                    'rounds_duration': base_rounds,
-                    'commodity': comm,
-                    'cargo_qty': cargo_qty,
-                    'fuel_burned': required_fuel,
-                    'is_aligned': route.get('is_aligned', False),
-                    'window_name': route.get('window_name'),
-                    'toll_paid': toll_required,
-                    'perishable': is_perishable,
-                    'decay_rate': decay_rate,
-                    'hazard': {'delay': hz_delay, 'lost_qty': hz_lost, 'note': hz_note} if hz_note else None,
-                    'piracy': piracy,
-                }
+                'arrives_after_burst_end': arrives_after_burst_end,
+                'payload': resp_payload,
             }
+            if warning:
+                ret['warning'] = warning
+            return ret
 
     def step_round(self, round_num: Optional[int] = None) -> Dict[str, Any]:
         with self.lock:

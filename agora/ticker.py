@@ -46,6 +46,11 @@ class TickerEngine:
         min_interval_sec: float = 1.0,
     ):
         self.referee = referee
+        if not hasattr(referee, "ticker") or getattr(referee, "ticker", None) is None:
+            try:
+                referee.ticker = self
+            except Exception:
+                pass
         self.min_interval_sec = max(0.001, float(min_interval_sec))
         self.interval_sec = max(self.min_interval_sec, float(interval_sec))
         self.inactivity_rounds = max(1, int(inactivity_rounds))
@@ -74,6 +79,7 @@ class TickerEngine:
         self._burst_id: Optional[str] = None
         self._burst_rounds_total = 0
         self._burst_rounds_remaining = 0
+        self._burst_end_round: Optional[int] = None
         self._burst_resume_ticker_after = False
 
     # Never read referee.current_seq while holding self._lock: it takes the
@@ -235,6 +241,7 @@ class TickerEngine:
                 "burst_id": self._burst_id,
                 "rounds_remaining": self._burst_rounds_remaining,
                 "burst_rounds_total": self._burst_rounds_total,
+                "burst_end_round": self._burst_end_round,
             })
         return base
 
@@ -262,6 +269,8 @@ class TickerEngine:
             self._burst_id = burst_id
             self._burst_rounds_total = rounds
             self._burst_rounds_remaining = rounds
+            current_rnd = getattr(self.referee, "current_round", 0)
+            self._burst_end_round = current_rnd + rounds
             self._burst_stop_event.clear()
 
         with self._lock:
@@ -298,6 +307,7 @@ class TickerEngine:
                 self._burst_active = False
                 self._burst_id = None
                 self._burst_rounds_remaining = 0
+                self._burst_end_round = None
         if force:
             with self._lock:
                 if self._paused and self._pause_reason and self._pause_reason.startswith("burst:"):
@@ -313,6 +323,7 @@ class TickerEngine:
             self._burst_active = False
             self._burst_id = None
             self._burst_rounds_remaining = 0
+            self._burst_end_round = None
             self._burst_stop_event.set()
 
         with self._lock:
@@ -351,6 +362,7 @@ class TickerEngine:
             self._burst_active = False
             self._burst_id = None
             self._burst_rounds_remaining = 0
+            self._burst_end_round = None
         self.referee.record_burst_event("conclude", {"burst_id": burst_id})
 
         with self._lock:
