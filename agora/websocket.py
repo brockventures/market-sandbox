@@ -122,7 +122,8 @@ class TerminalDiffEngine:
         # public_fog: while fog is on, a non-admin stream shows what every
         # fleet can see: all four stations at the public (stale, jittered)
         # view, no exact goods books, prints or bands. Stocks stay exact.
-        self.public_fog = bool(public_fog and getattr(referee, 'fog', None))
+        # When fog is off, public_fog still enforces in-flight transit stealth (#290).
+        self.public_fog = bool(public_fog)
         self.last_depots_hash: str = ""
         self.last_seq: int = 0
         self.last_leaderboard_hash: str = ""
@@ -138,7 +139,7 @@ class TerminalDiffEngine:
         return inst.startswith("EQ_")
 
     def _book(self, st: str, inst: str) -> Dict[str, Any]:
-        if not self.public_fog or self._is_stock(inst):
+        if not self.public_fog or not getattr(self.referee, 'fog', None) or self._is_stock(inst):
             return self.referee.get_book_snapshot(st, inst)
         q = self._depots()["stations"].get(st, {}).get(inst, {})
         side = lambda px, s: ([{"order_id": None, "agent_id": f"depot_{st}", "side": s, "qty": None,
@@ -147,18 +148,18 @@ class TerminalDiffEngine:
                 "asks": side(q.get("best_ask"), "ask")}
 
     def _last(self, st: str, inst: str):
-        if self.public_fog and not self._is_stock(inst):
+        if self.public_fog and getattr(self.referee, 'fog', None) and not self._is_stock(inst):
             return None, None
         return self.referee.get_last_price(st, inst), self.referee.get_last_qty(st, inst)
 
     def _bands(self, st: str, inst: str):
-        if self.public_fog and not self._is_stock(inst):
+        if self.public_fog and getattr(self.referee, 'fog', None) and not self._is_stock(inst):
             return []
         return self.referee.get_circuit_breaker_bands(st, inst)
 
     def _halts(self):
         halts = self.referee.get_circuit_breaker_halts()
-        if not self.public_fog:
+        if not self.public_fog or not getattr(self.referee, 'fog', None):
             return halts
         # Which book is halted is public; the prices around the halt are not.
         return [{k: v for k, v in h.items() if not any(w in k for w in ("price", "limit", "vwap", "volume"))}
@@ -174,7 +175,7 @@ class TerminalDiffEngine:
 
     def _depots(self) -> Dict[str, Any]:
         ref = self.referee
-        if self.public_fog and ref.fog:
+        if self.public_fog and getattr(ref, 'fog', None):
             return ref.fog.depot_view(ref, None)
         return ref.get_depot_summary()
 
@@ -239,7 +240,7 @@ class TerminalDiffEngine:
             "last_qty": last_qty,
             "depots": depots,
             "fog": ({"view": "public", "lag": self.referee.fog.lag, "noise": self.referee.fog.noise}
-                    if self.public_fog else None),
+                    if self.public_fog and getattr(self.referee, 'fog', None) else None),
             "circuit": {
                 "bands": bands,
                 "halts": halts

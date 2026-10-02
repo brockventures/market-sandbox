@@ -224,7 +224,7 @@ class TestStealthRestAndDelayedTape290(unittest.TestCase):
         self.assertEqual(res["status"], "floor_halted")
 
     def test_fog_filter_ticks_masks_in_flight_transit_with_piracy_demand(self):
-        """Issue #290 & #153: In-flight transit with piracy preserves public raid demand without leaking cargo/odds."""
+        """Issue #290 & #153: In-flight transit with piracy preserves public raid signal without leaking raid row details."""
         self.ref.current_round = 10
         ticks = [
             {
@@ -246,7 +246,16 @@ class TestStealthRestAndDelayedTape290(unittest.TestCase):
                         "odds": 0.45,
                         "demand": {
                             "transit_id": "tr-zero-01",
+                            "origin": "ceres",
+                            "destination": "earth",
+                            "commodity": "FOOD",
+                            "cargo_qty": 250,
+                            "cargo_value": 8000,
+                            "odds": 0.45,
+                            "ransom": 1600,
+                            "surrender_qty": 125,
                             "status": "pending",
+                            "deadline": "before round 11 starts",
                             "respond": "POST /referee/piracy/tr-zero-01/respond",
                         }
                     }
@@ -257,7 +266,12 @@ class TestStealthRestAndDelayedTape290(unittest.TestCase):
         p = filtered[0]["payload"]
         self.assertEqual(set(p.keys()), {"transit_id", "agent_id", "vessel_id", "departure_round", "arrival_round", "in_flight", "piracy"})
         self.assertEqual(set(p["piracy"].keys()), {"demand"})
-        self.assertEqual(p["piracy"]["demand"]["status"], "pending")
+        # Nested demand shape strictly pared to public signal only (Marvin review)
+        self.assertEqual(set(p["piracy"]["demand"].keys()), {"pending", "deadline"})
+        self.assertTrue(p["piracy"]["demand"]["pending"])
+        self.assertEqual(p["piracy"]["demand"]["deadline"], "before round 11 starts")
+        for leaked in ("destination", "origin", "commodity", "cargo_qty", "cargo_value", "odds", "ransom", "surrender_qty", "status", "respond"):
+            self.assertNotIn(leaked, p["piracy"]["demand"])
 
     def test_unfogged_referee_ticks_http_endpoint_masks_in_flight_transits(self):
         """Issue #290 (Marvin review): With AGORA_FOG=0 (ref.fog=None), /referee/ticks still masks in-flight transits."""
@@ -330,6 +344,58 @@ class TestStealthRestAndDelayedTape290(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+
+    def test_unfogged_websocket_terminal_diff_engine_masks_in_flight_transits(self):
+        """Issue #290 (Marvin review): TerminalDiffEngine with public_fog=True and ref.fog=None masks in-flight transits."""
+        from agora.websocket import TerminalDiffEngine
+
+        unfogged_ref = AgoraReferee(fog=None)
+        self.assertIsNone(unfogged_ref.fog)
+        unfogged_ref.current_round = 10
+
+        unfogged_ref.conn.execute(
+            "INSERT INTO book_events (seq, kind, payload) VALUES (?, 'transit', ?)",
+            (
+                1,
+                json.dumps({
+                    "transit_id": "tr-zero-01",
+                    "agent_id": "zero",
+                    "vessel_id": "zero/1",
+                    "origin": "ceres",
+                    "destination": "earth",
+                    "commodity": "FOOD",
+                    "cargo_qty": 250,
+                    "departure_round": 10,
+                    "arrival_round": 13,
+                    "fuel_burned": 30,
+                })
+            )
+        )
+        unfogged_ref.conn.commit()
+
+        # Public stream with fog disabled on referee
+        engine = TerminalDiffEngine(unfogged_ref, public_fog=True)
+        self.assertTrue(engine.public_fog)
+
+        ticks = engine._ticks()
+        self.assertEqual(len(ticks), 1)
+        p = ticks[0]["payload"]
+        self.assertTrue(p["in_flight"])
+        self.assertEqual(set(p.keys()), {"transit_id", "agent_id", "vessel_id", "departure_round", "arrival_round", "in_flight"})
+        self.assertNotIn("destination", p)
+        self.assertNotIn("commodity", p)
+
+        # Depots, books, halts remain unfogged when ref.fog is None
+        depots = engine._depots()
+        self.assertIn("stations", depots)
+        self.assertNotIn("fog", depots)
+
+        # Admin / private stream (public_fog=False) sees unmasked transit
+        admin_engine = TerminalDiffEngine(unfogged_ref, public_fog=False)
+        self.assertFalse(admin_engine.public_fog)
+        admin_ticks = admin_engine._ticks()
+        self.assertEqual(admin_ticks[0]["payload"]["destination"], "earth")
+        self.assertEqual(admin_ticks[0]["payload"]["commodity"], "FOOD")
 
     def test_rules_of_engagement_issue_290_documentation_parity(self):
         """Issue #290 Acceptance: rules-of-engagement.md documents delayed tape and chat role."""

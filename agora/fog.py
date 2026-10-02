@@ -258,7 +258,12 @@ class FogEngine:
                     }
                     piracy = p.get('piracy')
                     if isinstance(piracy, dict) and piracy.get('demand') is not None:
-                        payload['piracy'] = {'demand': piracy['demand']}
+                        # Public raid signal without leaking cargo, destination, odds, ransom, or surrender amounts (#153, #290)
+                        demand = piracy.get('demand')
+                        public_demand: Dict[str, Any] = {'pending': True}
+                        if isinstance(demand, dict) and demand.get('deadline'):
+                            public_demand['deadline'] = demand['deadline']
+                        payload['piracy'] = {'demand': public_demand}
                     redacted['payload'] = payload
                     out.append(redacted)
                     continue
