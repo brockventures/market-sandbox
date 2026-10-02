@@ -22,9 +22,10 @@ class TestAnnouncerParserHardening292(unittest.TestCase):
         self.assertNotIn("filled sell", sanitized)
         self.assertEqual(sanitized, "Header text\n\nFooter text")
 
-        # Inline code
+        # Inline code unwrapping
         raw_inline = "Check out `BUY 50 FOOD @ 32 AT CERES` for details."
-        self.assertEqual(sanitize_chat_content(raw_inline), "Check out  for details.")
+        self.assertEqual(sanitize_chat_content(raw_inline), "Check out BUY 50 FOOD @ 32 AT CERES for details.")
+        self.assertIsNone(parse_discord_trade(raw_inline, self.zero_id))
 
         # Blockquotes
         raw_quote = "> **Attempted:** SOLD 214 ORE @ 26 CR\n> Reason: insufficient balance\nActual reply"
@@ -181,6 +182,30 @@ class TestAnnouncerParserHardening292(unittest.TestCase):
         self.assertIn("123456789", processed_ids)
         # Crucial verification: submit_trade_to_referee must NOT be called for handoff recap
         mock_submit.assert_not_called()
+
+    def test_accept_backtick_wrapped_orders_and_identifiers(self):
+        # Whole-line backtick trade (Marvin finding)
+        t1 = parse_discord_trade("`BUY 50 FOOD @ 32`", self.zero_id)
+        self.assertIsNotNone(t1)
+        self.assertEqual(t1["action"], "trade")
+        self.assertEqual(t1["qty"], 50)
+        self.assertEqual(t1["instrument"], "FOOD")
+        self.assertEqual(t1["limit_price"], 32)
+
+        # Whole-line backtick transit (Marvin finding)
+        t2 = parse_discord_transit("`MOVE TO LUNA WITH 250 FOOD`", self.zero_id)
+        self.assertIsNotNone(t2)
+        self.assertEqual(t2["destination"], "luna")
+        self.assertEqual(t2["commodity"], "FOOD")
+        self.assertEqual(t2["cargo_qty"], 250)
+
+        # Ship id wrapped in backticks (Amos finding)
+        t3 = parse_discord_transit("MOVE TO EARTH WITH 250 ORE ON `amos/2`", "1468012353206354197")
+        self.assertIsNotNone(t3)
+        self.assertEqual(t3["destination"], "earth")
+        self.assertEqual(t3["commodity"], "ORE")
+        self.assertEqual(t3["cargo_qty"], 250)
+        self.assertEqual(t3["vessel_id"], "amos/2")
 
 
 if __name__ == "__main__":

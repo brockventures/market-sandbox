@@ -105,19 +105,19 @@ TRANSIT_PATTERN = re.compile(
 
 # Issue #292: Strict line-anchored patterns and chat sanitization
 def sanitize_chat_content(content: str) -> str:
-    """Strip fenced code blocks, inline code blocks, and blockquotes from chat content."""
+    """Strip fenced code blocks and blockquotes, while unwrapping inline code backticks."""
     if not content:
         return ""
     # Strip markdown fenced code blocks (```...```)
     clean = re.sub(r"```[\s\S]*?```", "", content)
-    # Strip inline code (`...`)
-    clean = re.sub(r"`[^`\n]*`", "", clean)
     # Strip blockquotes (> ...)
     clean = re.sub(r"^\s*>.*$", "", clean, flags=re.MULTILINE)
+    # Unwrap inline code (`...`) so backtick-wrapped orders and parameters parse cleanly
+    clean = re.sub(r"`([^`\n]+)`", r"\1", clean)
     return clean.strip()
 
 NARRATIVE_IGNORE_PATTERN = re.compile(
-    r"\b(?:filled|sold|bought|liquidated|reserve|ETA|ETA:|status|dispatched|arriving|arrives|landed|departed)\b|\bHOLD\b|<(?:qty|good|price|station|id)>",
+    r"^\s*(?:HOLD|STATUS|ETA)\b|\b(?:filled|sold|bought|liquidated|dispatched|arrived|landed|departed)\b|<(?:qty|good|price|station|id)>",
     re.IGNORECASE
 )
 
