@@ -39,7 +39,7 @@ def test_quote_fields_are_documented():
     quote, _ = _quote_and_receipt()
     assert quote["kind"] == "transit_quote"
     keys = set(quote["payload"]) | set(quote["payload"]["piracy"]) | set(quote["payload"]["hazard"])
-    keys |= {"kind", "status", "arrives_after_burst_end"}
+    keys |= set(quote) - {"payload", "v"}
     for name in ("public/documentation.html", "docs/wire-spec.md"):
         missing = sorted(keys - _words(DOCS[name]))
         assert not missing, (name, missing)
@@ -47,7 +47,7 @@ def test_quote_fields_are_documented():
 
 def test_receipt_fields_are_documented():
     _, receipt = _quote_and_receipt()
-    keys = set(receipt["payload"]) | {"arrives_after_burst_end"}
+    keys = set(receipt["payload"]) | (set(receipt) - {"payload", "v"})
     for name in ("public/documentation.html", "docs/wire-spec.md"):
         missing = sorted(keys - _words(DOCS[name]))
         assert not missing, (name, missing)
