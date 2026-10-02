@@ -93,6 +93,7 @@ class TestTraderClient(unittest.TestCase):
         self.assertEqual(mock_order.call_count, 2)  # 1 bid, 1 ask
         mock_cancel.assert_called()
 
+    @patch("tools.trader_client.get_transit_quote")
     @patch("tools.trader_client.post_transit")
     @patch("tools.trader_client.get_stations_routes")
     @patch("tools.trader_client.get_stations_prices")
@@ -105,7 +106,7 @@ class TestTraderClient(unittest.TestCase):
     @patch("tools.trader_client.check_health")
     @patch("tools.trader_client.time.sleep")
     def test_poll_round_loop_with_spatial_transit(
-        self, mock_sleep, mock_health, mock_ticker, mock_book, mock_accs, mock_order, mock_cancel, mock_locs, mock_prices, mock_routes, mock_transit
+        self, mock_sleep, mock_health, mock_ticker, mock_book, mock_accs, mock_order, mock_cancel, mock_locs, mock_prices, mock_routes, mock_transit, mock_quote
     ):
         mock_locs.return_value = {"locations": [{"agent_id": "zero", "status": "docked", "station_id": "ceres"}]}
         mock_health.return_value = {"status": "ok", "seq": 20, "floor": "open"}
@@ -137,12 +138,98 @@ class TestTraderClient(unittest.TestCase):
                 {"destination": "earth", "fuel": 10, "toll": 50}
             ]
         }
+        mock_quote.return_value = {
+            "status": "quote",
+            "arrives_after_burst_end": False,
+            "may_arrive_after_burst_end": False,
+            "payload": {"fuel_required": 10, "base_rounds": 1}
+        }
         mock_transit.return_value = {"status": "en_route"}
         mock_order.return_value = {"status": "accepted"}
         mock_cancel.return_value = {"status": "cancelled_all", "payload": {"count": 1}}
 
         trader_client.poll_round_loop(poll_interval=0.01, max_rounds=1)
-        mock_transit.assert_called_once_with(destination="earth", commodity="FRAG", cargo_qty=50)
+        mock_quote.assert_called_once_with(destination="earth", commodity="FRAG", cargo_qty=50, agent_id="zero")
+        mock_transit.assert_called_once_with(destination="earth", commodity="FRAG", cargo_qty=50, agent_id="zero")
+
+    @patch("tools.trader_client.get_transit_quote")
+    @patch("tools.trader_client.post_transit")
+    @patch("tools.trader_client.get_stations_routes")
+    @patch("tools.trader_client.get_stations_prices")
+    @patch("tools.trader_client.get_stations_locations")
+    @patch("tools.trader_client.cancel_all")
+    @patch("tools.trader_client.submit_order")
+    @patch("tools.trader_client.get_accounts")
+    @patch("tools.trader_client.get_book")
+    @patch("tools.trader_client.get_ticker_status")
+    @patch("tools.trader_client.check_health")
+    @patch("tools.trader_client.time.sleep")
+    def test_poll_round_loop_spatial_transit_blocked_by_burst_horizon(
+        self, mock_sleep, mock_health, mock_ticker, mock_book, mock_accs, mock_order, mock_cancel, mock_locs, mock_prices, mock_routes, mock_transit, mock_quote
+    ):
+        mock_locs.return_value = {"locations": [{"agent_id": "zero", "status": "docked", "station_id": "ceres"}]}
+        mock_health.return_value = {"status": "ok", "seq": 20, "floor": "open"}
+        mock_ticker.return_value = {"status": "ok", "running": True, "current_round": 10}
+        mock_book.return_value = {"book": {"bids": [], "asks": []}}
+        mock_accs.return_value = [{"agent_id": "zero", "liquid": 10000, "frags": 1000, "fuel": 500}]
+        mock_prices.return_value = {"data": {"prices": {"ceres": {"FRAG": 15.0}, "earth": {"FRAG": 25.0}}}}
+        mock_routes.return_value = {"routes": [{"destination": "earth", "fuel": 10, "toll": 50}]}
+        mock_quote.return_value = {
+            "status": "quote",
+            "arrives_after_burst_end": True,
+            "warning": "Transit arrives after burst end",
+            "payload": {"arrives_after_burst_end": True, "fuel_required": 10}
+        }
+        mock_cancel.return_value = {"status": "cancelled_all", "payload": {"count": 0}}
+
+        trader_client.poll_round_loop(poll_interval=0.01, max_rounds=1)
+        mock_quote.assert_called_once()
+        mock_transit.assert_not_called()
+
+    @patch("tools.trader_client.get_transit_quote")
+    @patch("tools.trader_client.post_transit")
+    @patch("tools.trader_client.get_stations_routes")
+    @patch("tools.trader_client.get_stations_prices")
+    @patch("tools.trader_client.get_stations_locations")
+    @patch("tools.trader_client.cancel_all")
+    @patch("tools.trader_client.submit_order")
+    @patch("tools.trader_client.get_accounts")
+    @patch("tools.trader_client.get_book")
+    @patch("tools.trader_client.get_ticker_status")
+    @patch("tools.trader_client.check_health")
+    @patch("tools.trader_client.time.sleep")
+    def test_poll_round_loop_spatial_transit_blocked_by_hazard_risk(
+        self, mock_sleep, mock_health, mock_ticker, mock_book, mock_accs, mock_order, mock_cancel, mock_locs, mock_prices, mock_routes, mock_transit, mock_quote
+    ):
+        mock_locs.return_value = {"locations": [{"agent_id": "zero", "status": "docked", "station_id": "ceres"}]}
+        mock_health.return_value = {"status": "ok", "seq": 20, "floor": "open"}
+        mock_ticker.return_value = {"status": "ok", "running": True, "current_round": 10}
+        mock_book.return_value = {"book": {"bids": [], "asks": []}}
+        mock_accs.return_value = [{"agent_id": "zero", "liquid": 10000, "frags": 1000, "fuel": 500}]
+        mock_prices.return_value = {"data": {"prices": {"ceres": {"FRAG": 15.0}, "earth": {"FRAG": 25.0}}}}
+        mock_routes.return_value = {"routes": [{"destination": "earth", "fuel": 10, "toll": 50}]}
+        mock_quote.return_value = {
+            "status": "quote",
+            "arrives_after_burst_end": False,
+            "may_arrive_after_burst_end": True,
+            "warning": "Transit may arrive after burst end if delayed",
+            "payload": {"arrives_after_burst_end": False, "may_arrive_after_burst_end": True, "fuel_required": 10}
+        }
+        mock_cancel.return_value = {"status": "cancelled_all", "payload": {"count": 0}}
+
+        trader_client.poll_round_loop(poll_interval=0.01, max_rounds=1)
+        mock_quote.assert_called_once()
+        mock_transit.assert_not_called()
+
+    @patch("tools.trader_client.request")
+    def test_get_transit_quote_request_params(self, mock_req):
+        mock_req.return_value = {"status": "quote", "payload": {}}
+        res = trader_client.get_transit_quote(destination="earth", commodity="FOOD", cargo_qty=25, escort=True, vessel_id="zero/1")
+        self.assertEqual(res["status"], "quote")
+        mock_req.assert_called_once_with(
+            "/stations/transit/quote?destination=earth&commodity=FOOD&cargo_qty=25&escort=true&vessel_id=zero/1",
+            agent_id="zero"
+        )
 
     def test_set_agent(self):
         trader_client.set_agent("aerial", token="tok-aerial-123")

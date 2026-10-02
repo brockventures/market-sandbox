@@ -169,6 +169,10 @@ class TestTransitQuote285288(unittest.TestCase):
         payload = res['payload']
         self.assertEqual(payload['arrival_round_min'], ref.current_round + base_rounds)
         self.assertEqual(payload['arrival_round_max'], ref.current_round + base_rounds + 3)
+        self.assertFalse(res['arrives_after_burst_end'])
+        self.assertTrue(res['may_arrive_after_burst_end'])
+        self.assertFalse(payload['arrives_after_burst_end'])
+        self.assertTrue(payload['may_arrive_after_burst_end'])
         self.assertIn('warning', payload)
         self.assertIn('burst concludes', payload['warning'])
 

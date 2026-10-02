@@ -350,10 +350,16 @@ class TickerEngine:
                 self.referee.record_burst_event("tick", {
                     "burst_id": burst_id, "round_index": i + 1, "error": str(exc),
                 })
+                with self._burst_lock:
+                    self._burst_rounds_remaining = max(0, rounds - (i + 1))
+                    current_rnd = getattr(self.referee, "current_round", 0)
+                    self._burst_end_round = current_rnd + self._burst_rounds_remaining
                 continue
             with self._burst_lock:
                 self._burst_rounds_remaining = max(0, rounds - (i + 1))
                 remaining = self._burst_rounds_remaining
+                current_rnd = getattr(self.referee, "current_round", 0)
+                self._burst_end_round = current_rnd + remaining
             self.referee.record_burst_event("tick", {
                 "burst_id": burst_id, "round_index": i + 1, "rounds_remaining": remaining,
             })

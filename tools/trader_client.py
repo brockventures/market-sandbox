@@ -145,14 +145,51 @@ def get_stations_locations(agent_id: str = None):
     return request(f"/stations/locations{suffix}")
 
 
-def post_transit(destination: str, commodity: str = "FRAG", cargo_qty: int = 0, agent_id: Optional[str] = None):
+def get_transit_quote(
+    destination: str,
+    commodity: str = "FRAG",
+    cargo_qty: int = 0,
+    agent_id: Optional[str] = None,
+    escort: bool = False,
+    vessel_id: Optional[str] = None
+) -> dict:
+    """Query dynamic transit quote & horizon duration before burning propellant (Issue #288, #293)."""
     act_agent = (agent_id or AGENT_ID).lower().strip()
-    return request("/stations/transit", {
+    q = [
+        f"destination={urllib.parse.quote(destination)}",
+        f"commodity={urllib.parse.quote(commodity)}",
+        f"cargo_qty={cargo_qty}"
+    ]
+    if escort:
+        q.append("escort=true")
+    if vessel_id:
+        q.append(f"vessel_id={urllib.parse.quote(vessel_id)}")
+    suffix = f"?{'&'.join(q)}"
+    return request(f"/stations/transit/quote{suffix}", agent_id=act_agent)
+
+
+def post_transit(
+    destination: str,
+    commodity: str = "FRAG",
+    cargo_qty: int = 0,
+    agent_id: Optional[str] = None,
+    escort: bool = False,
+    vessel_id: Optional[str] = None,
+    dry_run: bool = False
+):
+    act_agent = (agent_id or AGENT_ID).lower().strip()
+    payload = {
         "agent_id": act_agent,
         "destination": destination,
         "commodity": commodity,
-        "cargo_qty": cargo_qty
-    })
+        "cargo_qty": cargo_qty,
+        "escort": escort
+    }
+    if vessel_id:
+        payload["vessel_id"] = vessel_id
+    if dry_run:
+        payload["dry_run"] = True
+    return request("/stations/transit", payload, agent_id=act_agent)
 
 
 def get_equity_summary():
@@ -549,12 +586,32 @@ def execute_agent_turn(
                     best_req_fuel = fuel_req
                     best_cargo_qty = transit_qty
 
-        if best_dest and best_comm and not dry_run:
-            tx_res = post_transit(destination=best_dest, commodity=best_comm, cargo_qty=best_cargo_qty)
-            print(f"🚀 [Spatial Transit Dispatched] {current_station.upper()} -> {best_dest.upper()} ({best_cargo_qty} {best_comm}, fuel={best_req_fuel}, proj net={max_net_margin:.1f} CR): {tx_res.get('status')}")
-            actions_taken["transit"] = tx_res
-        elif best_dest and best_comm and dry_run:
-            print(f"[DRY-RUN] Would transit: {current_station.upper()} -> {best_dest.upper()} ({best_cargo_qty} {best_comm})")
+        if best_dest and best_comm:
+            # Dynamic Transit Duration & Horizon Inspection (Issue #293)
+            quote_res = get_transit_quote(destination=best_dest, commodity=best_comm, cargo_qty=best_cargo_qty, agent_id=act_agent)
+            quote_payload = quote_res.get("payload", {}) if isinstance(quote_res, dict) else {}
+
+            arrives_late = bool(quote_res.get("arrives_after_burst_end") or quote_payload.get("arrives_after_burst_end", False))
+            may_arrive_late = bool(quote_res.get("may_arrive_after_burst_end") or quote_payload.get("may_arrive_after_burst_end", False))
+            allow_hazard_risk = config.get("allow_hazard_burst_risk", False)
+
+            if arrives_late:
+                warn_msg = quote_res.get("warning") or quote_payload.get("warning") or "Transit arrives after burst end"
+                print(f"🛑 [Horizon Guard Blocked] {current_station.upper()} -> {best_dest.upper()}: {warn_msg}")
+                actions_taken["transit"] = {"status": "aborted_burst_horizon", "warning": warn_msg}
+            elif may_arrive_late and not allow_hazard_risk:
+                warn_msg = quote_res.get("warning") or quote_payload.get("warning") or "Transit may arrive after burst end if delayed"
+                print(f"⚠️ [Horizon Hazard Risk Blocked] {current_station.upper()} -> {best_dest.upper()}: {warn_msg}")
+                actions_taken["transit"] = {"status": "aborted_burst_hazard_risk", "warning": warn_msg}
+            else:
+                actual_fuel = quote_payload.get("fuel_required", best_req_fuel)
+                if not dry_run:
+                    tx_res = post_transit(destination=best_dest, commodity=best_comm, cargo_qty=best_cargo_qty, agent_id=act_agent)
+                    print(f"🚀 [Spatial Transit Dispatched] {current_station.upper()} -> {best_dest.upper()} ({best_cargo_qty} {best_comm}, fuel={actual_fuel}, proj net={max_net_margin:.1f} CR): {tx_res.get('status')}")
+                    actions_taken["transit"] = tx_res
+                else:
+                    print(f"[DRY-RUN] Would transit: {current_station.upper()} -> {best_dest.upper()} ({best_cargo_qty} {best_comm})")
+                    actions_taken["transit"] = {"status": "dry_run", "quote": quote_payload}
 
     # Book inspection & quoting (only when docked at a station)
     if is_docked:
@@ -967,6 +1024,7 @@ if __name__ == "__main__":
     parser.add_argument("--routes", action="store_true", help="Inspect Sol orbital transit route matrix")
     parser.add_argument("--locations", action="store_true", help="Inspect fleet vessel locations and dock statuses")
     parser.add_argument("--transit", type=str, help="Initiate orbital transit to destination station (e.g. mars)")
+    parser.add_argument("--quote-transit", type=str, help="Preview live transit quote for destination without executing (Issue #293)")
     parser.add_argument("--cargo", type=int, default=0, help="Cargo quantity to transport during transit")
     parser.add_argument("--equity-summary", action="store_true", help="Probe synthetic fleet equity prices, shares, and NAVs")
     parser.add_argument("--equity-loans", action="store_true", help="Inspect active bilateral stock borrow loans")
@@ -1018,6 +1076,10 @@ if __name__ == "__main__":
     elif args.transit:
         print(f"Initiating transit to {args.transit} with cargo_qty={args.cargo}...")
         res = post_transit(destination=args.transit, commodity=args.instrument, cargo_qty=args.cargo)
+        print(json.dumps(res, indent=2))
+    elif args.quote_transit:
+        print(f"Fetching transit quote for {args.quote_transit} with cargo_qty={args.cargo} ({args.instrument})...")
+        res = get_transit_quote(destination=args.quote_transit, commodity=args.instrument, cargo_qty=args.cargo)
         print(json.dumps(res, indent=2))
     elif args.equity_summary:
         print("=== Fleet Synthetic Equities ===")

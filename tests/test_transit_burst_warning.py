@@ -38,7 +38,7 @@ class TestTransitBurstWarning(unittest.TestCase):
     def test_arrival_boundary_at_burst_end(self):
         # Dep round = 10. Earth -> Luna is 1 round duration: arrival_round = 11.
         # Set burst end_round = 11 (boundary: arrival == burst end).
-        self.ref._manual_burst_info = {
+        self.ref.get_burst_info = lambda: {
             "active": True,
             "burst_id": "test-burst",
             "rounds_remaining": 1,
@@ -50,7 +50,9 @@ class TestTransitBurstWarning(unittest.TestCase):
         self.assertEqual(res.get("kind"), "status")
         self.assertEqual(res["payload"]["arrival_round"], 11)
         self.assertTrue(res.get("arrives_after_burst_end"))
+        self.assertTrue(res.get("may_arrive_after_burst_end"))
         self.assertTrue(res["payload"].get("arrives_after_burst_end"))
+        self.assertTrue(res["payload"].get("may_arrive_after_burst_end"))
         self.assertIn("at or after the burst's final round", res.get("warning"))
         self.assertIn("at or after the burst's final round", res["payload"].get("warning"))
 
@@ -61,7 +63,7 @@ class TestTransitBurstWarning(unittest.TestCase):
     def test_arrival_after_burst_end(self):
         # Dep round = 10. Earth -> Mars is 2 rounds duration: arrival_round = 12.
         # Set burst end_round = 11 (arrival strictly after burst end).
-        self.ref._manual_burst_info = {
+        self.ref.get_burst_info = lambda: {
             "active": True,
             "burst_id": "test-burst",
             "rounds_remaining": 1,
@@ -73,12 +75,14 @@ class TestTransitBurstWarning(unittest.TestCase):
         self.assertEqual(res.get("kind"), "status")
         self.assertEqual(res["payload"]["arrival_round"], 12)
         self.assertTrue(res.get("arrives_after_burst_end"))
+        self.assertTrue(res.get("may_arrive_after_burst_end"))
         self.assertTrue(res["payload"].get("arrives_after_burst_end"))
+        self.assertTrue(res["payload"].get("may_arrive_after_burst_end"))
         self.assertIn("at or after the burst's final round", res.get("warning"))
 
     def test_arrival_before_burst_end(self):
         # Dep round = 10. Earth -> Luna arrives round 11. Burst ends round 20.
-        self.ref._manual_burst_info = {
+        self.ref.get_burst_info = lambda: {
             "active": True,
             "burst_id": "test-burst",
             "rounds_remaining": 10,
@@ -90,7 +94,9 @@ class TestTransitBurstWarning(unittest.TestCase):
         self.assertEqual(res.get("kind"), "status")
         self.assertEqual(res["payload"]["arrival_round"], 11)
         self.assertFalse(res.get("arrives_after_burst_end"))
+        self.assertFalse(res.get("may_arrive_after_burst_end"))
         self.assertFalse(res["payload"].get("arrives_after_burst_end"))
+        self.assertFalse(res["payload"].get("may_arrive_after_burst_end"))
         self.assertIsNone(res.get("warning"))
         self.assertIsNone(res["payload"].get("warning"))
 
@@ -119,3 +125,28 @@ class TestTransitBurstWarning(unittest.TestCase):
         self.assertFalse(st_after["burst_active"])
         self.assertIsNone(st_after["burst_end_round"])
         self.assertFalse(self.ref.get_burst_info()["active"])
+
+    def test_ticker_failed_tick_recomputes_end_round(self):
+        ticker = TickerEngine(self.ref, interval_sec=0.01)
+        ticker.cancel_burst(force=True)
+        start_rnd = self.ref.current_round
+        burst_info = ticker.start_burst(rounds=3, interval_sec=0.01)
+        burst_id = burst_info['burst_id']
+
+        # Simulate a failed tick where step_round raises
+        call_count = 0
+        def flawed_step():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError('Simulated database lock error')
+            self.ref.current_round += 1
+            return {'status': 'ok'}
+
+        self.ref.step_round = flawed_step
+        # Run burst loop manually with 2 iterations
+        ticker._run_burst_loop(burst_id=burst_id, rounds=2, interval_sec=0.001)
+
+        # After flawed round 1 (failed, round stays start_rnd) and round 2 (succeeds, round advances to start_rnd + 1):
+        # remaining rounds = 3 - 2 = 1. End round is current_round (start_rnd + 1) + 1.
+        ticker.cancel_burst(force=True)

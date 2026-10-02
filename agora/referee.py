@@ -1261,11 +1261,8 @@ class AgoraReferee:
     def get_burst_info(self) -> Dict[str, Any]:
         """
         Returns active burst run status and round boundaries (Issue #289).
-        Integrates with TickerEngine or test-injected _manual_burst_info.
+        Integrates with TickerEngine.
         """
-        manual = getattr(self, '_manual_burst_info', None)
-        if manual is not None:
-            return manual
         ticker = getattr(self, 'ticker', None)
         if ticker:
             burst_lock = getattr(ticker, '_burst_lock', None)
@@ -1748,17 +1745,20 @@ class AgoraReferee:
             # Burst end warning evaluation
             burst_info = self.get_burst_info()
             arrives_after_burst_end = False
+            may_arrive_after_burst_end = False
             warning = None
             if burst_info.get('active'):
                 end_rnd = burst_info.get('end_round')
                 if end_rnd is not None:
                     if arr_round_min >= end_rnd:
                         arrives_after_burst_end = True
+                        may_arrive_after_burst_end = True
                         warning = (
                             f"Transit arrives on round {arr_round_min}, at or after the burst's final round "
                             f"({end_rnd}). Cargo cannot be sold before the burst concludes."
                         )
                     elif arr_round_max >= end_rnd:
+                        may_arrive_after_burst_end = True
                         warning = (
                             f"Transit arrives on round {arr_round_min} (base), but could arrive as late as round {arr_round_max} "
                             f"if delayed by hazards (burst concludes on round {end_rnd})."
@@ -1800,6 +1800,7 @@ class AgoraReferee:
                     'is_aligned': route.get('is_aligned', False),
                     'window_name': route.get('window_name'),
                     'arrives_after_burst_end': arrives_after_burst_end,
+                    'may_arrive_after_burst_end': may_arrive_after_burst_end,
                     'piracy': p_quote,
                     'hazard': h_quote,
                 }
@@ -1810,6 +1811,7 @@ class AgoraReferee:
                     'kind': 'transit_quote',
                     'status': 'quote',
                     'arrives_after_burst_end': arrives_after_burst_end,
+                    'may_arrive_after_burst_end': may_arrive_after_burst_end,
                     'payload': quote_payload
                 }
                 if warning:
@@ -1958,11 +1960,13 @@ class AgoraReferee:
 
             burst_info = self.get_burst_info()
             arrives_after_burst_end = False
+            may_arrive_after_burst_end = False
             warning = None
             if burst_info.get('active'):
                 end_rnd = burst_info.get('end_round')
                 if end_rnd is not None and arr_round >= end_rnd:
                     arrives_after_burst_end = True
+                    may_arrive_after_burst_end = True
                     warning = (
                         f"Transit arrives on round {arr_round}, at or after the burst's final round "
                         f"({end_rnd}). Cargo cannot be sold before the burst concludes."
@@ -1992,6 +1996,7 @@ class AgoraReferee:
                 'hazard': {'delay': hz_delay, 'lost_qty': hz_lost, 'note': hz_note} if hz_note else None,
                 'piracy': piracy,
                 'arrives_after_burst_end': arrives_after_burst_end,
+                'may_arrive_after_burst_end': may_arrive_after_burst_end,
             }
             if warning:
                 resp_payload['warning'] = warning
@@ -2001,6 +2006,7 @@ class AgoraReferee:
                 'kind': 'status',
                 'status': 'in_transit',
                 'arrives_after_burst_end': arrives_after_burst_end,
+                'may_arrive_after_burst_end': may_arrive_after_burst_end,
                 'payload': resp_payload,
             }
             if warning:
