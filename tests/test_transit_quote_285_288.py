@@ -53,10 +53,6 @@ class TestTransitQuote285288(unittest.TestCase):
         round_before = ref.current_round
         active_before = set(getattr(ref, 'active_agents', set()))
 
-        # Snapshot marble bag states
-        hazard_bag_before = ref.conn.execute("SELECT * FROM rng_bags").fetchall()
-        piracy_bag_before = []
-
         # Execute dry-run transit quote
         res = ref.initiate_transit(agent_id=agent, destination=dest, commodity='FRAG', cargo_qty=50, vessel_id=vessel, dry_run=True)
         self.assertEqual(res.get('kind'), 'transit_quote')
@@ -77,11 +73,29 @@ class TestTransitQuote285288(unittest.TestCase):
         order_count_after = len([o for b in ref.books[st].values() for o in b.asks if o.agent_id == agent])
         self.assertEqual(order_count_after, order_count_before)
 
-        # Marble bag state is completely untouched
-        hazard_bag_after = ref.conn.execute("SELECT * FROM rng_bags").fetchall()
-        piracy_bag_after = []
-        self.assertEqual(hazard_bag_after, hazard_bag_before)
-        self.assertEqual(piracy_bag_after, piracy_bag_before)
+        # Amos review requirement: Run two parallel referees with identical seed.
+        # refA runs a quote before departure; refB departs directly.
+        # Both must produce identical hazard and piracy rolls.
+        refA = AgoraReferee(piracy='0.15,0.04', hazards='0.20,0.25')
+        refA.new_game(seed=99, warmup_rounds=2, hazards='0.20,0.25')
+        give(refA, 'amos/1', 'FUEL', 500)
+        give(refA, 'amos/1', 'FRAG', 100)
+        locA = refA.get_vessel_location('amos')
+        destA = 'earth' if locA['station_id'] == 'ceres' else 'ceres'
+        refA.initiate_transit('amos', destA, 'FRAG', 50, dry_run=True)
+        realA = refA.initiate_transit('amos', destA, 'FRAG', 50, dry_run=False)
+
+        refB = AgoraReferee(piracy='0.15,0.04', hazards='0.20,0.25')
+        refB.new_game(seed=99, warmup_rounds=2, hazards='0.20,0.25')
+        give(refB, 'amos/1', 'FUEL', 500)
+        give(refB, 'amos/1', 'FRAG', 100)
+        locB = refB.get_vessel_location('amos')
+        destB = 'earth' if locB['station_id'] == 'ceres' else 'ceres'
+        realB = refB.initiate_transit('amos', destB, 'FRAG', 50, dry_run=False)
+
+        self.assertEqual(realA['payload']['hazard'], realB['payload']['hazard'])
+        self.assertEqual(realA['payload']['piracy']['odds'], realB['payload']['piracy']['odds'])
+        self.assertEqual(realA['payload']['piracy']['raided'], realB['payload']['piracy']['raided'])
 
     def test_quote_matches_real_departure_odds(self):
         """Acceptance test #288: Quoted odds must equal real departure odds from same state."""
@@ -245,6 +259,55 @@ class TestTransitQuote285288(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+
+    def test_marvin_regression_stealth_surge_and_raid_key(self):
+        """Marvin review regressions: stealth cuts odds, surge doubles on belt, raid_key contains belt."""
+        ref = self.ref
+        agent = 'amos'
+        vessel = 'amos/1'
+
+        # 1. Belt raid key contains |belt| on tolled route
+        c_belt = ref.piracy.chance(agent, 'luna', 'ceres', True, 'FRAG', 50, False, ref.current_round)
+        key_belt = ref.piracy.raid_key(vessel, c_belt)
+        self.assertIn('|belt|', key_belt)
+        self.assertIn('stealth_tier', c_belt)
+        self.assertIn('salvage_surge', c_belt)
+
+        # 2. Stealth tier cuts raid odds
+        c_no_stealth = ref.piracy.chance(agent, 'earth', 'luna', False, 'FRAG', 50, False, ref.current_round)
+        # Mock stealth tier 1 on upgrades (50% cut)
+        ref.upgrades.tier = lambda a, k: 1 if k == 'stealth_drives' else 0
+        ref.upgrades.factor = lambda a, k: 0.50 if k == 'stealth_drives' else 1.0
+        c_stealth = ref.piracy.chance(agent, 'earth', 'luna', False, 'FRAG', 50, False, ref.current_round)
+        self.assertEqual(c_stealth['stealth_tier'], 1)
+        self.assertEqual(c_stealth['odds'], round(c_no_stealth['odds'] * 0.50, 4))
+
+        # 3. Belt salvage surge doubles odds on Ceres route
+        ref.upgrades.tier = lambda a, k: 0
+        ref.upgrades.factor = lambda a, k: 1.0
+        ref.galnet.is_salvage_surge_active = lambda: True
+        c_surge = ref.piracy.chance(agent, 'luna', 'ceres', True, 'FRAG', 50, False, ref.current_round)
+        self.assertTrue(c_surge['salvage_surge'])
+        self.assertEqual(c_surge['odds'], min(1.0, round(c_belt['odds'] * 2.0, 4)))
+
+    def test_public_book_events_rounds_duration_consistent(self):
+        """Amos review finding: book_events payload must report actual arrival - departure duration."""
+        ref = self.ref
+        give(ref, 'amos/1', 'FUEL', 500)
+        give(ref, 'amos/1', 'FRAG', 100)
+        loc = ref.get_vessel_location('amos')
+        dest = 'earth' if loc['station_id'] == 'ceres' else 'ceres'
+        res = ref.initiate_transit('amos', dest, 'FRAG', 50)
+        payload = res['payload']
+
+        # Query book_events row for this transit
+        row = ref.conn.execute("SELECT payload FROM book_events WHERE kind = 'transit' ORDER BY seq DESC LIMIT 1").fetchone()
+        self.assertIsNotNone(row)
+        ev_payload = json.loads(row[0])
+        self.assertEqual(ev_payload['rounds_duration'], payload['rounds_duration'])
+        self.assertEqual(ev_payload['rounds_duration'], payload['arrival_round'] - payload['departure_round'])
+        self.assertEqual(ev_payload['base_rounds'], payload['base_rounds'])
+        self.assertEqual(ev_payload['delay_rounds'], payload['delay_rounds'])
 
 if __name__ == '__main__':
     unittest.main()
