@@ -597,6 +597,9 @@ def execute_agent_turn(
             # Deliberate fail-open fallback (Issue #303): if the quote endpoint fails (network error,
             # rejection, or legacy server without /stations/transit/quote), proceed with direct dispatch
             # rather than paralyzing spatial arbitrage during live combine rounds.
+            # Design note: failing open implicitly bypasses the burst-end guard (both arrives_late and
+            # may_arrive_late default to False since arrival rounds cannot be calculated). The operator
+            # accepts burst-end cutoff risk as a deliberate trade-off for unblocked execution resilience.
             if not isinstance(quote_res, dict) or quote_res.get("status") != "quote":
                 status_str = quote_res.get("status", "unknown") if isinstance(quote_res, dict) else "no_response"
                 print(f"ℹ️ [Quote Fallback] Transit quote returned non-quote status '{status_str}'; failing open to direct transit dispatch.")

@@ -1,4 +1,6 @@
 import unittest
+import io
+import contextlib
 from unittest.mock import patch, MagicMock
 from pathlib import Path
 import json
@@ -247,9 +249,12 @@ class TestTraderClient(unittest.TestCase):
         mock_transit.return_value = {"status": "en_route"}
         mock_cancel.return_value = {"status": "cancelled_all", "payload": {"count": 0}}
 
-        trader_client.poll_round_loop(poll_interval=0.01, max_rounds=1)
+        with io.StringIO() as buf, contextlib.redirect_stdout(buf):
+            trader_client.poll_round_loop(poll_interval=0.01, max_rounds=1)
+            output = buf.getvalue()
         mock_quote.assert_called_once_with(destination="earth", commodity="FRAG", cargo_qty=50, agent_id="zero")
         mock_transit.assert_called_once_with(destination="earth", commodity="FRAG", cargo_qty=50, agent_id="zero")
+        self.assertIn("ℹ️ [Quote Fallback] Transit quote returned non-quote status 'reject'", output)
 
     @patch("tools.trader_client.request")
     def test_get_transit_quote_request_params(self, mock_req):
