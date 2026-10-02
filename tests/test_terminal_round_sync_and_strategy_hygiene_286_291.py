@@ -99,7 +99,7 @@ class TestTerminalRoundSyncAndStrategyHygiene(unittest.TestCase):
 
     def test_rules_of_engagement_strategy_hygiene_section(self):
         """Issue #291 Acceptance: docs/rules-of-engagement.md documents strategy hygiene and REST by default."""
-        roe_path = Path("/workspace/market-sandbox/docs/rules-of-engagement.md")
+        roe_path = Path(__file__).resolve().parent.parent / "docs" / "rules-of-engagement.md"
         self.assertTrue(roe_path.exists())
         content = roe_path.read_text(encoding="utf-8")
 
