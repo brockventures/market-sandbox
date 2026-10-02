@@ -19,6 +19,7 @@ import time
 from http.server import BaseHTTPRequestHandler
 from typing import Any, Dict, List, Optional, Tuple
 
+from agora.fog import FogEngine
 from agora.galnet import GalNetEngine
 from agora.referee import AgoraReferee
 from agora.spatial import get_alignment_windows
@@ -165,11 +166,15 @@ class TerminalDiffEngine:
 
     def _ticks(self, since_seq: int = 0):
         ticks = self.referee.get_ticks(since_seq=since_seq)
-        return self.referee.fog.filter_ticks(self.referee, None, ticks) if self.public_fog else ticks
+        if not self.public_fog:
+            return ticks
+        if self.referee.fog:
+            return self.referee.fog.filter_ticks(self.referee, None, ticks)
+        return FogEngine.mask_transit_ticks(ticks, viewer=None, cur_round=getattr(self.referee, 'current_round', 0))
 
     def _depots(self) -> Dict[str, Any]:
         ref = self.referee
-        if self.public_fog:
+        if self.public_fog and ref.fog:
             return ref.fog.depot_view(ref, None)
         return ref.get_depot_summary()
 

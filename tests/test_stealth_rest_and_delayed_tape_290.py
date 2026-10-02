@@ -62,6 +62,8 @@ class TestStealthRestAndDelayedTape290(unittest.TestCase):
         # All route, pricing, and commodity fingerprints stripped
         for leaked in ("destination", "commodity", "cargo_qty", "fuel_burned", "toll_paid", "piracy", "hazard"):
             self.assertNotIn(leaked, p_amos)
+        # Exact allowlist verification (Marvin review)
+        self.assertEqual(set(p_amos.keys()), {"transit_id", "agent_id", "vessel_id", "departure_round", "arrival_round", "in_flight"})
 
         # 2. Public anonymous viewer (None) also sees zero cargo/route fingerprints
         filtered_public = self.fog.filter_ticks(self.ref, None, ticks)
@@ -220,6 +222,114 @@ class TestStealthRestAndDelayedTape290(unittest.TestCase):
         res = execute_agent_turn(agent_id="zero", current_round=5, floor="halted", stealth=True)
         self.assertTrue(res.get("stealth"))
         self.assertEqual(res["status"], "floor_halted")
+
+    def test_fog_filter_ticks_masks_in_flight_transit_with_piracy_demand(self):
+        """Issue #290 & #153: In-flight transit with piracy preserves public raid demand without leaking cargo/odds."""
+        self.ref.current_round = 10
+        ticks = [
+            {
+                "seq": 101,
+                "kind": "transit",
+                "payload": {
+                    "transit_id": "tr-zero-01",
+                    "agent_id": "zero",
+                    "vessel_id": "zero/1",
+                    "origin": "ceres",
+                    "destination": "earth",
+                    "commodity": "FOOD",
+                    "cargo_qty": 250,
+                    "departure_round": 10,
+                    "arrival_round": 13,
+                    "piracy": {
+                        "cargo_value": 8000,
+                        "escort_fee": 320,
+                        "odds": 0.45,
+                        "demand": {
+                            "transit_id": "tr-zero-01",
+                            "status": "pending",
+                            "respond": "POST /referee/piracy/tr-zero-01/respond",
+                        }
+                    }
+                }
+            }
+        ]
+        filtered = self.fog.filter_ticks(self.ref, "amos", ticks)
+        p = filtered[0]["payload"]
+        self.assertEqual(set(p.keys()), {"transit_id", "agent_id", "vessel_id", "departure_round", "arrival_round", "in_flight", "piracy"})
+        self.assertEqual(set(p["piracy"].keys()), {"demand"})
+        self.assertEqual(p["piracy"]["demand"]["status"], "pending")
+
+    def test_unfogged_referee_ticks_http_endpoint_masks_in_flight_transits(self):
+        """Issue #290 (Marvin review): With AGORA_FOG=0 (ref.fog=None), /referee/ticks still masks in-flight transits."""
+        import threading
+        import urllib.request
+        from http.server import HTTPServer
+        from agora.server import make_handler
+
+        unfogged_ref = AgoraReferee(fog=None)
+        self.assertIsNone(unfogged_ref.fog)
+        unfogged_ref.current_round = 10
+
+        unfogged_ref.conn.execute(
+            "INSERT INTO book_events (seq, kind, payload) VALUES (?, 'transit', ?)",
+            (
+                1,
+                json.dumps({
+                    "transit_id": "tr-zero-01",
+                    "agent_id": "zero",
+                    "vessel_id": "zero/1",
+                    "origin": "ceres",
+                    "destination": "earth",
+                    "commodity": "FOOD",
+                    "cargo_qty": 250,
+                    "departure_round": 10,
+                    "arrival_round": 13,
+                    "fuel_burned": 30,
+                })
+            )
+        )
+        unfogged_ref.conn.commit()
+
+        auth_tokens = {'amos': 'tok-amos', 'zero': 'tok-zero', 'admin': 'tok-admin'}
+        handler_cls = make_handler(unfogged_ref, auth_tokens=auth_tokens)
+        server = HTTPServer(('127.0.0.1', 0), handler_cls)
+        port = server.server_port
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+
+        try:
+            # 1. Non-owner (Amos) query: in-flight transit is masked even though fog is off
+            req = urllib.request.Request(f'http://127.0.0.1:{port}/referee/ticks?since_seq=0', headers={'Authorization': 'Bearer tok-amos'})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+                self.assertEqual(resp.status, 200)
+                self.assertEqual(len(data['ticks']), 1)
+                p = data['ticks'][0]['payload']
+                self.assertTrue(p['in_flight'])
+                self.assertEqual(set(p.keys()), {"transit_id", "agent_id", "vessel_id", "departure_round", "arrival_round", "in_flight"})
+                self.assertNotIn('destination', p)
+                self.assertNotIn('commodity', p)
+
+            # 2. Owner (Zero) query: sees unmasked transit
+            req = urllib.request.Request(f'http://127.0.0.1:{port}/referee/ticks?since_seq=0', headers={'Authorization': 'Bearer tok-zero'})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+                self.assertEqual(resp.status, 200)
+                p = data['ticks'][0]['payload']
+                self.assertEqual(p['destination'], 'earth')
+                self.assertEqual(p['commodity'], 'FOOD')
+
+            # 3. Admin query: sees unmasked transit
+            req = urllib.request.Request(f'http://127.0.0.1:{port}/referee/ticks?since_seq=0', headers={'Authorization': 'Bearer tok-admin'})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+                self.assertEqual(resp.status, 200)
+                p = data['ticks'][0]['payload']
+                self.assertEqual(p['destination'], 'earth')
+                self.assertEqual(p['commodity'], 'FOOD')
+        finally:
+            server.shutdown()
+            server.server_close()
 
     def test_rules_of_engagement_issue_290_documentation_parity(self):
         """Issue #290 Acceptance: rules-of-engagement.md documents delayed tape and chat role."""

@@ -24,6 +24,7 @@ from http.server import ThreadingHTTPServer, HTTPServer, BaseHTTPRequestHandler
 from typing import Optional, Dict
 from agora.referee import AgoraReferee, REACTIVE_SHELF_SKEW
 from agora.exchange import DEFAULT_VOL
+from agora.fog import FogEngine
 from agora.hazards import DEFAULT_P_DELAY, DEFAULT_P_LOSS
 from agora import piracy as _piracy
 from agora import fleet as fleet_mod
@@ -1674,7 +1675,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 return
 
         if ref.fog and path in ('/referee/depots', '/stations/prices', '/referee/book', '/circuit_breaker/bands',
-                                '/referee/ticks', '/ws/terminal'):
+                                '/ws/terminal'):
             viewer = self._reader()
             fog = ref.fog
             if path == '/referee/depots':
@@ -1699,14 +1700,6 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 if not stock and (not st or not fog.exact_station(ref, viewer, st)):
                     self._fogged(f"The order book and bands at '{st or 'every station'}' are fogged for you.")
                     return
-            if path == '/referee/ticks':
-                try:
-                    since_seq = int(query_params.get('since_seq', ['0'])[0])
-                except ValueError:
-                    since_seq = 0
-                self._send_json(200, {'status': 'ok', 'current_seq': ref.current_seq, 'fog': True,
-                                      'ticks': fog.filter_ticks(ref, viewer, ref.get_ticks(since_seq=since_seq))})
-                return
             if path == '/ws/terminal':
                 # Non-admin viewers get the public fog view: all four stations,
                 # stale and jittered, which every fleet can see anyway (Ryan,
@@ -1721,8 +1714,9 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 return
 
         if path == '/ws/terminal':
+            viewer = self._reader()
             if self.headers.get('Upgrade', '').lower() == 'websocket':
-                handle_terminal_websocket(self, ref, self.galnet_engine)
+                handle_terminal_websocket(self, ref, self.galnet_engine, public_fog=(viewer != 'admin'))
                 return
             else:
                 self._send_json(200, {
@@ -1823,11 +1817,28 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 since_seq = int(since_seq_raw)
             except ValueError:
                 since_seq = 0
-            self._send_json(200, {
-                'status': 'ok',
-                'current_seq': ref.current_seq,
-                'ticks': ref.get_ticks(since_seq=since_seq)
-            })
+            viewer = self._reader()
+            raw_ticks = ref.get_ticks(since_seq=since_seq)
+            if ref.fog:
+                ticks = ref.fog.filter_ticks(ref, viewer, raw_ticks)
+                self._send_json(200, {
+                    'status': 'ok',
+                    'current_seq': ref.current_seq,
+                    'fog': True,
+                    'ticks': ticks
+                })
+            else:
+                has_telemetry = bool(viewer and getattr(ref, 'upgrades_enabled', False) and
+                                     getattr(ref, 'upgrades', None) and ref.upgrades.has_telemetry(viewer))
+                ticks = FogEngine.mask_transit_ticks(
+                    raw_ticks, viewer=viewer, cur_round=getattr(ref, 'current_round', 0), has_telemetry=has_telemetry
+                ) if viewer != 'admin' else raw_ticks
+                self._send_json(200, {
+                    'status': 'ok',
+                    'current_seq': ref.current_seq,
+                    'ticks': ticks
+                })
+            return
         elif path == '/referee/accounts':
             auth_agent, auth_err = self._authenticate_request()
             if auth_err:
