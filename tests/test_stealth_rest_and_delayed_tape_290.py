@@ -50,24 +50,26 @@ class TestStealthRestAndDelayedTape290(unittest.TestCase):
             }
         ]
 
-        # 1. Non-owner (Amos) sees masked in-flight transit
+        # 1. Non-owner (Amos) sees masked in-flight transit with zero cargo/route fingerprints
         filtered_amos = self.fog.filter_ticks(self.ref, "amos", ticks)
         self.assertEqual(len(filtered_amos), 1)
         p_amos = filtered_amos[0]["payload"]
         self.assertEqual(p_amos["agent_id"], "zero")
-        self.assertEqual(p_amos["origin"], "ceres")
-        self.assertEqual(p_amos["destination"], "in_transit")
-        self.assertIsNone(p_amos["commodity"])
-        self.assertIsNone(p_amos["cargo_qty"])
+        self.assertEqual(p_amos["vessel_id"], "zero/1")
+        self.assertEqual(p_amos["departure_round"], 10)
+        self.assertEqual(p_amos["arrival_round"], 13)
         self.assertTrue(p_amos["in_flight"])
+        # All route, pricing, and commodity fingerprints stripped
+        for leaked in ("destination", "commodity", "cargo_qty", "fuel_burned", "toll_paid", "piracy", "hazard"):
+            self.assertNotIn(leaked, p_amos)
 
-        # 2. Public anonymous viewer (None) sees masked in-flight transit
+        # 2. Public anonymous viewer (None) also sees zero cargo/route fingerprints
         filtered_public = self.fog.filter_ticks(self.ref, None, ticks)
         p_pub = filtered_public[0]["payload"]
-        self.assertEqual(p_pub["destination"], "in_transit")
-        self.assertIsNone(p_pub["commodity"])
-        self.assertIsNone(p_pub["cargo_qty"])
         self.assertTrue(p_pub["in_flight"])
+        self.assertNotIn("destination", p_pub)
+        self.assertNotIn("commodity", p_pub)
+        self.assertNotIn("cargo_qty", p_pub)
 
         # 3. Owner (Zero) sees unmasked full manifest
         filtered_zero = self.fog.filter_ticks(self.ref, "zero", ticks)
@@ -145,7 +147,8 @@ class TestStealthRestAndDelayedTape290(unittest.TestCase):
 
         # Amos lacks telemetry -> masked
         filtered_amos = self.fog.filter_ticks(self.ref, "amos", ticks)
-        self.assertEqual(filtered_amos[0]["payload"]["destination"], "in_transit")
+        self.assertTrue(filtered_amos[0]["payload"]["in_flight"])
+        self.assertNotIn("destination", filtered_amos[0]["payload"])
 
     @patch("tools.agora_announcer.fetch_discord_messages")
     @patch("tools.agora_announcer.add_discord_reaction")

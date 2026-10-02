@@ -247,14 +247,17 @@ class FogEngine:
                 arr_round = p.get('arrival_round')
                 if not has_telemetry and viewer != owner:
                     if arr_round is not None and arr_round > cur_round:
-                        # In-flight stealth redaction:
+                        # Full in-flight stealth redaction (Issue #290 / Marvin review):
+                        # Drop all cargo, pricing, and route fingerprints (fuel, toll, decay, hazard, piracy)
                         redacted = dict(t)
-                        redacted_p = dict(p)
-                        redacted_p['destination'] = 'in_transit'
-                        redacted_p['commodity'] = None
-                        redacted_p['cargo_qty'] = None
-                        redacted_p['in_flight'] = True
-                        redacted['payload'] = redacted_p
+                        redacted['payload'] = {
+                            'transit_id': p.get('transit_id'),
+                            'agent_id': owner,
+                            'vessel_id': p.get('vessel_id'),
+                            'departure_round': p.get('departure_round'),
+                            'arrival_round': arr_round,
+                            'in_flight': True,
+                        }
                         out.append(redacted)
                         continue
 
