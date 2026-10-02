@@ -1790,15 +1790,27 @@ class AgoraReferee:
                 hz_lost_manifest = min(hz_lost, cargo_qty) if cargo_qty > 0 else 0
                 hz_lost_hold = hz_lost - hz_lost_manifest
                 if hz_lost_hold > 0:
-                    loss_comm = comm if comm in hold_goods else (max(hold_goods.items(), key=lambda x: x[1])[0] if hold_goods else comm)
-                    actual_loss_hold = min(hz_lost_hold, hold_goods.get(loss_comm, 0))
-                    if actual_loss_hold > 0:
-                        self.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES ('SYSTEM', ?, 0)", (loss_comm,))
-                        self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = ? AND instrument = ?", (actual_loss_hold, acct, loss_comm))
-                        self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = 'SYSTEM' AND instrument = ?", (actual_loss_hold, loss_comm))
-                        h_seq = self._get_next_seq()
-                        self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)", (f"hazard-hold-{transit_id}", h_seq, acct, loss_comm, -actual_loss_hold))
-                        self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, 'SYSTEM', ?, ?)", (f"hazard-hold-{transit_id}", h_seq, loss_comm, actual_loss_hold))
+                    unmanifested_goods = {
+                        row[0]: row[1]
+                        for row in self.conn.execute(
+                            "SELECT instrument, balance FROM accounts WHERE agent_id = ? AND instrument != 'CR' AND instrument != 'FUEL' AND balance > 0",
+                            (acct,)
+                        ).fetchall()
+                    }
+                    rem_loss = hz_lost_hold
+                    sorted_goods = sorted(unmanifested_goods.keys(), key=lambda g: (g != comm, -unmanifested_goods[g]))
+                    for g in sorted_goods:
+                        if rem_loss <= 0:
+                            break
+                        take_qty = min(rem_loss, unmanifested_goods[g])
+                        if take_qty > 0:
+                            self.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES ('SYSTEM', ?, 0)", (g,))
+                            self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = ? AND instrument = ?", (take_qty, acct, g))
+                            self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = 'SYSTEM' AND instrument = ?", (take_qty, g))
+                            h_seq = self._get_next_seq()
+                            self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)", (f"hazard-hold-{transit_id}", h_seq, acct, g, -take_qty))
+                            self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, 'SYSTEM', ?, ?)", (f"hazard-hold-{transit_id}", h_seq, g, take_qty))
+                            rem_loss -= take_qty
 
                 self.conn.execute("""
                     INSERT INTO transits (transit_id, agent_id, vessel_id, origin, destination, departure_round, arrival_round, commodity, cargo_qty, fuel_burned, status, perishable, decay_rate, decayed_qty, toll_paid)
