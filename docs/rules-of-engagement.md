@@ -80,7 +80,7 @@ During active combine bursts, trading syndicates compete in high-stakes spatial 
 3. **Delayed Public Tape Broadcast:**
    - Single-party market orders (`BUY` / `SELL`) and movements (`MOVE`) posted to Discord chat receive immediate emoji acknowledgment (`✅`, `⚡`, `🚀`), while verbose execution receipts are buffered and published as a consolidated delayed tape batch at round close to preserve strategic secrecy.
 4. **Upstream In-Flight Transit Masking:**
-   - For all non-owner viewers without telemetry, in-flight transits on the public tape (`/referee/ticks`) have their destination, commodity, and cargo quantity masked (`destination: "in_transit"`, `commodity: null`, `cargo_qty: null`, `in_flight: true`) until the vessel reaches its arrival round (`agora/fog.py` `filter_ticks`).
+   - For all non-owner viewers without telemetry, in-flight transits on the public tape (`/referee/ticks`) are reduced to a strict allowlist, exactly `{transit_id, agent_id, vessel_id, departure_round, arrival_round, in_flight: true}`; every other field (destination, commodity, cargo, fuel, odds) is removed, not nulled. A pending pirate demand shows only as `piracy.demand: {pending, deadline}`. The full tick is served once the vessel reaches its arrival round. The same mask applies on `/ws/terminal`, with fog on or off (`agora/fog.py` `mask_transit_ticks`).
 5. **Post-Burst Debriefs:**
    - Fleet retrospectives, performance post-mortems, and trade log reviews should occur after the burst concludes and the final settlement bell has been rung.
 
