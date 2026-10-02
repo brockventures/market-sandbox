@@ -1707,10 +1707,24 @@ class AgoraReferee:
                         'payload': {'reason': 'insufficient_fuel', 'detail': f"Route {origin}->{dest} burns {required_fuel} FUEL and you are shipping {cargo_qty} FUEL as cargo: needs {required_fuel + cargo_qty}, available {avail_fuel} (balance {fuel_bal} - committed {committed_fuel})"}
                     }
 
+            # Whole hold evaluation (Option a - Issue #282):
+            hold_goods = {
+                row[0]: row[1]
+                for row in self.conn.execute(
+                    "SELECT instrument, balance FROM accounts WHERE agent_id = ? AND instrument != 'CR' AND instrument != 'FUEL' AND balance > 0",
+                    (acct,)
+                ).fetchall()
+            }
+            total_cargo = dict(hold_goods)
+            total_cargo_qty = sum(total_cargo.values())
+            from agora.piracy import cargo_value as piracy_cargo_value
+            total_cargo_value = sum(piracy_cargo_value(g, q) for g, q in total_cargo.items())
+
             # Piracy escort (agora/piracy.py): paid at departure, on top of
             # any toll. Ignored when piracy is off or there is no cargo.
-            escort = bool(escort) and self.piracy.enabled and cargo_qty > 0
-            escort_fee = self.piracy.escort_fee(comm, cargo_qty) if escort else 0
+            effective_escort_qty = cargo_qty if cargo_qty > 0 else total_cargo_qty
+            escort = bool(escort) and self.piracy.enabled and effective_escort_qty > 0
+            escort_fee = self.piracy.escort_fee(comm, effective_escort_qty) if escort else 0
             if escort_fee > 0:
                 cr_bal = self.get_balance(agent_id, 'CR')
                 committed_cr = self.committed(agent_id, 'CR')
@@ -1718,7 +1732,7 @@ class AgoraReferee:
                 if avail_cr < toll_required + escort_fee:
                     return {
                         'v': 1, 'kind': 'reject', 'reply': 'optional', 'floor': self.floor,
-                        'payload': {'reason': 'insufficient_credits_for_escort', 'detail': f"An escort for {cargo_qty} {comm} costs {escort_fee} CR ({int(PIRACY_ESCORT_PCT * 100)}% of the cargo's value){f' plus the {toll_required} CR toll' if toll_required else ''}; available {avail_cr} CR. Move without an escort, or raise cash first."}
+                        'payload': {'reason': 'insufficient_credits_for_escort', 'detail': f"An escort for {effective_escort_qty} {comm} costs {escort_fee} CR ({int(PIRACY_ESCORT_PCT * 100)}% of the cargo's value){f' plus the {toll_required} CR toll' if toll_required else ''}; available {avail_cr} CR. Move without an escort, or raise cash first."}
                     }
 
             # Cancel the departing ship's resting orders (every one of them
@@ -1741,7 +1755,8 @@ class AgoraReferee:
                 cargo_qty if cargo_qty > 0 else 0,
                 delay_factor=self.upgrades.factor(agent_id, 'shielding'),
                 loss_factor=self.upgrades.factor(agent_id, 'hold'),
-                loss_size_factor=self.upgrades.loss_size_factor(agent_id), agent_id=vid)
+                loss_size_factor=self.upgrades.loss_size_factor(agent_id), agent_id=vid,
+                total_qty=total_cargo_qty)
             # Engines upgrade: tier 1 cuts a round off trips of 3+ rounds
             # (agora/upgrades.py ENGINE_CUTS); tier 2 cut the fuel above.
             base_rounds = route['rounds'] - self.upgrades.engine_cut(agent_id, route['rounds'])
@@ -1772,10 +1787,23 @@ class AgoraReferee:
 
                 # 4. Transits record
                 vessel_id = vid
+                hz_lost_manifest = min(hz_lost, cargo_qty) if cargo_qty > 0 else 0
+                hz_lost_hold = hz_lost - hz_lost_manifest
+                if hz_lost_hold > 0:
+                    loss_comm = comm if comm in hold_goods else (max(hold_goods.items(), key=lambda x: x[1])[0] if hold_goods else comm)
+                    actual_loss_hold = min(hz_lost_hold, hold_goods.get(loss_comm, 0))
+                    if actual_loss_hold > 0:
+                        self.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES ('SYSTEM', ?, 0)", (loss_comm,))
+                        self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = ? AND instrument = ?", (actual_loss_hold, acct, loss_comm))
+                        self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = 'SYSTEM' AND instrument = ?", (actual_loss_hold, loss_comm))
+                        h_seq = self._get_next_seq()
+                        self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)", (f"hazard-hold-{transit_id}", h_seq, acct, loss_comm, -actual_loss_hold))
+                        self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, 'SYSTEM', ?, ?)", (f"hazard-hold-{transit_id}", h_seq, loss_comm, actual_loss_hold))
+
                 self.conn.execute("""
                     INSERT INTO transits (transit_id, agent_id, vessel_id, origin, destination, departure_round, arrival_round, commodity, cargo_qty, fuel_burned, status, perishable, decay_rate, decayed_qty, toll_paid)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'in_transit', ?, ?, 0, ?)
-                """, (transit_id, agent_id, vessel_id, origin, dest, dep_round, arr_round, comm, cargo_qty - hz_lost, required_fuel, int(is_perishable), decay_rate, toll_required))
+                """, (transit_id, agent_id, vessel_id, origin, dest, dep_round, arr_round, comm, cargo_qty - hz_lost_manifest, required_fuel, int(is_perishable), decay_rate, toll_required))
                 self.hazards.record(transit_id, agent_id, dep_round, hz_delay, hz_lost, comm, hz_note)
                 if hz_lost and self.events_enabled:
                     lost_cr = piracy_cargo_value(comm, hz_lost)
@@ -1786,7 +1814,8 @@ class AgoraReferee:
                 self.piracy.charge_escort_locked(transit_id, agent_id, escort_fee)
                 piracy = self.piracy.roll_departure_locked(
                     transit_id, agent_id, origin, dest, toll_required > 0, comm,
-                    max(0, cargo_qty - hz_lost), escort, escort_fee, dep_round, vessel_id=vid)
+                    max(0, cargo_qty - hz_lost_manifest), escort, escort_fee, dep_round, vessel_id=vid,
+                    hold_value=total_cargo_value, total_qty=total_cargo_qty)
 
                 # 5. The ship
                 self.conn.execute("""
@@ -1854,6 +1883,8 @@ class AgoraReferee:
                 'rounds_duration': base_rounds,
                 'commodity': comm,
                 'cargo_qty': cargo_qty,
+                'hold_cargo': hold_goods,
+                'total_cargo_value': total_cargo_value,
                 'fuel_burned': required_fuel,
                 'is_aligned': route.get('is_aligned', False),
                 'window_name': route.get('window_name'),
@@ -1988,6 +2019,26 @@ class AgoraReferee:
                             self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, 'SYSTEM', ?, ?)", (f"release-{t_id}", next_seq, comm, -deliver_qty))
 
                     self.conn.execute("UPDATE transits SET status = 'arrived', decayed_qty = ? WHERE transit_id = ?", (decay_qty, t_id))
+
+                    # Perishable decay on unmanifested hold goods (Option a - Issue #282)
+                    transit_route = get_route(a['origin'], dest, new_round)
+                    decay_rate_route = transit_route.get('decay_rate', 0.0) if transit_route else 0.0
+                    if decay_rate_route > 0:
+                        transit_rounds = max(1, a['arrival_round'] - a['departure_round'])
+                        for p_comm in PERISHABLE_COMMODITIES:
+                            if p_comm == comm and c_qty > 0:
+                                continue  # Already decayed manifested cargo above
+                            p_bal = self._account_balance(hold, p_comm)
+                            if p_bal > 0:
+                                h_decay = min(p_bal, math.floor(p_bal * decay_rate_route * transit_rounds))
+                                if h_decay > 0:
+                                    self.conn.execute("INSERT OR IGNORE INTO accounts (agent_id, instrument, balance) VALUES ('SYSTEM', ?, 0)", (p_comm,))
+                                    self.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = ? AND instrument = ?", (h_decay, hold, p_comm))
+                                    self.conn.execute("UPDATE accounts SET balance = balance + ? WHERE agent_id = 'SYSTEM' AND instrument = ?", (h_decay, p_comm))
+                                    h_seq = self._get_next_seq()
+                                    self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, ?, ?, ?)", (f"decay-hold-{t_id}", h_seq, hold, p_comm, -h_decay))
+                                    self.conn.execute("INSERT INTO ledger_entries (txn_id, seq, agent_id, instrument, delta) VALUES (?, ?, 'SYSTEM', ?, ?)", (f"decay-hold-{t_id}", h_seq, p_comm, h_decay))
+
                     if hasattr(self, 'lobbying') and self.lobbying and dest:
                         tariff = self.lobbying.get_docking_tariff(ag_id, dest)
                         if tariff > 0:

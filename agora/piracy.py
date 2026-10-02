@@ -282,15 +282,15 @@ class PiracyDesk:
             "ORDER BY start_round LIMIT 1", (target, round_num, round_num)).fetchone()
 
     def chance(self, agent: str, origin: str, dest: str, tolled: bool, commodity: str, qty: int,
-               escort: bool, round_num: int) -> Dict[str, Any]:
+               escort: bool, round_num: int, hold_value: Optional[int] = None) -> Dict[str, Any]:
         """Raid chance for one trip and how it was built."""
-        if not self.odds or qty <= 0:
-            return {'odds': 0.0, 'base': 0.0, 'hot': False, 'value': cargo_value(commodity, qty),
+        value = hold_value if hold_value is not None else cargo_value(commodity, qty)
+        if not self.odds or value <= 0:
+            return {'odds': 0.0, 'base': 0.0, 'hot': False, 'value': value,
                     'value_mult': 0.0, 'privateers': False, 'escort': bool(escort)}
         p_belt, p_inner = self.odds
         base = p_belt if tolled else p_inner
         hot = self.hot_station(round_num) in (origin, dest)
-        value = cargo_value(commodity, qty)
         vm = min(VALUE_MULT[1], max(VALUE_MULT[0], value / VALUE_REF))
         vm = min(VALUE_MULT[1], max(VALUE_MULT[0], round(vm / VALUE_STEP) * VALUE_STEP))
         p = base * (HOT_MULT if hot else 1.0) * vm
@@ -371,7 +371,9 @@ class PiracyDesk:
 
     def roll_departure_locked(self, transit_id: str, agent: str, origin: str, dest: str, tolled: bool,
                               commodity: str, qty: int, escort: bool, escort_fee: int,
-                              round_num: int, vessel_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+                              round_num: int, vessel_id: Optional[str] = None,
+                              hold_value: Optional[int] = None,
+                              total_qty: Optional[int] = None) -> Optional[Dict[str, Any]]:
         """Called from initiate_transit under ref.lock inside its transaction,
         after the transit row is written. The raid is a marble from the
         flying ship's bag for this kind of trip (raid_key: #214, per ship and
@@ -379,15 +381,16 @@ class PiracyDesk:
         another ship's, and an escorted trip's odds are its own."""
         if not self.odds:
             return None
-        c = self.chance(agent, origin, dest, tolled, commodity, qty, escort, round_num)
+        c = self.chance(agent, origin, dest, tolled, commodity, qty, escort, round_num, hold_value=hold_value)
         out = {'odds': c['odds'], 'hot_station': self.hot_station(round_num), 'hot_route': c['hot'],
                'cargo_value': c['value'], 'escort': bool(escort), 'escort_fee': escort_fee if escort else 0,
                'raided': False, 'demand': None}
         key = self.raid_key(vessel_id or f"{agent}/1", c)
-        if qty <= 0 or not self.bags.draw('raid', key, self.bag_odds(c['exact_odds'])):
+        effective_qty = total_qty if total_qty is not None else qty
+        if effective_qty <= 0 or not self.bags.draw('raid', key, self.bag_odds(c['exact_odds'])):
             return out
         ransom = int(c['value'] * RANSOM_PCT)
-        surrender = int(qty * SURRENDER_PCT)
+        surrender = int(effective_qty * SURRENDER_PCT)
         contract = self.active_contract(agent, round_num)
         sponsor = contract['sponsor'] if contract else None
         traced, fine = 0, 0
@@ -416,7 +419,7 @@ class PiracyDesk:
             (transit_id, agent_id, round, origin, destination, commodity, cargo_qty, cargo_value, odds, escorted,
              ransom, surrender_qty, status, contract_id, sponsor, traced, fine)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)""",
-            (transit_id, agent, round_num, origin, dest, commodity, qty, c['value'], c['odds'], int(bool(escort)),
+            (transit_id, agent, round_num, origin, dest, commodity, effective_qty, c['value'], c['odds'], int(bool(escort)),
              ransom, surrender, contract['contract_id'] if contract else None, sponsor, traced, fine))
         out['raided'] = True
         out['demand'] = self.public_raid(self._row(transit_id), viewer=agent)
@@ -434,26 +437,43 @@ class PiracyDesk:
         return f"depot_{FENCE_STATION}" if getattr(self.ref, 'depots_enabled', False) else None
 
     def _steal_locked(self, row, transit, qty: int) -> Tuple[int, Optional[str]]:
-        """Take qty goods out of the transit's SYSTEM escrow: the sponsor's
+        """Take qty goods out of the transit's SYSTEM escrow or vessel hold: the sponsor's
         share to the sponsor, the rest fenced at the black-market depot."""
-        qty = max(0, min(qty, transit['cargo_qty'] or 0))
-        if qty <= 0:
+        escrow_qty = max(0, (transit['cargo_qty'] if transit and 'cargo_qty' in transit.keys() else 0) or 0)
+        from_escrow = min(qty, escrow_qty)
+        from_hold = max(0, qty - from_escrow)
+
+        agent = row['agent_id']
+        comm = row['commodity']
+        tid = row['transit_id']
+        vessel_id = (transit['vessel_id'] if transit and 'vessel_id' in transit.keys() else None) or f"{agent}/1"
+        acct = vessel_id if self.ref.fleet.is_corp(agent) else agent
+
+        hold_bal = max(0, self.ref._account_balance(acct, comm))
+        from_hold = min(from_hold, hold_bal)
+        total_stolen = from_escrow + from_hold
+        if total_stolen <= 0:
             return 0, None
-        comm, tid = row['commodity'], row['transit_id']
-        self.ref.conn.execute("UPDATE transits SET cargo_qty = cargo_qty - ? WHERE transit_id = ?", (qty, tid))
-        cut = int(qty * PRIV_SHARE) if row['sponsor'] else 0
-        fence_qty = qty - cut
+
+        if from_escrow > 0:
+            self.ref.conn.execute("UPDATE transits SET cargo_qty = cargo_qty - ? WHERE transit_id = ?", (from_escrow, tid))
+        if from_hold > 0:
+            self.ref.conn.execute("UPDATE accounts SET balance = balance - ? WHERE agent_id = ? AND instrument = ?", (from_hold, acct, comm))
+
+        cut = int(total_stolen * PRIV_SHARE) if row['sponsor'] else 0
+        fence_qty = total_stolen - cut
         fence = self._fence_account()
-        legs = [('SYSTEM', comm, -(cut + (fence_qty if fence else 0)))]
+        legs = []
+        if from_escrow > 0:
+            legs.append(('SYSTEM', comm, -from_escrow))
+        if from_hold > 0:
+            legs.append((acct, comm, -from_hold))
+
         if cut:
             self.record_loot(row['sponsor'], comm, cut)
-            # The sponsor's cut is delivered to its ship 1 (#175): the raiders
-            # carry it, as before ships, so #186's covert economics are unchanged.
-            # What ship 1's hold cannot take waits in the sponsor's hold at
-            # the ship's station (#95, FleetDesk.stow_locked).
             sponsor = row['sponsor']
             if self.ref.fleet.is_corp(sponsor):
-                legs += [(acct, comm, n) for acct, n in self.ref.fleet.stow_locked(f"{sponsor}/1", comm, cut)]
+                legs += [(a, comm, n) for a, n in self.ref.fleet.stow_locked(f"{sponsor}/1", comm, cut)]
             else:
                 legs.append((sponsor, comm, cut))
         if fence and fence_qty:
@@ -466,7 +486,7 @@ class PiracyDesk:
         if row['contract_id']:
             self.ref.conn.execute("UPDATE piracy_privateers SET loot_qty = loot_qty + ? WHERE contract_id = ?",
                                   (cut, row['contract_id']))
-        return qty, fence
+        return total_stolen, fence
 
     def _resolve_locked(self, row, choice: str, timed_out: bool = False) -> None:
         ref, tid = self.ref, row['transit_id']
