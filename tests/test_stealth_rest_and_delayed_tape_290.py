@@ -1,0 +1,232 @@
+"""
+tests/test_stealth_rest_and_delayed_tape_290.py - Test Stealth REST Execution, Delayed Public Tape, and In-Flight Transit Masking (Issue #290).
+"""
+
+import unittest
+from unittest.mock import patch, MagicMock
+from pathlib import Path
+import json
+
+from agora.fog import FogEngine
+from agora.referee import AgoraReferee
+from tools.agora_announcer import (
+    poll_and_execute_trades,
+    broadcast_delayed_tape,
+    build_burst_kickoff,
+    build_announcement,
+)
+from tools.trader_client import execute_agent_turn
+
+
+class TestStealthRestAndDelayedTape290(unittest.TestCase):
+    def setUp(self):
+        self.ref = AgoraReferee(fog={"lag": 3, "noise": 0.15})
+        self.fog = self.ref.fog
+        if not self.fog:
+            self.fog = FogEngine(3, 0.15)
+            self.ref.fog = self.fog
+
+    def test_fog_filter_ticks_masks_in_flight_transits_for_non_owners(self):
+        """Issue #290: In-flight transits must mask destination, commodity, and cargo_qty for non-owners."""
+        self.ref.current_round = 10
+
+        ticks = [
+            {
+                "seq": 101,
+                "kind": "transit",
+                "payload": {
+                    "transit_id": "tr-zero-01",
+                    "agent_id": "zero",
+                    "vessel_id": "zero/1",
+                    "origin": "ceres",
+                    "destination": "earth",
+                    "commodity": "FOOD",
+                    "cargo_qty": 250,
+                    "departure_round": 10,
+                    "arrival_round": 13,
+                    "fuel_burned": 30,
+                },
+                "created_at": "2026-10-02T12:00:00"
+            }
+        ]
+
+        # 1. Non-owner (Amos) sees masked in-flight transit
+        filtered_amos = self.fog.filter_ticks(self.ref, "amos", ticks)
+        self.assertEqual(len(filtered_amos), 1)
+        p_amos = filtered_amos[0]["payload"]
+        self.assertEqual(p_amos["agent_id"], "zero")
+        self.assertEqual(p_amos["origin"], "ceres")
+        self.assertEqual(p_amos["destination"], "in_transit")
+        self.assertIsNone(p_amos["commodity"])
+        self.assertIsNone(p_amos["cargo_qty"])
+        self.assertTrue(p_amos["in_flight"])
+
+        # 2. Public anonymous viewer (None) sees masked in-flight transit
+        filtered_public = self.fog.filter_ticks(self.ref, None, ticks)
+        p_pub = filtered_public[0]["payload"]
+        self.assertEqual(p_pub["destination"], "in_transit")
+        self.assertIsNone(p_pub["commodity"])
+        self.assertIsNone(p_pub["cargo_qty"])
+        self.assertTrue(p_pub["in_flight"])
+
+        # 3. Owner (Zero) sees unmasked full manifest
+        filtered_zero = self.fog.filter_ticks(self.ref, "zero", ticks)
+        p_zero = filtered_zero[0]["payload"]
+        self.assertEqual(p_zero["destination"], "earth")
+        self.assertEqual(p_zero["commodity"], "FOOD")
+        self.assertEqual(p_zero["cargo_qty"], 250)
+        self.assertNotIn("in_flight", p_zero)
+
+        # 4. Admin sees unmasked full manifest
+        filtered_admin = self.fog.filter_ticks(self.ref, "admin", ticks)
+        p_admin = filtered_admin[0]["payload"]
+        self.assertEqual(p_admin["destination"], "earth")
+        self.assertEqual(p_admin["commodity"], "FOOD")
+        self.assertEqual(p_admin["cargo_qty"], 250)
+
+    def test_fog_filter_ticks_unmasks_transit_after_arrival_round(self):
+        """Issue #290: Historical transits are unmasked once the arrival round has arrived."""
+        self.ref.current_round = 13  # Ship arrived!
+
+        ticks = [
+            {
+                "seq": 101,
+                "kind": "transit",
+                "payload": {
+                    "transit_id": "tr-zero-01",
+                    "agent_id": "zero",
+                    "vessel_id": "zero/1",
+                    "origin": "ceres",
+                    "destination": "earth",
+                    "commodity": "FOOD",
+                    "cargo_qty": 250,
+                    "departure_round": 10,
+                    "arrival_round": 13,
+                },
+                "created_at": "2026-10-02T12:00:00"
+            }
+        ]
+
+        # Non-owner (Amos) now sees full unmasked details for completed transit
+        filtered_amos = self.fog.filter_ticks(self.ref, "amos", ticks)
+        p_amos = filtered_amos[0]["payload"]
+        self.assertEqual(p_amos["destination"], "earth")
+        self.assertEqual(p_amos["commodity"], "FOOD")
+        self.assertEqual(p_amos["cargo_qty"], 250)
+        self.assertNotIn("in_flight", p_amos)
+
+    def test_fog_filter_ticks_telemetry_upgrade_exemption(self):
+        """Issue #290: Telemetry upgrades grant orbital sensor vision through stealth."""
+        self.ref.current_round = 10
+        self.ref.upgrades_enabled = True
+        self.ref.upgrades = MagicMock()
+        self.ref.upgrades.has_telemetry.side_effect = lambda ag: ag == "marvin"
+
+        ticks = [
+            {
+                "seq": 101,
+                "kind": "transit",
+                "payload": {
+                    "transit_id": "tr-zero-01",
+                    "agent_id": "zero",
+                    "origin": "ceres",
+                    "destination": "earth",
+                    "commodity": "FOOD",
+                    "cargo_qty": 250,
+                    "arrival_round": 13,
+                }
+            }
+        ]
+
+        # Marvin has telemetry -> sees unmasked transit
+        filtered_marvin = self.fog.filter_ticks(self.ref, "marvin", ticks)
+        self.assertEqual(filtered_marvin[0]["payload"]["destination"], "earth")
+        self.assertEqual(filtered_marvin[0]["payload"]["commodity"], "FOOD")
+
+        # Amos lacks telemetry -> masked
+        filtered_amos = self.fog.filter_ticks(self.ref, "amos", ticks)
+        self.assertEqual(filtered_amos[0]["payload"]["destination"], "in_transit")
+
+    @patch("tools.agora_announcer.fetch_discord_messages")
+    @patch("tools.agora_announcer.add_discord_reaction")
+    @patch("tools.agora_announcer.submit_trade_to_referee")
+    @patch("tools.agora_announcer.post_discord")
+    def test_announcer_poll_and_execute_delayed_tape_buffering(
+        self, mock_post, mock_submit_trade, mock_react, mock_fetch
+    ):
+        """Issue #290: Chat trades must be buffered into execution_buffer when delayed_tape=True."""
+        mock_fetch.return_value = [
+            {
+                "id": "1001",
+                "author": {"id": "1542081375287640084", "username": "Zero"},
+                "content": "BUY 50 FOOD @ 32 AT CERES"
+            }
+        ]
+        mock_submit_trade.return_value = {
+            "status": "ok",
+            "kind": "trade_receipt",
+            "payload": {
+                "order_status": "filled",
+                "trades_count": 1,
+                "filled_qty": 50
+            }
+        }
+
+        exec_buffer = []
+        processed = set()
+        newest = poll_and_execute_trades(
+            channel="test-channel",
+            bot_token="test-bot",
+            ref_token="test-ref",
+            active_station="ceres",
+            processed_ids=processed,
+            last_seen_id="1000",
+            execution_buffer=exec_buffer,
+            delayed_tape=True
+        )
+
+        self.assertEqual(newest, "1001")
+        # Direct Discord post was suppressed (buffered for delayed tape)
+        mock_post.assert_not_called()
+        # Immediate reaction emoji was posted to the message
+        mock_react.assert_any_call("test-channel", "1001", "🚀", "test-bot")
+        mock_react.assert_any_call("test-channel", "1001", "✅", "test-bot")
+        # Buffered receipt added
+        self.assertEqual(len(exec_buffer), 1)
+        self.assertIn("Order Executed & Cleared", exec_buffer[0])
+        self.assertIn("BOUGHT **50 FOOD**", exec_buffer[0])
+
+    @patch("tools.agora_announcer.post_discord")
+    def test_broadcast_delayed_tape_formatting(self, mock_post):
+        """Issue #290: broadcast_delayed_tape compiles consolidated tape batch."""
+        receipts = [
+            "⚡ **[Trade]** ZERO bought 50 FOOD @ 32 CR at Ceres Depot",
+            "🚀 **[Transit]** ZERO dispatched zero/1 from Ceres to Earth (250 FOOD)"
+        ]
+        broadcast_delayed_tape("test-channel", "test-token", receipts, round_num=5)
+
+        mock_post.assert_called_once()
+        args, _ = mock_post.call_args
+        msg = args[1]
+        self.assertIn("Round #5 Consolidated Execution Tape (Delayed)", msg)
+        self.assertIn("ZERO bought 50 FOOD", msg)
+        self.assertIn("ZERO dispatched zero/1", msg)
+
+    def test_trader_client_stealth_mode(self):
+        """Issue #290: trader_client supports stealth=True and AGORA_STEALTH=1."""
+        res = execute_agent_turn(agent_id="zero", current_round=5, floor="halted", stealth=True)
+        self.assertTrue(res.get("stealth"))
+        self.assertEqual(res["status"], "floor_halted")
+
+    def test_rules_of_engagement_issue_290_documentation_parity(self):
+        """Issue #290 Acceptance: rules-of-engagement.md documents delayed tape and chat role."""
+        roe = Path(__file__).resolve().parent.parent / "docs" / "rules-of-engagement.md"
+        content = roe.read_text(encoding="utf-8")
+        self.assertIn("Delayed Public Tape Broadcast", content)
+        self.assertIn("Terminal Chat Role Redefinition", content)
+        self.assertIn("In-Flight Transit Masking", content)
+        self.assertIn("--stealth", content)
+
+
+if __name__ == "__main__":
+    unittest.main()

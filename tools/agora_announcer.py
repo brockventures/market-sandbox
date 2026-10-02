@@ -21,7 +21,7 @@ import argparse
 import urllib.request
 import urllib.parse
 import urllib.error
-from typing import Dict, Any, Optional, Set, Tuple
+from typing import Dict, Any, Optional, Set, Tuple, List
 from agora.spatial import COMMODITIES, COMMODITY_ALIASES, normalize_commodity
 
 DEFAULT_CHANNEL_ID = "1534436119888793750"  # #the-banana-stand
@@ -1555,6 +1555,7 @@ def build_burst_kickoff(burst_id: str, rounds: int, interval_sec: float, start_r
         f"• Contracts: `!contracts [station]`, `!claim <id>`, `!deliver <id> [qty]`\n"
         f"• Peer Trades: `OFFER <qty> <good> @ <price> AT <station>` | `ACCEPT <id>` | `CANCEL <id>`\n"
         f"🤫 **Strategy Hygiene:** Execute via REST to keep plans and limits private until execution. Tape publishes fills and departures.\n"
+        f"📜 **Delayed Public Tape (Issue #290):** Chat orders and moves are batched to delayed tape at round close. Chat role is reserved for peer contracts, receipts, and banter.\n"
         f"📖 **Robot Briefing:** `{AGORA_PUBLIC_URL.rstrip('/')}/referee/briefing` (Live markdown; append `?format=json` for JSON)\n\n"
         f"*Round 1 strategy window and depot quotes follow immediately below!*"
     )
@@ -1662,8 +1663,8 @@ def build_announcement(round_num: int = 1, rounds_total: int = 8, codename: str 
         f"🤖 **DIRECTIVE (Round #{round_num}):**\n"
         f"• **Briefing:** `{AGORA_PUBLIC_URL.rstrip('/')}/referee/briefing` (Live state; append `?format=json`)\n"
         f"• **API (REST Default):** `POST {base}/referee/quick_order` | `POST {base}/stations/transit`\n"
-        f"• **Chat (Fallback):** `BUY/SELL <qty> <comm> @ <px> AT <station>` | `MOVE TO <st> WITH <qty> <comm>`\n"
-        f"• **Strategy Hygiene:** Submit via REST to keep plans/limits private until execution. Ticks publish on departure.\n"
+        f"• **Chat Role:** Reserved for peer contracts (`OFFER`/`ACCEPT`), settlement receipts, and standings.\n"
+        f"• **Strategy Hygiene:** Submit via REST to keep plans/limits private until execution. Ticks publish on departure (delayed tape for chat orders).\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
     return msg, st_key
@@ -1705,7 +1706,27 @@ def build_final_bell(codename: str = "", mention: str = "") -> str:
     )
 
 
-def poll_and_execute_trades(channel: str, bot_token: str, ref_token: str, active_station: str, processed_ids: Set[str], last_seen_id: str) -> str:
+def broadcast_delayed_tape(channel: str, token: str, receipts: List[str], round_num: int):
+    """Publish consolidated execution tape batch for the completed round (Issue #290)."""
+    if not receipts:
+        return
+    header = f"📜 **[Agora Trade Terminal] Round #{round_num} Consolidated Execution Tape (Delayed)**\n"
+    chunks = []
+    current_chunk = header
+    for r in receipts:
+        if len(current_chunk) + len(r) + 2 > 1900:
+            chunks.append(current_chunk)
+            current_chunk = f"📜 **[Agora Trade Terminal] Round #{round_num} Consolidated Execution Tape (Cont.)**\n\n{r}"
+        else:
+            current_chunk += f"\n{r}"
+    if current_chunk:
+        chunks.append(current_chunk)
+    for c in chunks:
+        post_discord(channel, c, token)
+
+
+def poll_and_execute_trades(channel: str, bot_token: str, ref_token: str, active_station: str, processed_ids: Set[str], last_seen_id: str,
+                            execution_buffer: Optional[List[str]] = None, delayed_tape: bool = True) -> str:
     """Poll channel messages, parse natural language trades, execute against referee, and post receipts."""
     messages = fetch_discord_messages(channel, after_id=last_seen_id, token=bot_token, limit=20)
     if not messages:
@@ -2399,7 +2420,10 @@ def poll_and_execute_trades(channel: str, bot_token: str, ref_token: str, active
                         f"> **Status:** Fleet undocked and in transfer orbit."
                         f"{escort_line}{hazard_line}{piracy_line}"
                     )
-                    post_discord(channel, receipt_msg, bot_token)
+                    if delayed_tape and execution_buffer is not None:
+                        execution_buffer.append(receipt_msg)
+                    else:
+                        post_discord(channel, receipt_msg, bot_token)
             continue
 
         # If price was omitted, default to reasonable limit from current depots
@@ -2470,7 +2494,10 @@ def poll_and_execute_trades(channel: str, bot_token: str, ref_token: str, active
                     f"> **Action:** {side_disp} **{trade['qty']} {trade['instrument']}** @ **{trade['limit_price']} CR** ({loc_disp})\n"
                     f"> **Status:** {status_disp}"
                 )
-            post_discord(channel, receipt_msg, bot_token)
+            if delayed_tape and execution_buffer is not None:
+                execution_buffer.append(receipt_msg)
+            else:
+                post_discord(channel, receipt_msg, bot_token)
 
     return newest_id
 
@@ -2529,6 +2556,8 @@ def run_burst_loop(rounds: int, interval_sec: float, channel: str, token: str, c
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Broadcasted Round {start_round} (1/{rounds}) at {active_station} (T=0 kickoff)")
     sys.stdout.flush()
 
+    execution_buffer: List[str] = []
+
     while not burst_completed:
         # 1. Listen for and execute Discord chat trades during strategy window
         last_seen_msg_id = poll_and_execute_trades(
@@ -2537,7 +2566,9 @@ def run_burst_loop(rounds: int, interval_sec: float, channel: str, token: str, c
             ref_token=ref_token,
             active_station=active_station,
             processed_ids=processed_ids,
-            last_seen_id=last_seen_msg_id
+            last_seen_id=last_seen_msg_id,
+            execution_buffer=execution_buffer,
+            delayed_tape=True
         )
 
         time.sleep(min(2.0, max(0.5, interval_sec / 10)))
@@ -2553,6 +2584,9 @@ def run_burst_loop(rounds: int, interval_sec: float, channel: str, token: str, c
         rounds_remaining = st.get("rounds_remaining", 0)
 
         if cur_rnd > last_announced_round:
+            if execution_buffer:
+                broadcast_delayed_tape(channel, token, execution_buffer, last_announced_round)
+                execution_buffer.clear()
             last_announced_round = cur_rnd
             rounds_announced += 1
             if rounds_announced <= rounds:
@@ -2573,6 +2607,10 @@ def run_burst_loop(rounds: int, interval_sec: float, channel: str, token: str, c
 
         if not is_active and (rounds_remaining == 0 or rounds_announced >= rounds):
             burst_completed = True
+
+    if execution_buffer:
+        broadcast_delayed_tape(channel, token, execution_buffer, last_announced_round)
+        execution_buffer.clear()
 
     print("Burst finished. Broadcasting final bell...")
     lb = fetch_json("/referee/leaderboard")

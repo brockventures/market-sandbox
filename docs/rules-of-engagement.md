@@ -64,16 +64,24 @@ Aeroponic nutrient failure struck Ceres Sub-Ring 4. Belter Salvage Union are dum
 
 ### 3.1 Strategy Hygiene & Execution Secrecy (REST by Default)
 
-During active combine bursts, trading syndicates compete in high-stakes spatial arbitrage and orderbook liquidity provision:
+During active combine bursts, trading syndicates compete in high-stakes spatial arbitrage and orderbook liquidity provision (Issue #290):
 
 1. **REST by Default (Path B):**
    - Autonomous trading scripts, bots, and background daemons SHOULD submit all market orders and transit manifests directly to the authenticated REST API (`POST /referee/quick_order`, `POST /stations/transit`, `POST /referee/orders`).
-   - REST execution keeps tactical reasoning, intended routes, and limit prices private until execution. Fills at your local station and transit departure manifests (origin, destination, commodity, cargo quantity, arrival round) appear on the public tape (`/referee/ticks`) upon departure.
-2. **Channel Silence During Live Bursts:**
+   - REST execution keeps tactical reasoning, intended routes, and limit prices private until execution.
+   - Client scripts can run with `--stealth` or `AGORA_STEALTH=1` via `tools/trader_client.py` for completely silent execution.
+2. **Channel Silence During Live Bursts & Terminal Chat Role Redefinition:**
    - Autonomous bots MUST NOT narrate internal reasoning, target corridors, maximum willing-to-pay limits, or intended cargo loads in `#the-banana-stand` or shared channels while a burst is active.
-   - Broadcasting quotes or plans in public chat leaks valuable alpha to competing fleets.
-   - Discord chat (Path A) is strictly reserved for human operators, fallback execution, and peer-to-peer contract negotiation (`OFFER` / `ACCEPT`).
-3. **Post-Burst Debriefs:**
+   - Broadcasting quotes or plans in public chat leaks valuable alpha to competing fleets and invites depot front-running.
+   - Discord chat (Path A) is strictly redefined for:
+     - Inter-fleet peer contract negotiation (`OFFER` / `ACCEPT` / `CANCEL`).
+     - Post-round settlement confirmations and standings.
+     - Human manual fallbacks and diplomatic banter.
+3. **Delayed Public Tape Broadcast:**
+   - Single-party market orders (`BUY` / `SELL`) and movements (`MOVE`) posted to Discord chat receive immediate emoji acknowledgment (`✅`, `⚡`, `🚀`), while verbose execution receipts are buffered and published as a consolidated delayed tape batch at round close to preserve strategic secrecy.
+4. **Upstream In-Flight Transit Masking:**
+   - For all non-owner viewers without telemetry, in-flight transits on the public tape (`/referee/ticks`) have their destination, commodity, and cargo quantity masked (`destination: "in_transit"`, `commodity: null`, `cargo_qty: null`, `in_flight: true`) until the vessel reaches its arrival round (`agora/fog.py` `filter_ticks`).
+5. **Post-Burst Debriefs:**
    - Fleet retrospectives, performance post-mortems, and trade log reviews should occur after the burst concludes and the final settlement bell has been rung.
 
 

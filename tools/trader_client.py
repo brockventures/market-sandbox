@@ -475,17 +475,20 @@ def execute_agent_turn(
     instrument: str = "FRAG",
     cfg: Optional[Dict[str, Any]] = None,
     dry_run: bool = False,
-    trigger_reason: str = "round_advance"
+    trigger_reason: str = "round_advance",
+    stealth: Optional[bool] = None
 ) -> Dict[str, Any]:
     """
     Core modular trading turn evaluation.
     Evaluates order books, balances, and spatial transit arbitrage, submitting orders via REST.
     """
     act_agent = (agent_id or AGENT_ID).lower().strip()
+    is_stealth = stealth if stealth is not None else bool(os.environ.get("AGORA_STEALTH", "").strip() in ("1", "true", "yes"))
 
     if floor != "open":
-        print(f"⏸️ Floor is {floor.upper()} — standing down from order generation.")
-        return {"status": "floor_halted", "agent_id": act_agent, "round": current_round}
+        if not is_stealth:
+            print(f"⏸️ Floor is {floor.upper()} — standing down from order generation.")
+        return {"status": "floor_halted", "agent_id": act_agent, "round": current_round, "stealth": is_stealth}
 
     config = cfg or load_strategy_config()
 
@@ -646,6 +649,7 @@ def execute_agent_turn(
         print(f"🛰️ Fleet is in transit ({my_loc.get('transit', {}).get('origin', '?').upper()} -> {my_loc.get('transit', {}).get('destination', '?').upper()}) — local order quoting paused.")
         actions_taken["quotes"] = {"status": "in_transit"}
 
+    actions_taken["stealth"] = is_stealth
     return actions_taken
 
 
@@ -1035,6 +1039,9 @@ if __name__ == "__main__":
     parser.add_argument("--salvage-summary", action="store_true", help="Inspect derelict salvage and distress RFQ statistics")
     parser.add_argument("--salvage-beacons", action="store_true", help="List active derelict distress beacons")
     parser.add_argument("--salvage-claim", type=str, help="Claim derelict vessel by beacon_id")
+    parser.add_argument("--stealth", "--silent", action="store_true", dest="stealth",
+                        default=bool(os.environ.get("AGORA_STEALTH", "").strip() in ("1", "true", "yes")),
+                        help="Execute trading strategy completely silent via direct authenticated REST without console/chat alpha leaks (Issue #290)")
     parser.add_argument("--dry-run", action="store_true", help="Simulate quotes and transits without submitting orders")
     args = parser.parse_args()
 
