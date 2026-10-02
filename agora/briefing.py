@@ -221,6 +221,14 @@ def build_briefing(ref, base_url: str = "", viewer: Optional[str] = None) -> str
         out.append("")
     out.extend(_route_table(rnd))
     out.append("")
+    if hasattr(ref, 'hazards') and ref.hazards and ref.hazards.odds:
+        p_d, p_l = ref.hazards.odds
+        out.append(f"- Route hazards: {int(p_d*100)}% storm delay (1-3 rounds), {int(p_l*100)}% hull breach loss (10-20% cargo). Pre-trip quote: `POST /stations/transit` with dry_run=true.")
+    if hasattr(ref, 'piracy') and ref.piracy and ref.piracy.odds:
+        pb, pi = ref.piracy.odds
+        hot_st = ref.piracy.hot_station(rnd)
+        out.append(f"- Piracy base odds: {int(pb*100)}% belt / {int(pi*100)}% inner (Hot station: {hot_st.capitalize()} 2x). Pre-trip raid odds and hazards quote: `POST /stations/transit` with dry_run=true.")
+    out.append("")
     out.append("## Fleets")
     out.append("| Fleet | Where | CR | FUEL | FRAG | FOOD | ORE | MACHINERY | Net worth |")
     out.append("|---|---|---|---|---|---|---|---|---|")

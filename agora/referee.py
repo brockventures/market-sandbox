@@ -1599,7 +1599,7 @@ class AgoraReferee:
             self.fleet.scrap_locked(vessel_id, "absorbed over the owner's ship cap; scrapped on landing")
 
     def initiate_transit(self, agent_id: str, destination: str, commodity: str = 'FRAG', cargo_qty: int = 0, perishable: Optional[bool] = None,
-                         escort: bool = False, vessel_id: Optional[str] = None) -> Dict[str, Any]:
+                         escort: bool = False, vessel_id: Optional[str] = None, dry_run: bool = False) -> Dict[str, Any]:
         """Fly one ship (ship 1 unless vessel_id names another, #175). Each
         ship makes one trip at a time; the others are unaffected. FUEL and
         cargo come out of that ship's hold, the toll and escort out of the
@@ -1720,6 +1720,8 @@ class AgoraReferee:
             from agora.piracy import cargo_value as piracy_cargo_value
             total_cargo_value = sum(piracy_cargo_value(g, q) for g, q in total_cargo.items())
 
+
+
             # Piracy escort (agora/piracy.py): paid at departure, on top of
             # any toll. Ignored when piracy is off or there is no cargo.
             effective_escort_qty = cargo_qty if cargo_qty > 0 else total_cargo_qty
@@ -1734,6 +1736,86 @@ class AgoraReferee:
                         'v': 1, 'kind': 'reject', 'reply': 'optional', 'floor': self.floor,
                         'payload': {'reason': 'insufficient_credits_for_escort', 'detail': f"An escort for {effective_escort_qty} {comm} costs {escort_fee} CR ({int(PIRACY_ESCORT_PCT * 100)}% of the cargo's value){f' plus the {toll_required} CR toll' if toll_required else ''}; available {avail_cr} CR. Move without an escort, or raise cash first."}
                     }
+
+            # Pre-trip quote check (Issues #285, #288)
+            dep_round = self.current_round
+            base_rounds = route['rounds'] - self.upgrades.engine_cut(agent_id, route['rounds'])
+            from agora.hazards import DELAY_ROUNDS
+            max_delay = DELAY_ROUNDS[1] if (hasattr(self, 'hazards') and self.hazards and self.hazards.odds) else 0
+            arr_round_min = dep_round + base_rounds
+            arr_round_max = dep_round + base_rounds + max_delay
+
+            # Burst end warning evaluation
+            burst_info = self.get_burst_info()
+            arrives_after_burst_end = False
+            warning = None
+            if burst_info.get('active'):
+                end_rnd = burst_info.get('end_round')
+                if end_rnd is not None:
+                    if arr_round_min >= end_rnd:
+                        arrives_after_burst_end = True
+                        warning = (
+                            f"Transit arrives on round {arr_round_min}, at or after the burst's final round "
+                            f"({end_rnd}). Cargo cannot be sold before the burst concludes."
+                        )
+                    elif arr_round_max >= end_rnd:
+                        warning = (
+                            f"Transit arrives on round {arr_round_min} (base), but could arrive as late as round {arr_round_max} "
+                            f"if delayed by hazards (burst concludes on round {end_rnd})."
+                        )
+
+            if dry_run:
+                p_quote = self.piracy.chance(
+                    agent_id, origin, dest, toll_required > 0, comm,
+                    cargo_qty, escort, dep_round,
+                    hold_value=total_cargo_value, for_quote=True
+                )
+                h_quote = self.hazards.quote(
+                    delay_factor=self.upgrades.factor(agent_id, 'shielding'),
+                    loss_factor=self.upgrades.factor(agent_id, 'hold'),
+                    loss_size_factor=self.upgrades.loss_size_factor(agent_id),
+                    agent_id=vid, total_qty=total_cargo_qty
+                )
+                quote_payload = {
+                    'dry_run': True,
+                    'quoted_round': dep_round,
+                    'agent_id': agent_id,
+                    'vessel_id': vid,
+                    'origin': origin,
+                    'destination': dest,
+                    'departure_round': dep_round,
+                    'arrival_round_min': arr_round_min,
+                    'arrival_round_max': arr_round_max,
+                    'base_rounds': base_rounds,
+                    'max_delay_rounds': max_delay,
+                    'commodity': comm,
+                    'cargo_qty': cargo_qty,
+                    'hold_cargo': hold_goods,
+                    'total_cargo_qty': total_cargo_qty,
+                    'total_cargo_value': total_cargo_value,
+                    'fuel_required': required_fuel,
+                    'toll_required': toll_required,
+                    'escort': bool(escort),
+                    'escort_fee': escort_fee,
+                    'is_aligned': route.get('is_aligned', False),
+                    'window_name': route.get('window_name'),
+                    'arrives_after_burst_end': arrives_after_burst_end,
+                    'piracy': p_quote,
+                    'hazard': h_quote,
+                }
+                if warning:
+                    quote_payload['warning'] = warning
+                ret = {
+                    'v': 1,
+                    'kind': 'transit_quote',
+                    'status': 'quote',
+                    'arrives_after_burst_end': arrives_after_burst_end,
+                    'payload': quote_payload
+                }
+                if warning:
+                    ret['warning'] = warning
+                return ret
+
 
             # Cancel the departing ship's resting orders (every one of them
             # rests at its origin); other ships' orders stay up. A non-corp
@@ -1892,7 +1974,9 @@ class AgoraReferee:
                 'destination': dest,
                 'departure_round': dep_round,
                 'arrival_round': arr_round,
-                'rounds_duration': base_rounds,
+                'rounds_duration': arr_round - dep_round,
+                'base_rounds': base_rounds,
+                'delay_rounds': hz_delay,
                 'commodity': comm,
                 'cargo_qty': cargo_qty,
                 'hold_cargo': hold_goods,

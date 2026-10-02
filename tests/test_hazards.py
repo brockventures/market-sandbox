@@ -37,7 +37,8 @@ class TestHazards(unittest.TestCase):
         p = r['payload']
         self.assertIsNotNone(p['hazard'], r)
         self.assertGreaterEqual(p['hazard']['delay'], 1)
-        self.assertEqual(p['arrival_round'] - p['departure_round'], p['rounds_duration'] + p['hazard']['delay'])
+        self.assertEqual(p['arrival_round'] - p['departure_round'], p['rounds_duration'])
+        self.assertEqual(p['rounds_duration'], p['base_rounds'] + p['delay_rounds'])
         self.assertTrue(ref.verify_ledger_invariants()[0])
 
     def test_certain_loss_delivers_less_and_ledger_balances(self):

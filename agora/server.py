@@ -764,6 +764,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 self._send_json(400, {'v': 1, 'kind': 'reject', 'payload': {
                     'reason': 'invalid_format', 'detail': 'agent_id is a fleet; name the ship in vessel_id'}})
                 return
+            dry_run = bool(payload.get('dry_run')) or ('dry_run=1' in self.path or 'dry_run=true' in self.path.lower()) or path.endswith('/quote')
             result = ref.initiate_transit(
                 agent_id=target_agent,
                 destination=destination,
@@ -772,6 +773,7 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 perishable=perishable,
                 escort=bool(payload.get('escort')),
                 vessel_id=payload.get('vessel_id') or payload.get('vessel'),
+                dry_run=dry_run,
             )
             if result.get('kind') == 'reject':
                 self._send_json(400, result)
@@ -1568,6 +1570,34 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
         path = parsed_url.path.rstrip('/')
         query_params = urllib.parse.parse_qs(parsed_url.query)
         ref = self.referee or AgoraReferee()
+
+        if path in ('/stations/transit/quote', '/referee/transit/quote') or path == '/referee/piracy/quote':
+            auth_agent, auth_err = self._authenticate_request()
+            if auth_err:
+                self._send_json(401, auth_err)
+                return
+            dest = query_params.get('destination', [None])[0]
+            if not dest:
+                self._send_json(400, {'v': 1, 'kind': 'reject', 'payload': {'reason': 'invalid_format', 'detail': 'Missing destination'}})
+                return
+            comm = query_params.get('commodity', ['FRAG'])[0]
+            try:
+                c_qty = int(query_params.get('cargo_qty', [0])[0] or query_params.get('qty', [0])[0] or 0)
+            except (ValueError, TypeError):
+                c_qty = 0
+            escort = query_params.get('escort', ['false'])[0].lower() in ('true', '1')
+            vid = query_params.get('vessel_id', [None])[0] or query_params.get('vessel', [None])[0]
+            result = ref.initiate_transit(
+                agent_id=auth_agent,
+                destination=dest,
+                commodity=comm,
+                cargo_qty=c_qty,
+                escort=escort,
+                vessel_id=vid,
+                dry_run=True,
+            )
+            self._send_json(200 if result.get('kind') != 'reject' else 400, result)
+            return
 
         if path in ('', '/terminal', '/terminal.html'):
             terminal_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'public', 'terminal.html')

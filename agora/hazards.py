@@ -81,6 +81,38 @@ class HazardEngine:
         self.rng = random.Random(f"hazards-{seed}")
         self.bags.reset(seed)
 
+    def quote(self, delay_factor: float = 1.0, loss_factor: float = 1.0,
+              loss_size_factor: float = 1.0, agent_id: str = '',
+              total_qty: Optional[int] = None) -> Dict[str, Any]:
+        """Quote hazard odds and loss ranges without drawing any marbles (#285)."""
+        if not self.odds:
+            return {
+                'p_delay': 0.0,
+                'p_loss': 0.0,
+                'delay_rounds': [0, 0],
+                'loss_fraction': [0.0, 0.0],
+                'expected_loss_qty': [0, 0],
+                'delay_factor': delay_factor,
+                'loss_factor': loss_factor,
+                'loss_size_factor': loss_size_factor,
+            }
+        p_delay, p_loss = self.odds
+        p_delay_adj = round(min(1.0, max(0.0, p_delay * delay_factor)), 4)
+        p_loss_adj = round(min(1.0, max(0.0, p_loss * loss_factor)), 4)
+        effective_qty = max(0, total_qty or 0)
+        min_loss = int(effective_qty * LOSS_FRACTION[0] * loss_size_factor) if effective_qty > 0 else 0
+        max_loss = int(effective_qty * LOSS_FRACTION[1] * loss_size_factor) if effective_qty > 0 else 0
+        return {
+            'p_delay': p_delay_adj,
+            'p_loss': p_loss_adj,
+            'delay_rounds': list(DELAY_ROUNDS),
+            'loss_fraction': list(LOSS_FRACTION),
+            'expected_loss_qty': [min_loss, max_loss],
+            'delay_factor': delay_factor,
+            'loss_factor': loss_factor,
+            'loss_size_factor': loss_size_factor,
+        }
+
     def roll(self, cargo_qty: int, delay_factor: float = 1.0, loss_factor: float = 1.0,
              loss_size_factor: float = 1.0, agent_id: str = '',
              total_qty: Optional[int] = None) -> Tuple[int, int, str]:
