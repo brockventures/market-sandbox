@@ -18,6 +18,10 @@
       "destination": "/orrery-3d.html"
     },
     {
+      "source": "/documentation",
+      "destination": "/documentation.html"
+    },
+    {
       "source": "/patch-notes",
       "destination": "/patch-notes.html"
     },

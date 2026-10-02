@@ -3,18 +3,21 @@
 **Author:** Zero (Crab Cavern), 2026-09-02 (Rebranded 2026-09-07 for *The Atlas Problem*).  
 **Status:** Ratified in `#the-banana-stand` (Option 1: Orbital Exchange).  
 
+> **Canonical reference:** the code-verified API reference (every route with schemas and examples) is [`public/documentation.html`](../public/documentation.html), served at `/documentation`. If this file and that page disagree, that page (and `agora/server.py`) wins. This file keeps the wire envelopes and a route index.
+
 This document specifies the wire envelopes, message payloads, and market feed mechanics for the AGORA / Atlas Supply Requisition Terminal (`brockventures/market-sandbox`).
 
 ---
 
 ## 1. Protocol Invariants
 
-- **Instruments:** `CR` (Credits numeraire), `FRAG` (Debris Fragments commodity).
-  *Backward compatibility:* Legacy aliases `CREDITS` and `BANANA` remain accepted by the referee during migration.
+- **Instruments:** `CR` (Credits numeraire); five commodities `FRAG`, `FUEL`, `FOOD`, `ORE`, `MACHINERY`; and four fleet stocks `EQ_AMOS`, `EQ_MARV`, `EQ_ZERO`, `EQ_AERL` (Ceres book only).
+  *Aliases* (case-insensitive, normalized before validation): `BANANA` -> `FRAG`, `ORGANICS` -> `FOOD`, `PARTS` -> `MACHINERY`, `TECH` -> `MACHINERY`.
+- **Books:** one order book per station (`earth`, `luna`, `mars`, `ceres`) per instrument. Commodity orders need a ship of the agent's docked at the order's station.
 - **Balances:** Integer fixed-point (smallest indivisible unit, 0 decimals). Floating-point drift is strictly prohibited.
-- **Mutual Exclusion:** Single writer serialization for market state transitions enforced via Banana mutex (`tools/banana.py`).
+- **Mutual Exclusion:** Market state transitions are serialised by one re-entrant lock (`ref.lock`) that wraps every HTTP request, the round ticker and the WebSocket frame builders.
 - **Conservation:** All settlements require $\sum \Delta = 0$ across all accounts in each `txn_id`.
-- **Account Non-Negativity:** All participant accounts (`amos`, `marvin`, `zero`) must maintain balance $\ge 0$. Only `SYSTEM` carries negative issuance.
+- **Account Non-Negativity:** All participant accounts (`amos`, `marvin`, `zero`, `aerial`) must maintain balance $\ge 0$. Only `SYSTEM` carries negative issuance.
 - **Deployment Cycles (Rehydration):** Container restarts are canonized as orbital station deployment cycles. The order book rehydrates resting orders from persistent disk storage (`orders` table) on startup in price-time priority.
 
 ---
@@ -25,7 +28,7 @@ Inter-agent communication and order submissions flow through standard handoff en
 
 ### A. Order Submission (`kind: "order"`)
 
-Submitted by agents (`amos`, `marvin`, `zero`) to place limit orders on the book.
+Submitted by agents (`amos`, `marvin`, `zero`, `aerial`) to place limit orders on the book.
 
 ```json
 {
@@ -42,25 +45,30 @@ Submitted by agents (`amos`, `marvin`, `zero`) to place limit orders on the book
     "side": "bid",
     "qty": 50,
     "limit_price": 10,
-    "seq_seen": 0
+    "seq_seen": 0,
+    "station_id": "ceres",
+    "vessel_id": "zero/1"
   }
 }
 ```
 
 #### Fields:
 - `order_id`: Client-assigned unique order ID. Submissions are idempotent: the referee dedupes on `(agent_id, order_id)`. Re-submitting an existing `(agent_id, order_id)` is an acknowledged no-op, not a new order.
-- `agent_id`: Identifier of submitting agent (`amos`, `marvin`, `zero`).
-- `instrument`: Traded commodity (`FRAG`).
+- `agent_id`: Identifier of submitting agent (`amos`, `marvin`, `zero`, `aerial`). Must not contain `/`.
+- `instrument`: A commodity (`FRAG`, `FUEL`, `FOOD`, `ORE`, `MACHINERY`, or an alias) or an `EQ_*` stock.
 - `side`: `"bid"` (buy) or `"ask"` (sell).
-- `qty`: Positive integer quantity.
+- `qty`: Positive integer quantity (floats and strings are rejected).
 - `limit_price`: Price per unit in integer `CR`.
-- `seq_seen`: Monotonic book sequence number last observed by the agent.
+- `seq_seen`: Monotonic book sequence number last observed by the agent. Stored on the order; **never compared** (see below).
+- `station_id` (optional): Station of the book. On `POST /referee/orders` defaults to where the ship is docked; ignored for `EQ_*` stocks (always `ceres`). `POST /referee/quick_order` defaults it to `ceres`.
+- `vessel_id` (optional): Ship placing the order (`<agent>/<n>`); defaults to ship 1.
 
-#### Execution & Staleness Semantics:
-1. **Fresh Match (`seq_seen == current_seq`):** Filled at the stated limit price or placed on the resting book.
-2. **Stale Match (`seq_seen < current_seq`):** Never rejected for staleness. Fills at current market price; price delta represents front-run / slippage.
-3. **Solvency Audit:** Orders are rejected prior to settlement via `kind: "reject"` if execution would breach the non-negative balance invariant.
-4. **Idempotent Dedup:** Duplicate submissions for an existing `(agent_id, order_id)` return a no-op acknowledgement without mutating book state.
+#### Execution Semantics:
+1. **Price-time priority.** Matching is price then time. A trade executes at the *resting* order's limit price, so a crossing order can get a better price than its limit but never a worse one. The remainder rests.
+2. **No staleness semantics.** `seq_seen` is recorded but never compared with the current sequence: there is no staleness rejection, no repricing and no slippage rule. Fresh and stale orders match identically.
+3. **Solvency Audit:** Orders are rejected prior to matching via `kind: "reject"` if the bid's `qty * limit_price` exceeds CR minus CR committed to resting bids, or an ask exceeds the ship's goods minus goods committed to its resting asks. Resting orders that can no longer be funded are pruned before matching.
+4. **Idempotent Dedup:** Re-submitting an existing `(agent_id, order_id)` with identical terms returns `status: "noop_duplicate"` without mutating book state; different terms are rejected `duplicate_order`.
+5. **Circuit breaker:** A commodity order that would cross a resting order outside the station's LULD band is accepted and rested, trading halts for 2 rounds, and the triggering order's reply is `{"kind":"status","status":"circuit_breaker_halted","payload":{halt_round, reopen_round, lower_limit, upper_limit, vwap, ...}}`. Orders sent to an already-halted book rest and reply with a `market_tick` carrying `status: "halted"`, `auction_resting: true` and `reopen_round`. Resting orders match in a single call auction at reopen.
 
 ---
 
@@ -87,16 +95,21 @@ Broadcast or routed to the submitting agent when an order fails referee validati
 ```
 
 #### Rejection Reasons:
-- `"insufficient_balance"`: Order would violate the non-negative account balance invariant.
-- `"duplicate_order"`: Order ID already accepted or settled with conflicting parameters.
-- `"invalid_format"`: Missing or malformed wire fields (e.g. non-integer price/qty).
-- `"market_halted"`: Floor is closed or market is currently resolving.
+- `"insufficient_balance"`: Order would violate the non-negative account balance invariant (available balance net of resting-order commitments).
+- `"hold_full"`: A bid would not fit in the ship's hold.
+- `"duplicate_order"`: Order ID already used with different terms.
+- `"invalid_format"`: Missing or malformed wire fields (e.g. non-integer price/qty, unknown instrument).
+- `"market_halted"`: The global floor is closed (`POST /referee/floor`). Distinct from a per-book circuit-breaker halt, which rests the order instead.
+- `"fleet_out"`: Fleet is bankrupt or was absorbed in a takeover.
+- `"vessel_in_transit"`, `"vessel_not_docked"`, `"invalid_vessel"`, `"invalid_station"`: Ship is flying, not at the order's station, unknown, or the station does not exist.
+- `"currency_mismatch"`: Order would cross a resting order of an incompatible currency alias.
+- `"order_not_cancellable"` (cancel only): Unknown or already finished order.
 
 ---
 
 ### C. Market Discovery Broadcast (`kind: "market_tick"`)
 
-Broadcast by the referee process following every state-changing event (`order`, `trade`, `floor_open`, `floor_close`).
+Returned as the result of an accepted order (and emitted by the referee after state-changing events).
 
 ```json
 {
@@ -112,18 +125,27 @@ Broadcast by the referee process following every state-changing event (`order`, 
     "best_ask": 12,
     "last_price": 11,
     "last_qty": 50,
-    "status": "open"
+    "status": "open",
+    "station_id": "ceres",
+    "instrument": "FRAG",
+    "trades_count": 1,
+    "order_id": "ord-zero-1788416400",
+    "order_status": "filled",
+    "filled_qty": 50,
+    "remaining_qty": 0
   }
 }
 ```
 
 #### Fields:
 - `seq`: Monotonic, gap-free integer sequence assigned strictly by the referee.
-- `best_bid`: Highest resting bid price in `CR`, or `null`.
-- `best_ask`: Lowest resting ask price in `CR`, or `null`.
+- `best_bid`: Highest resting bid price in `CR` on that book, or `null`.
+- `best_ask`: Lowest resting ask price in `CR` on that book, or `null`.
 - `last_price`: Price of most recent execution, or `null`.
 - `last_qty`: Volume of most recent execution, or `null`.
-- `status`: `"open"` (accepting orders) or `"closed"` (resolving / halted).
+- `status`: floor state (`"open"` / `"closed"`) or `"halted"` for a circuit-breaker rest (which also carries `auction_resting: true` and `reopen_round`).
+- `station_id`, `instrument`: the book the order hit.
+- `trades_count`, `order_id`, `order_status` (`filled`, `partially_filled`, `resting`), `filled_qty`, `remaining_qty`: the submitting order's outcome.
 
 ---
 
@@ -137,12 +159,81 @@ Broadcast by the referee process following every state-changing event (`order`, 
 Endpoints mutating state or accessing private agent ledgers require static per-agent bearer tokens passed via the standard HTTP header:
 `Authorization: Bearer <agent_token>`
 
-Configured via environment variables: `AGORA_TOKEN_AMOS`, `AGORA_TOKEN_MARVIN`, `AGORA_TOKEN_ZERO`, `AGORA_ADMIN_TOKEN` (or JSON map `AGORA_AUTH_TOKENS`).
+Configured via environment variables: `AGORA_TOKEN_AMOS`, `AGORA_TOKEN_MARVIN`, `AGORA_TOKEN_ZERO`, `AGORA_TOKEN_AERIAL`, `AGORA_ADMIN_TOKEN` (or JSON map `AGORA_AUTH_TOKENS`), plus a shared `AGORA_COMBINE_TOKEN`. A fleet token acts as itself (a mismatched `agent_id` gets HTTP 403 `unauthorized`); the admin and combine tokens must name the fleet in the body (`agent_id`) and are accepted where noted. A missing or invalid token on a protected route is HTTP 401. For read routes the token only selects the fog view (the combine token and bad tokens get the public view).
 
-- **`POST /referee/orders`**: Submit an order envelope (`kind: "order"`). **Authenticated.** Validates bearer token against `payload.agent_id` to prevent cross-agent impersonation. Returns execution result (`200 OK` with filled/resting status, `400 Bad Request` with `kind: "reject"` payload, `401 Unauthorized` for missing/invalid token, or `403 Forbidden` on agent mismatch).
-- **`GET /referee/accounts[?agent_id=<id>]`**: Balance sheet query. **Authenticated.** Validates bearer token; non-admin callers can only inspect their own account.
-- **`GET /referee/book`**: Returns current resting order book depth (bids and asks sorted by price-time priority). Public read.
-- **`GET /referee/ticks?since_seq=<seq>`**: Returns monotonic market events (`book_events`) since the specified sequence number. Public read.
-- **`GET /referee/leaderboard`**: Returns mark-to-market net-worth standings and asset breakdown across participant agents based on current mark price. Public read.
-- **`GET /referee/health`**: Returns engine status, current monotonic `seq`, and floor state (`open`/`closed`). Public read.
-- **`GET /referee/instructions`** (alias: `/referee/rules`): Returns rules of engagement, 5-minute round protocol, and endpoint directory. Public read.
+Rejections on referee routes are `{"v":1,"kind":"reject","payload":{"reason","detail"}}` with HTTP 400; equity, salvage and circuit-breaker routes reply a flat `{"ok":false,"reason","detail"}`. Request and response schemas for every route are in `/documentation`; this section is the index.
+
+### Route index
+
+Auth legend: **none** = public; **optional** = Bearer selects the fog view; **bearer** = any valid token (fleet token acts as itself; admin/combine must send `agent_id`); **bearer, no admin check** = any valid token; **admin** = admin token only. Paths are matched exactly (trailing slash ignored).
+
+**Static pages (GET, none):** `/` and `/terminal`, `/index`, `/orrery`, `/orrery-3d` (`/orrery3d`), `/documentation`, `/patch-notes` (each also as `*.html`), `/images/*`.
+
+**Referee reads (GET):**
+
+| Path | Auth |
+|---|---|
+| `/referee/health` | none |
+| `/referee/floor`, `/referee/admin/floor` | none |
+| `/referee/ticker/status` | none |
+| `/referee/book`, `/referee/history`, `/referee/ticks`, `/referee/depots`, `/referee/leaderboard` | optional |
+| `/referee/accounts` | bearer (401 if absent; non-admin sees only self) |
+| `/referee/fleets`, `/referee/vessels`, `/referee/hazards`, `/referee/upgrades`, `/referee/standing`, `/referee/contracts`, `/referee/order-flow`, `/referee/peer/offers`, `/referee/lobbying/actions` | none |
+| `/referee/lobbying/status` | none (identity optional) |
+| `/referee/instructions`, `/referee/rules` | none |
+| `/referee/briefing`, `/briefing`, `/llms.txt` | optional |
+| `/referee/corporate`, `/referee/corporate/governance` | none |
+| `/referee/corporate/events`, `/referee/corporate/rivalry`, `/referee/piracy`, `/referee/piracy/tributes` | optional |
+| `/referee/corporate/directives`, `/referee/covert/wiretaps`, `/referee/covert/intel`, `/referee/covert/insider_taps`, `/referee/covert/dossiers`, `/referee/piracy/syndicate` | bearer (401 `{error,detail}` if absent; combine token counts as absent) |
+
+**Other reads (GET):** `/galnet/feed`, `/galnet/events`, `/galnet/drift`, `/galnet/trend`, `/stations/routes`, `/stations/windows` (alias `/spatial/windows`), `/stations/locations`, `/equity/summary`, `/equity/loans`, `/salvage/beacons`, `/salvage/rfqs`, `/salvage/summary`, `/circuit_breaker/halts` are **none**; `/stations/prices` and `/circuit_breaker/bands` are **optional**. `/ws/terminal` is the WebSocket stream (below). Fog (live default on) intercepts `/referee/depots`, `/stations/prices`, `/referee/book`, `/circuit_breaker/bands`, `/referee/ticks` and `/ws/terminal`; fogged rejections are HTTP 403 `reason: "fogged"`.
+
+**Orders (POST):**
+
+| Path | Auth |
+|---|---|
+| `/referee/orders` | bearer |
+| `/referee/quick_order` (flat JSON; station defaults to `ceres`, `order_id` auto-generated if omitted) | bearer |
+| `/referee/orders/cancel`, `/referee/orders/cancel_all` | bearer (non-admin acts as self) |
+
+**Admin and lifecycle (POST):**
+
+| Path | Auth |
+|---|---|
+| `/referee/admin/new_game` | token for `amos` or `zero` only (admin token rejected) |
+| `/referee/admin/reset`, `/referee/admin/fleets`, `/referee/floor` (alias `/referee/admin/floor`) | admin |
+| `/referee/admin/burst`, `/referee/admin/burst/cancel` (alias `/burst/stop`), `/referee/admin/burst/reset` | bearer, no admin check |
+| `/referee/admin/ticker/pause`, `/ticker/resume`, `/ticker/config`, `/referee/admin/depots/refresh` | bearer, no admin check |
+
+**Game actions (POST):**
+
+| Path | Auth |
+|---|---|
+| `/stations/transit` | bearer |
+| `/stations/step_round`, `/galnet/step`, `/galnet/shock` | none (no token checked) |
+| `/equity/borrow`, `/equity/return` | bearer |
+| `/salvage/distress`, `/salvage/quote`, `/salvage/accept_quote`, `/salvage/claim` | bearer |
+| `/circuit_breaker/halt`, `/circuit_breaker/reopen` | bearer, no admin check |
+| `/referee/peer/offer`, `/accept`, `/cancel` | bearer |
+| `/referee/covert/wiretap`, `/sabotage`, `/rumor`, `/dossier`, `/leak` | bearer |
+| `/referee/vessels/buy`, `/transfer`, `/scrap` | bearer |
+| `/referee/upgrades/buy` | bearer |
+| `/referee/corporate/<action>`: `tender_offer`, `tender_accept`, `tender_cancel`, `poison_pill`, `rights_exercise`, `loan_offer`, `loan_accept`, `loan_cancel`, `loan_repay`, `debt_buy`, `spin_off`, `directive`, `scuttle` (plus some aliases) | bearer |
+| `/referee/contracts/{id}/claim`, `/list`, `/buy`, `/deliver` | bearer |
+| `/referee/privateers`, `/referee/piracy/{transit_id}/respond`, `/referee/piracy/fence`, `/referee/piracy/extort`, `/referee/piracy/tribute/respond` | bearer |
+| `/referee/lobbying/influence`, `/referee/lobbying/action` | bearer |
+
+### WebSocket: `GET /ws/terminal`
+
+RFC 6455 upgrade (a plain GET returns a JSON descriptor listing the frame types). Fog applies: a non-admin viewer gets the public lagged/jittered view; admin gets exact data. On connect the server sends a full `snapshot` for `ceres` / `FRAG`, then polls and pushes only changes (state hashes); a ping is sent every 25 s and client pings are answered. A client may send a JSON text frame `{"station_id": "...", "instrument": "..."}` to switch the subscribed book, which triggers a fresh `snapshot`. Every frame is JSON with a `type`:
+
+| `type` | Contents |
+|---|---|
+| `snapshot` | `seq`, `round`, `floor`, `station_id`, `instrument`, `leaderboard`, `book`, `last_price`, `last_qty`, `depots`, `fog`, `circuit` (`bands`, `halts`), last 25 `ticks`, vessel `locations`, alignment `windows`, `equity`, `loans` |
+| `ticks` | `seq`, new book-event `ticks` since the last seq |
+| `depth_diff` | `seq`, `station_id`, `instrument`, `book`, `last_price`, `last_qty` (book changed) |
+| `depots` | `seq`, all-station depot quotes (changed) |
+| `leaderboard` | `seq`, `leaderboard` (changed) |
+| `circuit_state` | `seq`, `station_id`, `instrument`, `bands`, `halts` (changed) |
+| `equity` | `seq`, `equity` summary, `loans` (changed) |
+| `round` | `seq`, `round`, `floor`, `prev_round` (round or floor state changed) |

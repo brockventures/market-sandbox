@@ -1647,6 +1647,18 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                 self.wfile.write(content)
                 return
 
+        if path in ('/documentation', '/documentation.html'):
+            doc_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'public', 'documentation.html')
+            if os.path.exists(doc_path):
+                with open(doc_path, 'rb') as f:
+                    content = f.read()
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.send_header('Content-Length', str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+                return
+
         if path in ('/patch-notes', '/patch-notes.html'):
             pn_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'public', 'patch-notes.html')
             if os.path.exists(pn_path):
