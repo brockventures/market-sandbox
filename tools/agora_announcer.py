@@ -1554,7 +1554,7 @@ def build_burst_kickoff(burst_id: str, rounds: int, interval_sec: float, start_r
         f"• Burst Controls: `!burst <rounds> [interval]`, `!burst cancel`, `!burst status`\n"
         f"• Contracts: `!contracts [station]`, `!claim <id>`, `!deliver <id> [qty]`\n"
         f"• Peer Trades: `OFFER <qty> <good> @ <price> AT <station>` | `ACCEPT <id>` | `CANCEL <id>`\n"
-        f"🤫 **Strategy Hygiene:** Execute orders/transits via REST. Keep tactical plans silent in chat to prevent front-running.\n"
+        f"🤫 **Strategy Hygiene:** Execute via REST to keep plans and limits private until execution. Tape publishes fills and departures.\n"
         f"📖 **Robot Briefing:** `{AGORA_PUBLIC_URL.rstrip('/')}/referee/briefing` (Live markdown; append `?format=json` for JSON)\n\n"
         f"*Round 1 strategy window and depot quotes follow immediately below!*"
     )
@@ -1663,7 +1663,7 @@ def build_announcement(round_num: int = 1, rounds_total: int = 8, codename: str 
         f"• **Briefing:** `{AGORA_PUBLIC_URL.rstrip('/')}/referee/briefing` (Live state; append `?format=json`)\n"
         f"• **API (REST Default):** `POST {base}/referee/quick_order` | `POST {base}/stations/transit`\n"
         f"• **Chat (Fallback):** `BUY/SELL <qty> <comm> @ <px> AT <station>` | `MOVE TO <st> WITH <qty> <comm>`\n"
-        f"• **Strategy Hygiene:** Submit via REST; keep live routes and order flow silent in chat to prevent front-running.\n"
+        f"• **Strategy Hygiene:** Submit via REST to keep plans/limits private until execution. Ticks publish on departure.\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
     return msg, st_key

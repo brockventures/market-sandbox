@@ -29,6 +29,7 @@ class TestTerminalRoundSyncAndStrategyHygiene(unittest.TestCase):
         self.assertIn("Quick API (REST Default):", kickoff)
         self.assertIn("Strategy Hygiene", kickoff)
         self.assertIn("REST", kickoff)
+        self.assertIn("Tape publishes", kickoff)
 
     @patch("tools.agora_announcer.fetch_json")
     @patch("tools.agora_announcer.fetch_ticker_status")
