@@ -1531,13 +1531,14 @@ def parse_discord_trade(content: str, author_id: str, author_name: str = "", def
 def build_burst_kickoff(burst_id: str, rounds: int, interval_sec: float, start_round: int, mention: str = "") -> str:
     """Compile formatted kickoff alert for discrete burst session."""
     end_round = start_round + rounds
+    active_end = end_round - 1
     target_tag = mention if mention else DEFAULT_TARGET_TAG
     base = REFEREE_BASE_URL.rstrip('/')
     return (
         f"🚀 **STATION AGORA // SOL SYSTEM COMBINE INITIATED** ({target_tag})\n"
         f"```text\n"
         f"BURST ID:       {burst_id}\n"
-        f"COMBINE WINDOW: Rounds #{start_round + 1} -> #{end_round} ({rounds} rounds)\n"
+        f"COMBINE WINDOW: Rounds #{start_round} -> #{active_end} ({rounds} rounds | Final Settlement #{end_round})\n"
         f"ROUND CADENCE:  {interval_sec:.0f}s per strategy window\n"
         f"STATUS:         FLOOR OPEN // AUTONOMOUS MATCHMAKING ENGAGED\n\n"
         f"🏆 OBJECTIVE:   Highest Mark-to-Market Net Worth (CR) at Round #{end_round} wins!\n"
@@ -1545,14 +1546,15 @@ def build_burst_kickoff(burst_id: str, rounds: int, interval_sec: float, start_r
         f"               *FUEL is consumable propellant (0 CR score value).*\n"
         f"```\n"
         f"🎯 **HOW TO TRADE THIS BURST:**\n"
-        f"💬 **Discord Chat:** Reply in channel (syntax templates, not literal orders):\n"
+        f"⚡ **Quick API (REST Default):** `POST {base}/referee/quick_order` | `POST {base}/stations/transit` (token `agora-combine-2026`)\n"
+        f"💬 **Discord Chat (Manual/Fallback):** Reply in channel (syntax templates, not literal orders):\n"
         f"• Trade: `BUY <qty> <good> @ <price> AT <station>` (e.g. `BUY 50 FOOD @ 32 AT CERES`)\n"
         f"• Stock: `BUY <qty> EQ_<FLEET> @ <price>` (e.g. `BUY 10 EQ_ZERO @ 30`)\n"
         f"• Transit: `MOVE TO <station> WITH <qty> <good>` (e.g. `MOVE TO MARS WITH 100 FOOD`)\n"
         f"• Burst Controls: `!burst <rounds> [interval]`, `!burst cancel`, `!burst status`\n"
         f"• Contracts: `!contracts [station]`, `!claim <id>`, `!deliver <id> [qty]`\n"
         f"• Peer Trades: `OFFER <qty> <good> @ <price> AT <station>` | `ACCEPT <id>` | `CANCEL <id>`\n"
-        f"⚡ **Quick API:** `POST {base}/referee/quick_order` with token `agora-combine-2026`\n"
+        f"🤫 **Strategy Hygiene:** Execute orders/transits via REST. Keep tactical plans silent in chat to prevent front-running.\n"
         f"📖 **Robot Briefing:** `{AGORA_PUBLIC_URL.rstrip('/')}/referee/briefing` (Live markdown; append `?format=json` for JSON)\n\n"
         f"*Round 1 strategy window and depot quotes follow immediately below!*"
     )
@@ -1563,9 +1565,11 @@ def build_announcement(round_num: int = 1, rounds_total: int = 8, codename: str 
     health = fetch_json("/referee/health")
     leaderboard = fetch_json("/referee/leaderboard")
     depots = fetch_json("/referee/depots")
+    ticker_st = fetch_ticker_status()
 
     seq = health.get("seq", 0)
     floor = health.get("floor", "open")
+    ref_round = ticker_st.get("current_round", round_num) if ticker_st.get("status") != "error" else round_num
 
     st_idx = (round_num - 1) % len(STATION_ROTATION)
     st_key = STATION_ROTATION[st_idx]
@@ -1647,7 +1651,7 @@ def build_announcement(round_num: int = 1, rounds_total: int = 8, codename: str 
 
     msg = (
         f"🔔 **STATION AGORA // {title}** ({target_tag})\n"
-        f"**Sector:** {st_info['emoji']} **{st_info['name']}** | **Floor:** {floor.upper()} | **Seq:** #{seq}\n"
+        f"**Sector:** {st_info['emoji']} **{st_info['name']}** | **Floor:** {floor.upper()} | **Seq:** #{seq} | **Referee Round:** #{ref_round}\n"
         f"🎯 **Objective:** Max Net Worth at Round #{rounds_total} | *Cargo scores (FRAG/FOOD/ORE/MACHINERY), FUEL=0 CR*\n\n"
         f"📡 **GALNET:** *{st_info['intel']}* — 💡 *{st_info['opp']}*\n\n"
         f"📈 **{st_key.upper()} DEPOT QUOTES:**\n"
@@ -1657,8 +1661,9 @@ def build_announcement(round_num: int = 1, rounds_total: int = 8, codename: str 
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🤖 **DIRECTIVE (Round #{round_num}):**\n"
         f"• **Briefing:** `{AGORA_PUBLIC_URL.rstrip('/')}/referee/briefing` (Live state; append `?format=json`)\n"
-        f"• **Chat:** `BUY/SELL <qty> <comm> @ <px> AT <station>` | `MOVE TO <st> WITH <qty> <comm>`\n"
-        f"• **API:** `POST {base}/referee/quick_order` | `POST {base}/stations/transit`\n"
+        f"• **API (REST Default):** `POST {base}/referee/quick_order` | `POST {base}/stations/transit`\n"
+        f"• **Chat (Fallback):** `BUY/SELL <qty> <comm> @ <px> AT <station>` | `MOVE TO <st> WITH <qty> <comm>`\n"
+        f"• **Strategy Hygiene:** Submit via REST; keep live routes and order flow silent in chat to prevent front-running.\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
     return msg, st_key
@@ -2504,14 +2509,14 @@ def run_burst_loop(rounds: int, interval_sec: float, channel: str, token: str, c
     if last_seen_msg_id:
         processed_ids.add(last_seen_msg_id)
 
-    # Immediately post Round 1 strategy window at T=0 so the floor is actionable instantly
+    # Immediately post Round 1 strategy window at T=0 matching current referee round
     rounds_announced = 1
     last_announced_round = start_round
     burst_completed = False
     ref_token = get_referee_token()
 
     msg, active_station = build_announcement(
-        round_num=start_round + 1,
+        round_num=start_round,
         rounds_total=rounds,
         codename=codename,
         mention=mention,
@@ -2521,7 +2526,7 @@ def run_burst_loop(rounds: int, interval_sec: float, channel: str, token: str, c
     if ann_resp and ann_resp.get("id"):
         last_seen_msg_id = ann_resp["id"]
         processed_ids.add(last_seen_msg_id)
-    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Broadcasted Round {start_round + 1} (1/{rounds}) at {active_station} (T=0 kickoff)")
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Broadcasted Round {start_round} (1/{rounds}) at {active_station} (T=0 kickoff)")
     sys.stdout.flush()
 
     while not burst_completed:
@@ -2551,7 +2556,7 @@ def run_burst_loop(rounds: int, interval_sec: float, channel: str, token: str, c
             last_announced_round = cur_rnd
             rounds_announced += 1
             if rounds_announced <= rounds:
-                next_round_num = start_round + rounds_announced
+                next_round_num = cur_rnd
                 msg, active_station = build_announcement(
                     round_num=next_round_num,
                     rounds_total=rounds,
