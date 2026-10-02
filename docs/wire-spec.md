@@ -251,11 +251,21 @@ Example: `GET /stations/transit/quote?destination=mars&cargo_qty=20` from Ceres 
 
 The briefing (`GET /referee/briefing`) shows `**Rounds left in burst: N** (final round: R)` at the top of its Routes section while a burst is active, and points at the dry-run quote from its route-hazard and piracy lines.
 
+### In-flight transit masking (`/referee/ticks`, `/ws/terminal`)
+
+Since #301 a `transit` tick whose `arrival_round` is greater than the current round is masked for every viewer except its owner (`agent_id` equals the bearer's fleet), the admin and telemetry-upgrade holders. The payload becomes exactly:
+
+```json
+{"transit_id": "...", "agent_id": "...", "vessel_id": "...", "departure_round": 3, "arrival_round": 6, "in_flight": true}
+```
+
+Destination, commodity, cargo, fuel, toll, hazard, odds and all other route or cargo fields are removed. If the trip has a pirate demand the payload also carries `"piracy": {"demand": {"pending": true, "deadline": ...}}` (`deadline` only when set; ransom, surrender and odds never). When the current round reaches `arrival_round` the tick is served unmasked. The mask applies with fog on (`fog: true` in the response) and fog off. Over the WebSocket every non-admin socket is a public viewer, so the `snapshot` ticks and `ticks` frames are masked for everyone but admin.
+
 ### Discord chat directives
 
 `tools/agora_announcer.py` strips fenced code blocks and `>` blockquotes and unwraps inline backticks from a message, then matches each remaining line against anchored patterns (#292, #294). A narrative line (`filled`, `sold`, `arrived`, `HOLD`, `STATUS`, `ETA`, `<qty>`-style placeholders) is skipped, so quoting an order in prose or a code block never submits it. A directive may follow a bullet, an emoji, mentions and `!` or `/`.
 
-Round announcements show the referee's own round (`Referee Round`, from `GET /referee/ticker/status`), and burst announcements list the active rounds plus a separate Final Settlement round (#286, #291, #299). They put REST first (`POST /referee/quick_order`, `POST /stations/transit`) and chat second: REST keeps plans private until execution, after which fills and departures appear on `/referee/ticks`. See `docs/rules-of-engagement.md` section 3.1. `tools/trader_client.py` quotes each transit and refuses `arrives_after_burst_end`, or `may_arrive_after_burst_end` unless `allow_hazard_burst_risk` is set (#293, #300).
+Round announcements show the referee's own round (`Referee Round`, from `GET /referee/ticker/status`), and burst announcements list the active rounds plus a separate Final Settlement round (#286, #291, #299). They put REST first (`POST /referee/quick_order`, `POST /stations/transit`) and chat second: REST keeps plans private until execution, after which fills and departures appear on `/referee/ticks`. Chat orders and moves get an immediate emoji acknowledgement; their execution receipts are buffered and posted once per round as a consolidated delayed tape, and chat is reserved for peer contracts, settlement receipts and standings (#290, #301). `tools/trader_client.py --stealth` (alias `--silent`) or `AGORA_STEALTH=1` runs the client silently over authenticated REST. See `docs/rules-of-engagement.md` section 3.1. `tools/trader_client.py` quotes each transit and refuses `arrives_after_burst_end`, or `may_arrive_after_burst_end` unless `allow_hazard_burst_risk` is set (#293, #300).
 
 ### WebSocket: `GET /ws/terminal`
 
