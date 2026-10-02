@@ -288,7 +288,9 @@ class PiracyDesk:
         value = hold_value if hold_value is not None else cargo_value(commodity, qty)
         if not self.odds or value <= 0:
             res = {'odds': 0.0, 'base': 0.0, 'hot': False, 'value': value,
-                   'value_mult': 0.0, 'privateers': False, 'escort': bool(escort)}
+                   'value_mult': 0.0, 'privateers': False, 'escort': bool(escort),
+                   'armor': 1.0, 'armor_tier': 0, 'stealth': 1.0, 'stealth_tier': 0,
+                   'tolled': bool(tolled), 'salvage_surge': False}
             if for_quote:
                 res['excludes'] = ['privateers']
                 res['privateer_add'] = PRIV_ADD
@@ -305,19 +307,30 @@ class PiracyDesk:
         if escort:
             p *= 1 - ESCORT_CUT
         # Armor (ship upgrades, #143 / PR #149); 1.0 on builds without them.
-        armor = self.ref.upgrades.factor(agent, 'armor') if hasattr(self.ref, 'upgrades') and self.ref.upgrades else 1.0
+        armor = self.ref.upgrades.factor(agent, 'armor') if hasattr(self.ref, 'upgrades') else 1.0
+        armor_tier = self.ref.upgrades.tier(agent, 'armor') if hasattr(self.ref, 'upgrades') else 0
         p *= armor
-        out = {
-            'odds': round(min(1.0, max(0.0, p)), 4),
-            'base': base,
-            'hot': hot,
-            'value': value,
-            'value_mult': vm,
-            'privateers': priv,
-            'escort': bool(escort),
-            'exact_odds': p,
-            'armor': armor,
-        }
+        stealth = 1.0
+        stealth_tier = 0
+        if hasattr(self.ref, 'upgrades') and self.ref.upgrades:
+            st = self.ref.upgrades.tier(agent, 'stealth_drives') if hasattr(self.ref.upgrades, 'tier') else 0
+            if isinstance(st, int) and st > 0:
+                stealth = self.ref.upgrades.factor(agent, 'stealth_drives')
+                stealth_tier = st
+                p *= stealth
+
+        # Belt Salvage Surge (#245): doubles pirate raid & privateer ambush odds along Ceres corridors
+        salvage_surge = False
+        if hasattr(self.ref, 'galnet') and self.ref.galnet and hasattr(self.ref.galnet, 'is_salvage_surge_active'):
+            if self.ref.galnet.is_salvage_surge_active():
+                if tolled or origin == 'ceres' or dest == 'ceres' or (origin, dest) in BELT_ROUTES:
+                    p = min(1.0, p * 2.0)
+                    salvage_surge = True
+
+        out = {'odds': round(min(1.0, p), 4), 'exact_odds': min(1.0, p), 'base': base, 'hot': hot, 'value': value,
+               'value_mult': round(vm, 3), 'privateers': priv, 'escort': bool(escort), 'armor': armor,
+               'armor_tier': armor_tier, 'stealth': stealth, 'stealth_tier': stealth_tier, 'tolled': bool(tolled),
+               'salvage_surge': salvage_surge}
         if for_quote:
             out['excludes'] = ['privateers']
             out['privateer_add'] = PRIV_ADD
