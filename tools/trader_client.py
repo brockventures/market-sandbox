@@ -594,6 +594,13 @@ def execute_agent_turn(
             quote_res = get_transit_quote(destination=best_dest, commodity=best_comm, cargo_qty=best_cargo_qty, agent_id=act_agent)
             quote_payload = quote_res.get("payload", {}) if isinstance(quote_res, dict) else {}
 
+            # Deliberate fail-open fallback (Issue #303): if the quote endpoint fails (network error,
+            # rejection, or legacy server without /stations/transit/quote), proceed with direct dispatch
+            # rather than paralyzing spatial arbitrage during live combine rounds.
+            if not isinstance(quote_res, dict) or quote_res.get("status") != "quote":
+                status_str = quote_res.get("status", "unknown") if isinstance(quote_res, dict) else "no_response"
+                print(f"ℹ️ [Quote Fallback] Transit quote returned non-quote status '{status_str}'; failing open to direct transit dispatch.")
+
             arrives_late = bool(quote_res.get("arrives_after_burst_end") or quote_payload.get("arrives_after_burst_end", False))
             may_arrive_late = bool(quote_res.get("may_arrive_after_burst_end") or quote_payload.get("may_arrive_after_burst_end", False))
             allow_hazard_risk = config.get("allow_hazard_burst_risk", False)
