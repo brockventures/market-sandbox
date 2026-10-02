@@ -103,6 +103,34 @@ TRANSIT_PATTERN = re.compile(
     re.IGNORECASE
 )
 
+# Issue #292: Strict line-anchored patterns and chat sanitization
+def sanitize_chat_content(content: str) -> str:
+    """Strip fenced code blocks, inline code blocks, and blockquotes from chat content."""
+    if not content:
+        return ""
+    # Strip markdown fenced code blocks (```...```)
+    clean = re.sub(r"```[\s\S]*?```", "", content)
+    # Strip inline code (`...`)
+    clean = re.sub(r"`[^`\n]*`", "", clean)
+    # Strip blockquotes (> ...)
+    clean = re.sub(r"^\s*>.*$", "", clean, flags=re.MULTILINE)
+    return clean.strip()
+
+NARRATIVE_IGNORE_PATTERN = re.compile(
+    r"\b(?:filled|sold|bought|liquidated|reserve|ETA|ETA:|status|dispatched|arriving|arrives|landed|departed)\b|\bHOLD\b|<(?:qty|good|price|station|id)>",
+    re.IGNORECASE
+)
+
+TRADE_LINE_PATTERN = re.compile(
+    rf"^\s*(?:[-*•]\s*)?(?:🍌\s*|🚀\s*|⚡\s*)?(?:<@!?[0-9]+>\s*)*(?:!(?:trade\s+)?)?"
+    rf"(BUY|BID|SELL|ASK)\s+(\d+)\s+({TRADE_COMMODITY_PATTERN})"
+    rf"(?:\s*(?:@|AT|FOR)?\s*(\d+)\s*(?:CR)?)?"
+    rf"(?:\s+(?:AT|IN|STATION)\s+([A-Za-z]+))?"
+    rf"(?:\s+(?:as|agent:?)\s+[A-Za-z0-9_]+)?"
+    rf"\s*(?:[!.]|\s*#.*)?$",
+    re.IGNORECASE
+)
+
 PEER_OFFER_PATTERN = re.compile(
     r"\b(?:OFFER)\s+(\d+)\s+([A-Za-z]+)\s*(?:@\s*|AT\s+)?(\d+)\s*(?:CR)?\s*(?:AT\s+)?([A-Za-z]+)?\b",
     re.IGNORECASE
@@ -632,33 +660,55 @@ def resolve_discord_agent(author_id: str, author_name: str = "", content: str = 
 
 
 def parse_discord_peer(content: str, author_id: str, author_name: str = "", default_station: str = "ceres") -> Optional[dict]:
-    """Parse peer trade commands (OFFER, ACCEPT, CANCEL) from Discord chat."""
-    m_off = PEER_OFFER_PATTERN.search(content)
-    if m_off:
-        qty = int(m_off.group(1))
-        good = normalize_commodity(m_off.group(2).upper().strip())
-        price = int(m_off.group(3))
-        station = (m_off.group(4) or default_station).lower().strip()
-        ag_id = resolve_contract_agent(author_id)
-        if not ag_id:
-            return {"action": "unauthorized", "command": "peer_offer", "author_id": str(author_id)}
-        return {"action": "offer", "agent_id": ag_id, "station_id": station, "instrument": good, "qty": qty, "price": price}
+    """Parse peer trade commands (OFFER, ACCEPT, CANCEL) from Discord chat with line-anchored syntax."""
+    clean = sanitize_chat_content(content)
+    if not clean:
+        return None
 
-    m_acc = PEER_ACCEPT_PATTERN.search(content)
-    if m_acc:
-        escrow_id = m_acc.group(1).strip()
-        ag_id = resolve_contract_agent(author_id)
-        if not ag_id:
-            return {"action": "unauthorized", "command": "peer_accept", "author_id": str(author_id)}
-        return {"action": "accept", "agent_id": ag_id, "escrow_id": escrow_id}
+    for raw_line in clean.splitlines():
+        line = raw_line.strip()
+        if not line or NARRATIVE_IGNORE_PATTERN.search(line):
+            continue
 
-    m_can = PEER_CANCEL_PATTERN.search(content)
-    if m_can:
-        escrow_id = m_can.group(1).strip()
-        ag_id = resolve_contract_agent(author_id)
-        if not ag_id:
-            return {"action": "unauthorized", "command": "peer_cancel", "author_id": str(author_id)}
-        return {"action": "cancel", "agent_id": ag_id, "escrow_id": escrow_id}
+        m_off = re.match(
+            rf"^\s*(?:[-*•]\s*)?(?:🍌\s*|🚀\s*|⚡\s*)?(?:<@!?[0-9]+>\s*)*(?:!(?:peer\s+)?)?"
+            rf"OFFER\s+(\d+)\s+({GOODS_TRANSFER_PATTERN})\s*(?:@\s*|AT\s+)?(\d+)\s*(?:CR)?(?:\s+(?:AT|IN|STATION)\s+([A-Za-z]+))?(?:\s+(?:as|agent:?)\s+[A-Za-z0-9_]+)?\s*$",
+            line,
+            re.IGNORECASE
+        )
+        if m_off:
+            qty = int(m_off.group(1))
+            good = normalize_commodity(m_off.group(2).upper().strip())
+            price = int(m_off.group(3))
+            station = (m_off.group(4) or default_station).lower().strip()
+            ag_id = resolve_contract_agent(author_id)
+            if not ag_id:
+                return {"action": "unauthorized", "command": "peer_offer", "author_id": str(author_id)}
+            return {"action": "offer", "agent_id": ag_id, "station_id": station, "instrument": good, "qty": qty, "price": price}
+
+        m_acc = re.match(
+            r"^\s*(?:[-*•]\s*)?(?:🍌\s*|🚀\s*|⚡\s*)?(?:<@!?[0-9]+>\s*)*(?:!(?:peer\s+)?)?ACCEPT\s+([A-Za-z0-9_\-]+)(?:\s+(?:as|agent:?)\s+[A-Za-z0-9_]+)?\s*$",
+            line,
+            re.IGNORECASE
+        )
+        if m_acc:
+            escrow_id = m_acc.group(1).strip()
+            ag_id = resolve_contract_agent(author_id)
+            if not ag_id:
+                return {"action": "unauthorized", "command": "peer_accept", "author_id": str(author_id)}
+            return {"action": "accept", "agent_id": ag_id, "escrow_id": escrow_id}
+
+        m_can = re.match(
+            r"^\s*(?:[-*•]\s*)?(?:🍌\s*|🚀\s*|⚡\s*)?(?:<@!?[0-9]+>\s*)*(?:!(?:peer\s+)?)?CANCEL\s+(?:OFFER\s+)?([A-Za-z0-9_\-]+)(?:\s+(?:as|agent:?)\s+[A-Za-z0-9_]+)?\s*$",
+            line,
+            re.IGNORECASE
+        )
+        if m_can:
+            escrow_id = m_can.group(1).strip()
+            ag_id = resolve_contract_agent(author_id)
+            if not ag_id:
+                return {"action": "unauthorized", "command": "peer_cancel", "author_id": str(author_id)}
+            return {"action": "cancel", "agent_id": ag_id, "escrow_id": escrow_id}
 
     return None
 
@@ -1334,66 +1384,73 @@ def parse_discord_hazards_cmd(content: str, author_id: str, author_name: str = "
 
 
 def parse_discord_transit(content: str, author_id: str, author_name: str = "") -> Optional[dict]:
-    """Parse natural language transit command from Discord chat, with multi-ship support."""
-    if TRADE_PATTERN.search(content) and not re.search(r"\b(?:MOVE|TRANSIT)\b", content, re.I):
+    """Parse natural language transit command from Discord chat, with multi-ship support and strict line validation."""
+    clean = sanitize_chat_content(content)
+    if not clean:
         return None
 
-    content_clean = re.sub(r"\b(?:as|agent:?)\s+(?:amos|marvin|zero|aerial)\b", "", content, flags=re.I).strip()
+    for raw_line in clean.splitlines():
+        line = raw_line.strip()
+        if not line or NARRATIVE_IGNORE_PATTERN.search(line):
+            continue
 
-    m_dest = re.search(r"\b(?:MOVE|TRANSIT|FLY|WARP|GO)\s+(?:TO\s+)?([A-Za-z]+)", content_clean, re.I)
-    if not m_dest:
-        return None
-    dest = m_dest.group(1).lower().strip()
-    if dest not in STATION_PROFILES and dest not in ("earth", "luna", "mars", "ceres"):
-        return None
+        norm_line = re.sub(r"^\s*!(?:trade\s+)?(buy|bid|sell|ask)\b", r"\1", line, flags=re.I)
+        norm_line = re.sub(r"^\s*/(?:trade\s+)?(buy|bid|sell|ask)\b", r"\1", norm_line, flags=re.I)
+        if TRADE_LINE_PATTERN.match(norm_line):
+            continue
 
-    # Defensive escort (#145)
-    escort = False
-    m_esc = re.search(r"\b(?:WITH\s+)?ESCORT\b", content_clean, re.I)
-    if m_esc:
-        escort = True
-        content_clean = re.sub(r"\b(?:WITH\s+)?ESCORT\b", "", content_clean, flags=re.I).strip()
+        prefix_pat = r"^\s*(?:[-*•]\s*)?(?:🍌\s*|🚀\s*|⚡\s*)?(?:<@!?[0-9]+>\s*)*(?:!(?:transit\s+|move\s+)?|/(?:transit\s+|move\s+)?)?(?:MOVE|TRANSIT|FLY|WARP|GO)\s+(?:TO\s+)?([A-Za-z]+)"
+        m_dest = re.match(prefix_pat, line, re.I)
+        if not m_dest:
+            continue
 
-    qty = 0
-    comm = "FRAG"
-    m_cargo = re.search(r"\b(?:WITH|CARRYING|LOAD)\s+(\d+)\s+([A-Za-z]+)\b", content_clean, re.I)
-    if m_cargo:
-        qty = int(m_cargo.group(1))
-        comm = normalize_commodity(m_cargo.group(2).upper().strip())
+        dest = m_dest.group(1).lower().strip()
+        if dest not in STATION_PROFILES and dest not in ("earth", "luna", "mars", "ceres"):
+            continue
 
-    vessel_id = None
-    m_vessel = re.search(r"\b(?:ON|VIA|VESSEL|SHIP)\s+([A-Za-z0-9_/]+)\b", content_clean, re.I)
-    if m_vessel:
-        vessel_id = m_vessel.group(1).strip()
-    else:
-        m_after = re.search(r"\b(?:MOVE|TRANSIT|FLY|WARP|GO)\s+(?:TO\s+)?([A-Za-z]+)\s+([A-Za-z0-9_/]+)\b", content_clean, re.I)
-        if m_after and m_after.group(1).lower() == dest:
-            cand = m_after.group(2).strip()
-            if cand.upper() not in ("WITH", "CARRYING", "LOAD", "AS", "AGENT", "ON", "VIA", "VESSEL", "SHIP"):
+        rest = line[m_dest.end():].strip()
+        rest = re.sub(r"\b(?:as|agent:?)\s+[A-Za-z0-9_]+\b", "", rest, flags=re.I).strip()
+
+        escort = bool(re.search(r"\b(?:WITH\s+)?ESCORT\b", rest, re.I))
+        rest = re.sub(r"\b(?:WITH\s+)?ESCORT\b", "", rest, flags=re.I).strip()
+
+        qty = 0
+        comm = "FRAG"
+        m_cargo = re.search(rf"\b(?:WITH|CARRYING|LOAD)\s+(\d+)\s+({GOODS_TRANSFER_PATTERN})\b", rest, re.I)
+        if m_cargo:
+            qty = int(m_cargo.group(1))
+            comm = normalize_commodity(m_cargo.group(2).upper().strip())
+            rest = (rest[:m_cargo.start()] + " " + rest[m_cargo.end():]).strip()
+
+        vessel_id = None
+        m_vessel = re.search(r"\b(?:ON|VIA|VESSEL|SHIP)\s+([A-Za-z0-9_/]+)\b", rest, re.I)
+        if m_vessel:
+            vessel_id = m_vessel.group(1).strip()
+            rest = (rest[:m_vessel.start()] + " " + rest[m_vessel.end():]).strip()
+        else:
+            m_bare = re.search(r"\b([A-Za-z0-9_/]+)\b", rest)
+            if m_bare:
+                cand = m_bare.group(1).strip()
                 if cand.isdigit() or "/" in cand:
                     vessel_id = cand
-        if not vessel_id:
-            m_trail = re.search(r"\b(?:WITH|CARRYING|LOAD)\s+\d+\s+[A-Za-z]+\s+([A-Za-z0-9_/]+)\b", content_clean, re.I)
-            if m_trail:
-                cand = m_trail.group(1).strip()
-                if cand.isdigit() or "/" in cand:
-                    vessel_id = cand
 
-    ag_id = resolve_contract_agent(author_id)
-    if not ag_id:
-        return {"action": "unauthorized", "command": "transit", "author_id": str(author_id)}
+        ag_id = resolve_contract_agent(author_id)
+        if not ag_id:
+            return {"action": "unauthorized", "command": "transit", "author_id": str(author_id)}
 
-    res = {
-        "action": "transit",
-        "agent_id": ag_id,
-        "destination": dest,
-        "commodity": comm,
-        "cargo_qty": qty,
-        "escort": escort
-    }
-    if vessel_id:
-        res["vessel_id"] = vessel_id
-    return res
+        res = {
+            "action": "transit",
+            "agent_id": ag_id,
+            "destination": dest,
+            "commodity": comm,
+            "cargo_qty": qty,
+            "escort": escort
+        }
+        if vessel_id:
+            res["vessel_id"] = vessel_id
+        return res
+
+    return None
 
 
 def submit_trade_to_referee(trade: dict, ref_token: str) -> dict:
@@ -1424,36 +1481,51 @@ def submit_trade_to_referee(trade: dict, ref_token: str) -> dict:
 
 
 def parse_discord_trade(content: str, author_id: str, author_name: str = "", default_station: str = "ceres") -> Optional[dict]:
-    """Parse natural language trade command from Discord chat."""
-    m = TRADE_PATTERN.search(content)
-    if not m:
+    """Parse natural language trade command from Discord chat with strict line-anchored syntax."""
+    clean = sanitize_chat_content(content)
+    if not clean:
         return None
-    side_raw, qty_raw, comm_raw, price_raw, station_raw = m.groups()
-    side = "bid" if side_raw.lower() in ("buy", "bid") else "ask"
-    qty = int(qty_raw)
-    comm = comm_raw.upper().strip().replace(" ", "_")
-    comm = normalize_commodity(comm)
-    if comm in STOCK_TICKERS:
-        comm = STOCK_TICKERS[comm]
-    price = int(price_raw) if price_raw else None
-    if comm.startswith("EQ_"):
-        station = "ceres"
-    else:
-        station = station_raw.lower() if station_raw else default_station
 
-    ag_id = resolve_contract_agent(author_id)
-    if not ag_id:
-        return {"action": "unauthorized", "command": "trade", "author_id": str(author_id)}
+    for raw_line in clean.splitlines():
+        line = raw_line.strip()
+        if not line or NARRATIVE_IGNORE_PATTERN.search(line):
+            continue
 
-    return {
-        "action": "trade",
-        "agent_id": ag_id,
-        "side": side,
-        "qty": qty,
-        "limit_price": price,
-        "instrument": comm,
-        "station_id": station
-    }
+        norm_line = re.sub(r"^\s*!(?:trade\s+)?(buy|bid|sell|ask)\b", r"\1", line, flags=re.I)
+        norm_line = re.sub(r"^\s*/(?:trade\s+)?(buy|bid|sell|ask)\b", r"\1", norm_line, flags=re.I)
+
+        m = TRADE_LINE_PATTERN.match(norm_line)
+        if not m:
+            continue
+
+        side_raw, qty_raw, comm_raw, price_raw, station_raw = m.groups()
+        side = "bid" if side_raw.lower() in ("buy", "bid") else "ask"
+        qty = int(qty_raw)
+        comm = comm_raw.upper().strip().replace(" ", "_")
+        comm = normalize_commodity(comm)
+        if comm in STOCK_TICKERS:
+            comm = STOCK_TICKERS[comm]
+        price = int(price_raw) if price_raw else None
+        if comm.startswith("EQ_"):
+            station = "ceres"
+        else:
+            station = station_raw.lower() if station_raw else default_station
+
+        ag_id = resolve_contract_agent(author_id)
+        if not ag_id:
+            return {"action": "unauthorized", "command": "trade", "author_id": str(author_id)}
+
+        return {
+            "action": "trade",
+            "agent_id": ag_id,
+            "side": side,
+            "qty": qty,
+            "limit_price": price,
+            "instrument": comm,
+            "station_id": station
+        }
+
+    return None
 
 
 def build_burst_kickoff(burst_id: str, rounds: int, interval_sec: float, start_round: int, mention: str = "") -> str:
@@ -1651,7 +1723,11 @@ def poll_and_execute_trades(channel: str, bot_token: str, ref_token: str, active
         if author.get("username") == "Agora Trade Terminal" or author.get("id") == "1547763904141070346":
             continue
 
-        content = msg.get("content", "").strip()
+        raw_content = msg.get("content", "").strip()
+        # Sanitize chat content: strip code blocks, inline code, and blockquotes before parsing
+        content = sanitize_chat_content(raw_content)
+        if not content:
+            continue
         peer_cmd = parse_discord_peer(content, author.get("id", ""), author.get("username", ""), default_station=active_station)
         if peer_cmd:
             action = peer_cmd.get("action")
