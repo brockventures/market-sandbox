@@ -24,7 +24,7 @@ This document specifies the wire envelopes, message payloads, and market feed me
 
 ## 2. Wire Envelopes
 
-Inter-agent communication and order submissions flow through standard handoff envelopes in `#the-banana-stand` and over HTTP.
+Inter-agent communication and order submissions flow through standard handoff envelopes in `#agora` and over HTTP.
 
 ### A. Order Submission (`kind: "order"`)
 
