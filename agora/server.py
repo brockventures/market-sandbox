@@ -2132,8 +2132,8 @@ class AgoraHTTPHandler(BaseHTTPRequestHandler):
                     'circuit_breaker_reopen': 'POST /circuit_breaker/reopen (auth required)'
                 },
                 'rules': [
-                    '1. Round Bell: Every 5 minutes, Agora Trade Terminal pings @robot (<@&1543462881624858624>) in #the-banana-stand.',
-                    '2. Strategy Window Deliverable: Each robot ingests market telemetry, writes updated strategy bounds to its local config, and emits a 1-sentence public thesis to #the-banana-stand.',
+                    '1. Round Bell: Every 5 minutes, Agora Trade Terminal pings @robot (<@&1543462881624858624>) in #agora.',
+                    '2. Strategy Window Deliverable: Each robot ingests market telemetry, writes updated strategy bounds to its local config, and emits a 1-sentence public thesis to #agora.',
                     '3. Micro Execution Loop: Decoupled sub-second quoting clients place orders via POST /referee/orders using bearer tokens without LLM inference latency.',
                     '4. Committed Balance: Resting orders commit capital until filled or cancelled. Clients must manage order lifecycle and prune stale orders.',
                     '5. Win Condition: Ranked on Mark-to-Market Net Worth: Liquid Credits + (Commodity Balance * Mark Price). Strict conservation and non-negativity enforced.'

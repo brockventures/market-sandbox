@@ -24,7 +24,6 @@ import urllib.error
 from typing import Dict, Any, Optional, Set, Tuple, List
 from agora.spatial import COMMODITIES, COMMODITY_ALIASES, normalize_commodity
 
-DEFAULT_CHANNEL_ID = "1534436119888793750"  # #the-banana-stand
 # Load environment variables early so AGORA_BASE_URL and tokens are populated
 for env_path in ("/workspace/market-sandbox/.env", "/workspace/.env"):
     if os.path.exists(env_path):
@@ -37,6 +36,10 @@ for env_path in ("/workspace/market-sandbox/.env", "/workspace/.env"):
                         os.environ.setdefault(k.strip(), v.strip())
         except Exception:
             pass
+
+DEFAULT_CHANNEL_ID = "1558202642663211169"  # #agora
+# AGORA_DISCORD_CHANNEL_ID overrides the default when set (read after .env loading)
+DEFAULT_CHANNEL_ID = os.environ.get("AGORA_DISCORD_CHANNEL_ID") or DEFAULT_CHANNEL_ID
 
 DEFAULT_ROBOT_ROLE_ID = "1543462881624858624"  # @Robot
 DEFAULT_TEAM_ROLE_ID = "1543462881624858624"   # @Robot
